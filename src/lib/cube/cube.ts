@@ -45,6 +45,36 @@ export function createSolvedCube(): CubeState {
   ) as CubeState;
 }
 
+const FACELET_COLORS: Record<Face, StickerColor> = {
+  U: "yellow",
+  R: "red",
+  F: "green",
+  D: "white",
+  L: "orange",
+  B: "blue",
+};
+
+export function cubeStateFromFacelets(facelets: string): CubeState {
+  if (!/^[URFDLB]{54}$/.test(facelets)) {
+    throw new Error("Cube snapshot must contain exactly 54 URFDLB facelets");
+  }
+
+  const counts = Object.fromEntries(FACES.map((face) => [face, 0])) as Record<Face, number>;
+  for (const facelet of facelets) counts[facelet as Face] += 1;
+  if (FACES.some((face) => counts[face] !== 9)) {
+    throw new Error("Cube snapshot must contain nine facelets of each color");
+  }
+
+  return Object.fromEntries(
+    FACES.map((face, faceIndex) => [
+      face,
+      [...facelets.slice(faceIndex * 9, faceIndex * 9 + 9)].map(
+        (facelet) => FACELET_COLORS[facelet as Face],
+      ),
+    ]),
+  ) as CubeState;
+}
+
 export function cloneCube(state: CubeState): CubeState {
   return Object.fromEntries(FACES.map((face) => [face, [...state[face]]])) as CubeState;
 }
@@ -273,4 +303,3 @@ export function derivePhase(state: CubeState): CfopPhase {
   if (facts.crossSolved) return "f2l";
   return "cross";
 }
-

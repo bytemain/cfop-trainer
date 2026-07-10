@@ -1,15 +1,19 @@
 import { createActor } from "xstate";
-import type { CubeConnectionState, DiscoveredDevice } from "$lib/ble/types";
+import type { BleConnection, CubeConnectionState, DiscoveredDevice } from "$lib/ble/types";
 import { TauriBlecTransport } from "$lib/ble/tauriBlecTransport";
 import {
   applyMove,
   createSolvedCube,
+  cubeStateFromFacelets,
   derivePhase,
   derivePhaseFacts,
   invertAlgorithm,
   isSolved,
+  normalizeMove,
   type CubeState,
 } from "$lib/cube/cube";
+import { ganProtocolAdapterFor, registerBuiltInGanProtocols } from "$lib/protocols/gan";
+import type { CubeMoveEvent, SmartCubeSession } from "$lib/protocols/gan/types";
 import { trainingMachine, type TrainingMachineEvent } from "$lib/sessions/trainingMachine";
 
 const DEMO_SCRAMBLE = ["R", "U", "R'", "U'", "F2", "D", "L2", "B'"];
@@ -53,6 +57,8 @@ class TrainerStore {
   eventCount = $state(0);
   hadDesync = $state(false);
   selectedMode = $state("full_cfop");
+  connectedDeviceName = $state<string | null>(null);
+  battery = $state<number | null>(null);
 
   phase = $derived(derivePhase(this.cube));
   facts = $derived(derivePhaseFacts(this.cube));
@@ -66,8 +72,12 @@ class TrainerStore {
   private startedAt: number | null = null;
   private completedMs = 0;
   private timerHandle: ReturnType<typeof setInterval> | null = null;
+  private session: SmartCubeSession | null = null;
+  private unsubscribeMoves: (() => Promise<void>) | null = null;
+  private lastCubeSequence: number | undefined;
 
   constructor() {
+    registerBuiltInGanProtocols();
     this.actor.subscribe((snapshot) => {
       this.sessionState = String(snapshot.value);
     });
@@ -112,11 +122,53 @@ class TrainerStore {
       this.connection = this.devices.length > 0 ? "idle" : "disconnected";
       this.connectionMessage =
         this.devices.length > 0
-          ? `发现 ${this.devices.length} 个候选设备。协议连接将在兼容矩阵确认后启用。`
+          ? `发现 ${this.devices.length} 个候选设备。请选择 GAN16 ui 建立加密连接。`
           : "未发现 GAN 候选设备。请确认魔方已唤醒并靠近本机。";
     } catch (error) {
       this.connection = "disconnected";
       this.connectionMessage = `扫描失败：${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  async connectRealDevice(device: DiscoveredDevice): Promise<void> {
+    let connection: BleConnection | null = null;
+    this.connection = "connecting";
+    this.connectionMessage = `正在连接 ${device.name}…`;
+
+    try {
+      await this.closeRealSession();
+      const adapter = ganProtocolAdapterFor(device);
+      if (!adapter) {
+        this.connection = "unsupported";
+        this.connectionMessage = `${device.name} 暂未匹配到已实现的 GAN 协议。`;
+        return;
+      }
+
+      const transport = new TauriBlecTransport();
+      connection = await transport.connect(device);
+      this.connection = "authenticating";
+      this.connectionMessage = `已识别 ${adapter.version.toUpperCase()}，正在建立加密会话…`;
+      this.session = await adapter.open(connection);
+      connection = null;
+
+      this.connection = "synchronizing";
+      this.connectionMessage = "正在读取完整 54 格状态和 move counter…";
+      const snapshot = await this.session.initialSnapshot();
+      this.cube = cubeStateFromFacelets(snapshot.facelets);
+      this.lastCubeSequence = snapshot.sequence;
+      this.unsubscribeMoves = await this.session.moves((event) => this.handleRealMove(event));
+      this.connectedDeviceName = device.name;
+      this.connection = "ready";
+      this.connectionMessage = `${device.name} 已通过 GAN V4 加密协议同步。`;
+
+      void this.session.batteryLevel().then((level) => {
+        this.battery = level ?? null;
+      }).catch(() => undefined);
+    } catch (error) {
+      await connection?.disconnect().catch(() => undefined);
+      await this.closeRealSession();
+      this.connection = "disconnected";
+      this.connectionMessage = `连接失败：${error instanceof Error ? error.message : String(error)}`;
     }
   }
 
@@ -177,9 +229,21 @@ class TrainerStore {
     this.send({ type: "DESYNC" });
   }
 
-  resync(): void {
+  async resync(): Promise<void> {
     this.connection = "synchronizing";
-    this.cube = createSolvedCube();
+    if (this.session) {
+      try {
+        const snapshot = await this.session.requestSnapshot();
+        this.cube = cubeStateFromFacelets(snapshot.facelets);
+        this.lastCubeSequence = snapshot.sequence;
+      } catch (error) {
+        this.connection = "degraded";
+        this.connectionMessage = `重同步失败：${error instanceof Error ? error.message : String(error)}`;
+        return;
+      }
+    } else {
+      this.cube = createSolvedCube();
+    }
     this.scramble = [];
     this.scrambleIndex = 0;
     this.solveMoves = [];
@@ -188,7 +252,9 @@ class TrainerStore {
     this.lastMove = null;
     this.send({ type: "RESYNC" });
     this.connection = "ready";
-    this.connectionMessage = "已通过完整 snapshot 恢复到演示 solved 状态。";
+    this.connectionMessage = this.session
+      ? "已通过 GAN V4 完整 snapshot 恢复实时魔方状态。"
+      : "已通过完整 snapshot 恢复到演示 solved 状态。";
   }
 
   reset(): void {
@@ -219,6 +285,62 @@ class TrainerStore {
     this.cube = applyMove(this.cube, move);
     this.lastMove = move;
     this.eventCount += 1;
+  }
+
+  private handleRealMove(event: CubeMoveEvent): void {
+    if (this.lastCubeSequence !== undefined) {
+      const gap = (event.sequence - this.lastCubeSequence) & 0xffff;
+      if (gap === 0) return;
+      if (gap > 1 && gap < 0x8000) {
+        this.hadDesync = true;
+        this.connection = "degraded";
+        this.connectionMessage = `检测到 move counter 跳变 ${gap} 步，正在请求完整状态恢复。`;
+        this.stopTimer();
+        if (["scrambling", "ready", "running"].includes(this.sessionState)) {
+          this.send({ type: "DESYNC" });
+        }
+        this.lastCubeSequence = event.sequence;
+        void this.resync();
+        return;
+      }
+    }
+
+    this.lastCubeSequence = event.sequence;
+    const move = normalizeMove(event.move);
+    this.applyDomainMove(move);
+
+    if (this.sessionState === "scrambling" && this.currentScrambleMove === move) {
+      this.scrambleIndex += 1;
+      if (this.scrambleIndex === this.scramble.length) {
+        this.solveMoves = invertAlgorithm(this.scramble);
+        this.solveIndex = 0;
+        this.send({ type: "SCRAMBLE_COMPLETE" });
+      }
+      return;
+    }
+
+    if (this.sessionState === "ready") {
+      this.startedAt = performance.now();
+      this.startTimer();
+      this.send({ type: "FIRST_MOVE" });
+    }
+
+    if (this.sessionState === "running" && isSolved(this.cube)) {
+      this.completedMs = this.startedAt === null ? 0 : performance.now() - this.startedAt;
+      this.elapsedMs = this.completedMs;
+      this.stopTimer();
+      this.send({ type: "SOLVED" });
+    }
+  }
+
+  private async closeRealSession(): Promise<void> {
+    await this.unsubscribeMoves?.().catch(() => undefined);
+    this.unsubscribeMoves = null;
+    await this.session?.disconnect().catch(() => undefined);
+    this.session = null;
+    this.connectedDeviceName = null;
+    this.battery = null;
+    this.lastCubeSequence = undefined;
   }
 
   private startTimer(): void {

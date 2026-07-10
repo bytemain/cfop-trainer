@@ -3,6 +3,7 @@ import {
   applyMove,
   applyMoves,
   createSolvedCube,
+  cubeStateFromFacelets,
   derivePhase,
   invertAlgorithm,
   invertMove,
@@ -11,6 +12,12 @@ import {
 } from "./cube";
 
 describe("cube domain", () => {
+  it("converts protocol facelets into the UI cube color model", () => {
+    expect(
+      cubeStateFromFacelets("UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB"),
+    ).toEqual(createSolvedCube());
+  });
+
   it("normalizes notation", () => {
     expect(normalizeMove("U2'")).toBe("U2");
     expect(invertMove("R")).toBe("R'");
@@ -36,4 +43,3 @@ describe("cube domain", () => {
     expect(derivePhase(restored)).toBe("done");
   });
 });
-

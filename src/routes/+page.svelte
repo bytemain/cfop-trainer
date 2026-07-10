@@ -182,11 +182,13 @@
       {#if trainer.devices.length > 0}
         <section class="device-strip" aria-label="发现的设备">
           {#each trainer.devices as device}
-            <div>
+            <button onclick={() => void trainer.connectRealDevice(device)}>
               <Bluetooth size={17} />
-              <span><strong>{device.name}</strong><small>{device.id} · RSSI {device.rssi ?? "—"}</small></span>
-              <StatusPill tone="warning">待协议验证</StatusPill>
-            </div>
+              <span><strong>{device.name}</strong><small>GAN V4 · RSSI {device.rssi ?? "—"}</small></span>
+              <StatusPill tone={trainer.connectedDeviceName === device.name ? "success" : "info"}>
+                {trainer.connectedDeviceName === device.name ? `已连接${trainer.battery === null ? "" : ` · ${trainer.battery}%`}` : "连接"}
+              </StatusPill>
+            </button>
           {/each}
         </section>
       {/if}
@@ -245,7 +247,7 @@
                 <span class="eyebrow">动作引导</span>
                 <h2>{trainer.sessionState === "scrambling" ? "打乱序列" : "还原路径"}</h2>
               </div>
-              <StatusPill tone="info">演示 fixture</StatusPill>
+              <StatusPill tone="info">{trainer.connectedDeviceName ? "GAN V4 真机" : "演示 fixture"}</StatusPill>
             </div>
 
             {#if trainer.scramble.length === 0}
@@ -307,7 +309,8 @@
               <li><Check size={16} /> BLE transport 已隔离</li>
               <li><Check size={16} /> sequence gap / resync 状态已建模</li>
               <li><Check size={16} /> SQLite migration 已注册</li>
-              <li><CircleAlert size={16} /> V1/V2/V3/V4 decoder 需按真机 fixture 实现</li>
+              <li><Check size={16} /> GAN16 ui V4 AES decoder 已接入</li>
+              <li><CircleAlert size={16} /> V1/V2/V3 留待对应真机验证</li>
             </ul>
           </section>
         </aside>
@@ -399,7 +402,7 @@
   .banner-actions,
   .primary-actions,
   .timer-meta,
-  .device-strip > div {
+  .device-strip > button {
     display: flex;
     align-items: center;
   }
@@ -518,13 +521,18 @@
     gap: 8px;
     margin-bottom: 18px;
   }
-  .device-strip > div {
+  .device-strip > button {
     gap: 10px;
+    width: 100%;
     padding: 10px 13px;
     border: 1px solid var(--color-outline-soft);
     border-radius: 14px;
+    color: inherit;
     background: var(--color-surface);
+    text-align: left;
+    cursor: pointer;
   }
+  .device-strip > button:hover { background: var(--color-surface-high); }
   .device-strip span:nth-child(2) { display: grid; flex: 1; }
   .device-strip small { color: var(--color-text-muted); font-size: 0.68rem; }
 
@@ -742,4 +750,3 @@
     .placeholder-page { min-height: 420px; margin: 0; padding: 30px 22px; border-radius: 20px; }
   }
 </style>
-

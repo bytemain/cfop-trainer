@@ -20,3 +20,7 @@ export function registeredGanProtocols(): readonly GanProtocolAdapter[] {
   return adapters;
 }
 
+export function ganProtocolAdapterFor(device: DiscoveredDevice): GanProtocolAdapter | null {
+  const match = detectGanProtocol(device);
+  return match ? adapters.find((adapter) => adapter.version === match.protocol) ?? null : null;
+}

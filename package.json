@@ -11,6 +11,7 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "build:ios:sim": "rm -rf 'src-tauri/gen/apple/build/cfop-trainer_iOS.xcarchive' 'src-tauri/gen/apple/build/arm64-sim/CFOP Trainer.app' && tauri ios build --debug --target aarch64-sim --no-sign --ci",
     "tauri": "tauri"
   },
   "license": "MIT",
@@ -19,6 +20,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-sql": "^2.4.0",
+    "aes-js": "^3.1.2",
     "lucide-svelte": "^1.0.0",
     "xstate": "^5.32.4"
   },
@@ -27,6 +29,7 @@
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tauri-apps/cli": "^2",
+    "@types/aes-js": "^3.1.4",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "typescript": "~5.6.2",
