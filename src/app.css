@@ -22,6 +22,10 @@
   --color-warning: #f1c96f;
   --color-error: #ffb4ab;
   --color-info: #9fcaff;
+  --color-top-bar: #171b1c;
+  --color-on-top-bar: #f4f7f6;
+  --color-on-top-bar-muted: #b8c4c1;
+  --color-top-bar-outline: #343b3c;
   --color-cube-frame: #0b0d0e;
   --cube-white: #f4f3ec;
   --cube-yellow: #ffd83d;
@@ -141,4 +145,3 @@ select:focus-visible {
     animation-iteration-count: 1 !important;
   }
 }
-

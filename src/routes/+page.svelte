@@ -21,7 +21,9 @@
     Smartphone,
     Sparkles,
     TimerReset,
+    X,
   } from "lucide-svelte";
+  import Cube3D from "$lib/components/Cube3D.svelte";
   import CubeNet from "$lib/components/CubeNet.svelte";
   import StatusPill from "$lib/components/StatusPill.svelte";
   import TimerDisplay from "$lib/components/TimerDisplay.svelte";
@@ -30,12 +32,27 @@
   type Section = "train" | "cases" | "history" | "settings";
 
   let activeSection = $state<Section>("train");
+  let cubeView = $state<"2d" | "3d">("2d");
+  let deviceDialogOpen = $state(false);
+
+  const deviceDialogBusy = $derived(
+    ["scanning", "connecting", "authenticating", "synchronizing"].includes(trainer.connection),
+  );
 
   const connectionTone = $derived(
     trainer.connection === "ready"
       ? "success"
       : trainer.connection === "degraded"
         ? "warning"
+        : [
+              "scanning",
+              "connecting",
+              "discovering-services",
+              "authenticating",
+              "synchronizing",
+              "reconnecting",
+            ].includes(trainer.connection)
+          ? "info"
         : ["disconnected", "bluetooth-unavailable", "permission-required"].includes(
               trainer.connection,
             )
@@ -83,6 +100,22 @@
     }
   }
 
+  async function scanForDevices(): Promise<void> {
+    deviceDialogOpen = true;
+    await trainer.scanRealDevices();
+  }
+
+  async function connectSelectedDevice(device: (typeof trainer.devices)[number]): Promise<void> {
+    await trainer.connectRealDevice(device);
+    if (trainer.connection === "ready" || trainer.connection === "degraded") {
+      deviceDialogOpen = false;
+    }
+  }
+
+  function closeDeviceDialog(): void {
+    if (!deviceDialogBusy) deviceDialogOpen = false;
+  }
+
   onMount(() => {
     const handleKeydown = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
@@ -93,6 +126,7 @@
       }
 
       if (event.key.toLowerCase() === "r") trainer.reset();
+      if (event.key === "Escape" && deviceDialogOpen) closeDeviceDialog();
     };
 
     window.addEventListener("keydown", handleKeydown);
@@ -168,7 +202,7 @@
           <p>{trainer.connectionMessage}</p>
         </div>
         <div class="banner-actions">
-          <button class="text-button" onclick={() => void trainer.scanRealDevices()}>
+          <button class="text-button" onclick={() => void scanForDevices()}>
             <BluetoothSearching size={17} /> 扫描真机
           </button>
           {#if trainer.connection !== "ready"}
@@ -179,20 +213,6 @@
         </div>
       </section>
 
-      {#if trainer.devices.length > 0}
-        <section class="device-strip" aria-label="发现的设备">
-          {#each trainer.devices as device}
-            <button onclick={() => void trainer.connectRealDevice(device)}>
-              <Bluetooth size={17} />
-              <span><strong>{device.name}</strong><small>GAN V4 · RSSI {device.rssi ?? "—"}</small></span>
-              <StatusPill tone={trainer.connectedDeviceName === device.name ? "success" : "info"}>
-                {trainer.connectedDeviceName === device.name ? `已连接${trainer.battery === null ? "" : ` · ${trainer.battery}%`}` : "连接"}
-              </StatusPill>
-            </button>
-          {/each}
-        </section>
-      {/if}
-
       <div class="training-layout">
         <section class="workspace-card cube-workspace">
           <div class="section-heading">
@@ -201,12 +221,24 @@
               <h1>{PHASE_LABELS[trainer.phase]} 阶段</h1>
             </div>
             <div class="segmented-control" aria-label="魔方视图">
-              <button class="selected">2D</button>
-              <button disabled title="3D 将在移动 WebGL 技术验证后启用">3D</button>
+              <button
+                class:selected={cubeView === "2d"}
+                aria-pressed={cubeView === "2d"}
+                onclick={() => (cubeView = "2d")}
+              >2D</button>
+              <button
+                class:selected={cubeView === "3d"}
+                aria-pressed={cubeView === "3d"}
+                onclick={() => (cubeView = "3d")}
+              >3D</button>
             </div>
           </div>
 
-          <CubeNet cube={trainer.cube} />
+          {#if cubeView === "2d"}
+            <CubeNet cube={trainer.cube} />
+          {:else}
+            <Cube3D cube={trainer.cube} />
+          {/if}
 
           <div class="timer-panel">
             <TimerDisplay value={trainer.formatTime()} state={sessionLabel} />
@@ -373,6 +405,91 @@
       <Settings size={20} /><span>设置</span>
     </button>
   </nav>
+
+  {#if deviceDialogOpen}
+    <div class="device-dialog-backdrop" role="presentation">
+      <div
+        class="device-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="device-dialog-title"
+      >
+        <header class="device-dialog-header">
+          <div>
+            <span class="eyebrow">Bluetooth LE</span>
+            <h2 id="device-dialog-title">选择蓝牙魔方</h2>
+          </div>
+          <button
+            class="dialog-close-button"
+            aria-label="关闭设备选择"
+            disabled={deviceDialogBusy}
+            onclick={closeDeviceDialog}
+          >
+            <X size={19} />
+          </button>
+        </header>
+
+        <div class="device-dialog-status tone-{connectionTone}">
+          {#if trainer.connection === "scanning"}
+            <BluetoothSearching class="spinning" size={21} />
+          {:else if connectionTone === "error"}
+            <CircleAlert size={21} />
+          {:else}
+            <Radio size={21} />
+          {/if}
+          <div>
+            <strong>{CONNECTION_LABELS[trainer.connection]}</strong>
+            <p>{trainer.connectionMessage}</p>
+          </div>
+        </div>
+
+        {#if trainer.connection === "scanning"}
+          <div class="device-dialog-scanning">
+            <span class="scan-radar"><BluetoothSearching size={28} /></span>
+            <strong>正在查找附近的 GAN 魔方</strong>
+            <p>保持魔方唤醒并靠近设备，扫描约需 10 秒。</p>
+          </div>
+        {:else if trainer.devices.length > 0}
+          <div class="device-dialog-list" aria-label="发现的设备">
+            {#each trainer.devices as device}
+              <button
+                disabled={deviceDialogBusy}
+                onclick={() => void connectSelectedDevice(device)}
+              >
+                <span class="device-dialog-icon"><Bluetooth size={19} /></span>
+                <span class="device-dialog-copy">
+                  <strong>{device.name}</strong>
+                  <small>GAN V4 · RSSI {device.rssi ?? "—"}</small>
+                </span>
+                <StatusPill tone={trainer.connectedDeviceName === device.name ? "success" : "info"}>
+                  {trainer.connectedDeviceName === device.name
+                    ? `已连接${trainer.battery === null ? "" : ` · ${trainer.battery}%`}`
+                    : deviceDialogBusy
+                      ? "连接中"
+                      : "连接"}
+                </StatusPill>
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <div class="device-dialog-empty">
+            <BluetoothSearching size={30} />
+            <strong>暂未发现 GAN 魔方</strong>
+            <p>转动魔方使其重新广播，然后再次扫描。</p>
+          </div>
+        {/if}
+
+        <footer class="device-dialog-actions">
+          <button class="secondary-button" disabled={deviceDialogBusy} onclick={closeDeviceDialog}>
+            取消
+          </button>
+          <button class="primary-button" disabled={deviceDialogBusy} onclick={() => void scanForDevices()}>
+            <RefreshCcw size={17} /> 重新扫描
+          </button>
+        </footer>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -392,8 +509,10 @@
     justify-content: space-between;
     min-width: 0;
     padding: 0 22px;
-    border-bottom: 1px solid var(--color-outline-soft);
-    background: rgb(17 20 21 / 0.88);
+    border-bottom: 1px solid var(--color-top-bar-outline);
+    color: var(--color-on-top-bar);
+    background: rgb(23 27 28 / 0.94);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
     backdrop-filter: blur(18px);
   }
 
@@ -401,8 +520,7 @@
   .top-status,
   .banner-actions,
   .primary-actions,
-  .timer-meta,
-  .device-strip > button {
+  .timer-meta {
     display: flex;
     align-items: center;
   }
@@ -418,9 +536,32 @@
     background: var(--color-primary);
   }
   .brand > div { display: grid; }
-  .brand strong { font-size: 0.95rem; letter-spacing: -0.02em; }
-  .brand span:last-child { color: var(--color-text-muted); font-size: 0.68rem; }
+  .brand strong { color: var(--color-on-top-bar); font-size: 0.95rem; letter-spacing: -0.02em; }
+  .brand span:last-child { color: var(--color-on-top-bar-muted); font-size: 0.68rem; }
   .top-status { gap: 9px; }
+  .top-app-bar :global(.status-pill) {
+    color: var(--color-on-top-bar-muted);
+    border-color: rgb(244 247 246 / 0.42);
+    background: rgb(255 255 255 / 0.07);
+  }
+  .top-app-bar :global(.status-pill.tone-info) {
+    color: #b9d9ff;
+    border-color: rgb(185 217 255 / 0.52);
+    background: rgb(78 143 219 / 0.14);
+  }
+  .top-app-bar :global(.status-pill.tone-success) {
+    color: #9ff0c8;
+    border-color: rgb(159 240 200 / 0.5);
+    background: rgb(68 201 143 / 0.13);
+  }
+  .top-app-bar :global(.status-pill.tone-warning) {
+    color: #ffe09a;
+    border-color: rgb(255 224 154 / 0.5);
+  }
+  .top-app-bar :global(.status-pill.tone-error) {
+    color: #ffc1bb;
+    border-color: rgb(255 193 187 / 0.5);
+  }
 
   .icon-button,
   .navigation-rail button,
@@ -435,8 +576,9 @@
     width: 40px;
     height: 40px;
     border-radius: 50%;
+    color: var(--color-on-top-bar-muted);
   }
-  .icon-button:hover { background: var(--color-surface-high); color: var(--color-text); }
+  .icon-button:hover { background: rgb(255 255 255 / 0.09); color: var(--color-on-top-bar); }
 
   .navigation-rail {
     position: sticky;
@@ -515,26 +657,6 @@
   .primary-button:hover { background: var(--color-primary-strong); }
   .secondary-button { color: var(--color-text); background: var(--color-surface-highest); }
   .secondary-button:disabled { cursor: not-allowed; opacity: 0.42; }
-
-  .device-strip {
-    display: grid;
-    gap: 8px;
-    margin-bottom: 18px;
-  }
-  .device-strip > button {
-    gap: 10px;
-    width: 100%;
-    padding: 10px 13px;
-    border: 1px solid var(--color-outline-soft);
-    border-radius: 14px;
-    color: inherit;
-    background: var(--color-surface);
-    text-align: left;
-    cursor: pointer;
-  }
-  .device-strip > button:hover { background: var(--color-surface-high); }
-  .device-strip span:nth-child(2) { display: grid; flex: 1; }
-  .device-strip small { color: var(--color-text-muted); font-size: 0.68rem; }
 
   .training-layout {
     display: grid;
@@ -687,6 +809,127 @@
 
   .bottom-navigation { display: none; }
 
+  .device-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgb(4 10 8 / 0.66);
+    backdrop-filter: blur(12px);
+  }
+  .device-dialog {
+    display: grid;
+    gap: 16px;
+    width: min(540px, 100%);
+    max-height: min(720px, calc(100vh - 48px));
+    overflow: auto;
+    padding: 22px;
+    border: 1px solid var(--color-outline);
+    border-radius: 24px;
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: 0 32px 100px rgb(0 0 0 / 0.42);
+  }
+  .device-dialog-header,
+  .device-dialog-status,
+  .device-dialog-list > button,
+  .device-dialog-actions {
+    display: flex;
+    align-items: center;
+  }
+  .device-dialog-header { justify-content: space-between; gap: 16px; }
+  .device-dialog-header h2 { margin: 4px 0 0; font-size: 1.35rem; letter-spacing: -0.035em; }
+  .dialog-close-button {
+    display: grid;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 50%;
+    color: var(--color-text-muted);
+    background: var(--color-surface-high);
+    cursor: pointer;
+  }
+  .dialog-close-button:hover { color: var(--color-text); background: var(--color-surface-highest); }
+  .dialog-close-button:disabled { cursor: not-allowed; opacity: 0.42; }
+  .device-dialog-status {
+    gap: 11px;
+    min-height: 66px;
+    padding: 12px 14px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 16px;
+    background: var(--color-surface-high);
+  }
+  .device-dialog-status > :global(svg) { flex: 0 0 auto; color: var(--color-primary); }
+  .device-dialog-status.tone-error > :global(svg) { color: var(--color-error); }
+  .device-dialog-status.tone-warning > :global(svg) { color: var(--color-warning); }
+  .device-dialog-status strong { font-size: 0.84rem; }
+  .device-dialog-status p { margin: 3px 0 0; color: var(--color-text-muted); font-size: 0.74rem; line-height: 1.45; }
+  .device-dialog-scanning,
+  .device-dialog-empty {
+    display: grid;
+    min-height: 210px;
+    place-items: center;
+    align-content: center;
+    gap: 8px;
+    padding: 24px;
+    color: var(--color-text-muted);
+    text-align: center;
+  }
+  .device-dialog-scanning strong,
+  .device-dialog-empty strong { color: var(--color-text); }
+  .device-dialog-scanning p,
+  .device-dialog-empty p { max-width: 330px; margin: 0; font-size: 0.76rem; line-height: 1.5; }
+  .scan-radar,
+  .device-dialog-empty > :global(svg) {
+    display: grid;
+    width: 58px;
+    height: 58px;
+    place-items: center;
+    border-radius: 50%;
+    color: var(--color-primary);
+    background: rgb(135 232 188 / 0.1);
+  }
+  .scan-radar { animation: scan-pulse 1.4s ease-in-out infinite; }
+  :global(.spinning) { animation: spin 1.2s linear infinite; }
+  .device-dialog-list { display: grid; gap: 9px; }
+  .device-dialog-list > button {
+    gap: 12px;
+    width: 100%;
+    min-height: 70px;
+    padding: 11px 13px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 16px;
+    color: var(--color-text);
+    background: var(--color-surface-high);
+    text-align: left;
+    cursor: pointer;
+  }
+  .device-dialog-list > button:hover { border-color: var(--color-primary); background: var(--color-surface-highest); }
+  .device-dialog-list > button:disabled { cursor: wait; opacity: 0.72; }
+  .device-dialog-icon {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 13px;
+    color: var(--color-primary);
+    background: rgb(135 232 188 / 0.09);
+  }
+  .device-dialog-copy { display: grid; min-width: 0; flex: 1; gap: 3px; }
+  .device-dialog-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .device-dialog-copy small { color: var(--color-text-muted); font-size: 0.7rem; }
+  .device-dialog-actions { justify-content: flex-end; gap: 9px; padding-top: 2px; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes scan-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(135 232 188 / 0.18); transform: scale(0.96); }
+    50% { box-shadow: 0 0 0 14px rgb(135 232 188 / 0); transform: scale(1); }
+  }
+
   @media (max-width: 1100px) {
     .training-layout { grid-template-columns: 1fr; }
     .insight-column { grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr); }
@@ -720,6 +963,14 @@
     .connection-banner p { font-size: 0.7rem; }
     .banner-actions { grid-column: 1 / -1; justify-content: stretch; }
     .banner-actions .text-button { flex: 1; min-height: 42px; }
+    .device-dialog-backdrop { align-items: end; padding: 0; }
+    .device-dialog {
+      width: 100%;
+      max-height: min(82vh, 720px);
+      padding: 20px 16px calc(18px + env(safe-area-inset-bottom));
+      border-radius: 24px 24px 0 0;
+    }
+    .device-dialog-actions > button { flex: 1; }
     .training-layout { gap: 10px; }
     .workspace-card { border-radius: 20px; }
     .cube-workspace { padding: 14px 10px; }

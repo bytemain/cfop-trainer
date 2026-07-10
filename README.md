@@ -25,6 +25,7 @@ npm install
 npm run dev
 npm run check
 npm test
+npm run test:e2e
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
@@ -54,3 +55,5 @@ cargo run --manifest-path src-tauri/Cargo.toml --example gan_v4_live
 诊断工具不输出或保存设备地址、MAC 和 manufacturer 原始字节。`gan_v4_live` 只输出语义结果；可选 snapshot fixture 是解密后的魔方状态，不包含设备身份材料。
 
 完整产品和技术约束见 [PRD.md](./PRD.md)。
+
+测试分层、Playwright、Tauri 原生自动化边界和三端 JSONL 日志说明见 [docs/testing.md](./docs/testing.md)。

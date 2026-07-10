@@ -6,7 +6,13 @@ import type {
   GanProtocolMatch,
   SmartCubeSession,
 } from "../types";
-import { deriveGanV2CipherMaterial, extractGanHardwareAddress, GanV2Cipher } from "./crypto";
+import { safeLogger } from "$lib/logging/safeLogger";
+import {
+  createGanV2CipherCandidates,
+  GanV2Cipher,
+  selectGanV2Cipher,
+  type GanCipherCandidate,
+} from "./crypto";
 import {
   createGanV4Request,
   parseGanV4Packet,
@@ -30,17 +36,30 @@ class GanV4Session implements SmartCubeSession {
   private pendingBattery: PendingResponse<number | undefined>[] = [];
   private unsubscribe: (() => Promise<void>) | null = null;
   private closed = false;
+  private notifications = 0;
+  private parseFailures = 0;
+  private cipher: GanV2Cipher | null = null;
+  private calibrationPackets: Uint8Array[] = [];
 
   constructor(
     readonly device: DiscoveredDevice,
     private readonly connection: BleConnection,
-    private readonly cipher: GanV2Cipher,
+    private readonly cipherCandidates: GanCipherCandidate[],
   ) {}
 
   async start(): Promise<void> {
+    safeLogger.info("gan-v4", "session-start", { name: this.device.name });
     this.unsubscribe = await this.connection.subscribe(GAN_V4_SERVICE, GAN_V4_READ, (data) => {
+      if (!this.cipher) {
+        if (data.length >= 16 && this.calibrationPackets.length < 64) {
+          this.calibrationPackets.push(data.slice());
+        }
+        return;
+      }
       this.handleNotification(data);
     });
+    safeLogger.info("gan-v4", "session-subscribed", { name: this.device.name });
+    await this.calibrateCipher();
   }
 
   initialSnapshot(): Promise<CubeSnapshot> {
@@ -58,6 +77,7 @@ class GanV4Session implements SmartCubeSession {
     return this.requestResponse(
       this.pendingSnapshots,
       createGanV4Request("snapshot"),
+      "snapshot",
       "Timed out while waiting for GAN V4 cube state",
     );
   }
@@ -66,6 +86,7 @@ class GanV4Session implements SmartCubeSession {
     return this.requestResponse(
       this.pendingBattery,
       createGanV4Request("battery"),
+      "battery",
       "Timed out while waiting for GAN V4 battery level",
     );
   }
@@ -73,6 +94,7 @@ class GanV4Session implements SmartCubeSession {
   async disconnect(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    safeLogger.info("gan-v4", "session-disconnect", { name: this.device.name });
     await this.unsubscribe?.().catch(() => undefined);
     this.rejectPending(new Error("GAN cube disconnected"));
     await this.connection.disconnect();
@@ -81,6 +103,7 @@ class GanV4Session implements SmartCubeSession {
   private requestResponse<T>(
     queue: PendingResponse<T>[],
     request: Uint8Array,
+    requestKind: "snapshot" | "battery",
     timeoutMessage: string,
   ): Promise<T> {
     if (this.closed) return Promise.reject(new Error("GAN cube session is closed"));
@@ -92,27 +115,89 @@ class GanV4Session implements SmartCubeSession {
         timer: setTimeout(() => {
           const index = queue.indexOf(pending);
           if (index >= 0) queue.splice(index, 1);
+          safeLogger.warn("gan-v4", "request-timeout", {
+            requestKind,
+            notifications: this.notifications,
+            parseFailures: this.parseFailures,
+          });
           reject(new Error(timeoutMessage));
         }, 4_000),
       };
       queue.push(pending);
-      void this.send(request).catch((error) => {
-        clearTimeout(pending.timer);
-        const index = queue.indexOf(pending);
-        if (index >= 0) queue.splice(index, 1);
-        reject(error);
-      });
+      safeLogger.info("gan-v4", "request-send", { requestKind });
+      void this.send(request)
+        .then(() => this.pollReadFallback(queue, pending, requestKind))
+        .catch((error) => {
+          clearTimeout(pending.timer);
+          const index = queue.indexOf(pending);
+          if (index >= 0) queue.splice(index, 1);
+          safeLogger.error("gan-v4", "request-write-failed", {
+            requestKind,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          reject(error);
+        });
     });
   }
 
+  private async pollReadFallback<T>(
+    queue: PendingResponse<T>[],
+    pending: PendingResponse<T>,
+    requestKind: "snapshot" | "battery",
+  ): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    for (let attempt = 1; attempt <= 7 && queue.includes(pending) && !this.closed; attempt += 1) {
+      try {
+        const encrypted = await this.connection.read(GAN_V4_SERVICE, GAN_V4_READ);
+        safeLogger.debug("gan-v4", "read-fallback", {
+          requestKind,
+          attempt,
+          bytes: encrypted.length,
+        });
+        this.handleNotification(encrypted);
+      } catch (error) {
+        if (attempt === 1 || attempt === 7) {
+          safeLogger.warn("gan-v4", "read-fallback-failed", {
+            requestKind,
+            attempt,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (queue.includes(pending)) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+    }
+  }
+
   private async send(request: Uint8Array): Promise<void> {
+    if (!this.cipher) throw new Error("GAN V4 cipher calibration has not completed");
     await this.connection.write(GAN_V4_SERVICE, GAN_V4_WRITE, this.cipher.encode(request), true);
   }
 
   private handleNotification(encrypted: Uint8Array): void {
+    this.notifications += 1;
     try {
-      this.dispatch(parseGanV4Packet(this.cipher.decode(encrypted)));
-    } catch {
+      if (!this.cipher) return;
+      const packet = parseGanV4Packet(this.cipher.decode(encrypted));
+      if (packet.type !== "unknown" || this.notifications <= 3 || this.notifications % 100 === 0) {
+        safeLogger.debug("gan-v4", "packet-parsed", {
+          packetType: packet.type,
+          notifications: this.notifications,
+          mode: packet.type === "unknown" ? packet.mode : undefined,
+        });
+      }
+      this.dispatch(packet);
+    } catch (error) {
+      this.parseFailures += 1;
+      if (this.parseFailures <= 3 || this.parseFailures % 100 === 0) {
+        safeLogger.warn("gan-v4", "packet-rejected", {
+          notifications: this.notifications,
+          parseFailures: this.parseFailures,
+          bytes: encrypted.length,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
       // An undecodable packet is ignored. The request timeout or a following
       // sequence gap turns this into an explicit degraded session upstream.
     }
@@ -120,6 +205,7 @@ class GanV4Session implements SmartCubeSession {
 
   private dispatch(packet: GanV4Packet): void {
     if (packet.type === "snapshot") {
+      safeLogger.info("gan-v4", "snapshot-received", { sequence: packet.sequence });
       const snapshot: CubeSnapshot = {
         facelets: packet.facelets,
         sequence: packet.sequence,
@@ -130,11 +216,17 @@ class GanV4Session implements SmartCubeSession {
     }
 
     if (packet.type === "battery") {
+      safeLogger.info("gan-v4", "battery-received", { level: packet.level });
       this.resolveNext(this.pendingBattery, packet.level);
       return;
     }
 
     if (packet.type !== "move") return;
+
+    safeLogger.debug("gan-v4", "move-received", {
+      move: packet.move,
+      sequence: packet.sequence,
+    });
 
     const event: CubeMoveEvent = {
       move: packet.move,
@@ -162,6 +254,29 @@ class GanV4Session implements SmartCubeSession {
       queue.length = 0;
     }
   }
+
+  private async calibrateCipher(): Promise<void> {
+    // A real GAN16 ui starts emitting encrypted telemetry immediately. Give
+    // the stream a short chance to prove the correct manufacturer-data layout;
+    // silent fixtures and quieter GAN variants fall back to the legacy layout.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    if (this.calibrationPackets.length > 0) {
+      const deadline = Date.now() + 1_400;
+      while (this.calibrationPackets.length < 16 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+    }
+
+    const selection = selectGanV2Cipher(this.cipherCandidates, this.calibrationPackets);
+    this.cipher = selection.cipher;
+    safeLogger.info("gan-v4", "cipher-calibrated", {
+      candidateCount: selection.candidateCount,
+      sampleCount: selection.sampleCount,
+      semanticScore: selection.semanticScore,
+      credible: selection.credible,
+    });
+    this.calibrationPackets = [];
+  }
 }
 
 export class GanV4Protocol implements GanProtocolAdapter {
@@ -179,18 +294,21 @@ export class GanV4Protocol implements GanProtocolAdapter {
   }
 
   async open(connection: BleConnection): Promise<SmartCubeSession> {
-    const hardwareAddress = extractGanHardwareAddress(connection.device.manufacturerData);
-    if (!hardwareAddress) {
+    safeLogger.info("gan-v4", "open-start", { name: connection.device.name });
+    const cipherCandidates = createGanV2CipherCandidates(connection.device.manufacturerData);
+    if (cipherCandidates.length === 0) {
+      safeLogger.error("gan-v4", "cipher-material-missing", { name: connection.device.name });
       throw new Error(
         "未收到 GAN 加密所需的 manufacturer data；请转动魔方保持唤醒，然后重新扫描。",
       );
     }
 
-    const session = new GanV4Session(
-      connection.device,
-      connection,
-      new GanV2Cipher(deriveGanV2CipherMaterial(hardwareAddress)),
-    );
+    const session = new GanV4Session(connection.device, connection, cipherCandidates);
+    safeLogger.info("gan-v4", "cipher-ready", {
+      name: connection.device.name,
+      manufacturerDataAvailable: true,
+      candidateCount: cipherCandidates.length,
+    });
     await session.start();
     return session;
   }

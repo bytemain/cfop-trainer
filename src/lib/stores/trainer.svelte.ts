@@ -15,6 +15,7 @@ import {
 import { ganProtocolAdapterFor, registerBuiltInGanProtocols } from "$lib/protocols/gan";
 import type { CubeMoveEvent, SmartCubeSession } from "$lib/protocols/gan/types";
 import { trainingMachine, type TrainingMachineEvent } from "$lib/sessions/trainingMachine";
+import { safeLogger } from "$lib/logging/safeLogger";
 
 const DEMO_SCRAMBLE = ["R", "U", "R'", "U'", "F2", "D", "L2", "B'"];
 
@@ -78,6 +79,7 @@ class TrainerStore {
 
   constructor() {
     registerBuiltInGanProtocols();
+    safeLogger.info("app", "trainer-store-initialized");
     this.actor.subscribe((snapshot) => {
       this.sessionState = String(snapshot.value);
     });
@@ -101,6 +103,7 @@ class TrainerStore {
   }
 
   async scanRealDevices(): Promise<void> {
+    safeLogger.info("trainer", "scan-requested");
     this.connection = "scanning";
     this.connectionMessage = "正在扫描名称以 GAN 开头的 BLE 设备…";
 
@@ -118,13 +121,20 @@ class TrainerStore {
         return;
       }
 
-      this.devices = await transport.scan({ timeoutMs: 4_000, namePrefixes: ["GAN"] });
+      this.devices = await transport.scan({ timeoutMs: 10_000, namePrefixes: ["GAN"] });
+      safeLogger.info("trainer", "scan-result", {
+        candidates: this.devices.length,
+        names: this.devices.map((device) => device.name),
+      });
       this.connection = this.devices.length > 0 ? "idle" : "disconnected";
       this.connectionMessage =
         this.devices.length > 0
           ? `发现 ${this.devices.length} 个候选设备。请选择 GAN16 ui 建立加密连接。`
           : "未发现 GAN 候选设备。请确认魔方已唤醒并靠近本机。";
     } catch (error) {
+      safeLogger.error("trainer", "scan-failed", {
+        reason: error instanceof Error ? error.message : String(error),
+      });
       this.connection = "disconnected";
       this.connectionMessage = `扫描失败：${error instanceof Error ? error.message : String(error)}`;
     }
@@ -134,11 +144,13 @@ class TrainerStore {
     let connection: BleConnection | null = null;
     this.connection = "connecting";
     this.connectionMessage = `正在连接 ${device.name}…`;
+    safeLogger.info("trainer", "device-connect-requested", { name: device.name });
 
     try {
       await this.closeRealSession();
       const adapter = ganProtocolAdapterFor(device);
       if (!adapter) {
+        safeLogger.warn("trainer", "protocol-unsupported", { name: device.name });
         this.connection = "unsupported";
         this.connectionMessage = `${device.name} 暂未匹配到已实现的 GAN 协议。`;
         return;
@@ -148,6 +160,10 @@ class TrainerStore {
       connection = await transport.connect(device);
       this.connection = "authenticating";
       this.connectionMessage = `已识别 ${adapter.version.toUpperCase()}，正在建立加密会话…`;
+      safeLogger.info("trainer", "protocol-selected", {
+        name: device.name,
+        protocol: adapter.version,
+      });
       this.session = await adapter.open(connection);
       connection = null;
 
@@ -160,11 +176,20 @@ class TrainerStore {
       this.connectedDeviceName = device.name;
       this.connection = "ready";
       this.connectionMessage = `${device.name} 已通过 GAN V4 加密协议同步。`;
+      safeLogger.info("trainer", "device-ready", {
+        name: device.name,
+        protocol: adapter.version,
+        sequence: snapshot.sequence ?? null,
+      });
 
       void this.session.batteryLevel().then((level) => {
         this.battery = level ?? null;
       }).catch(() => undefined);
     } catch (error) {
+      safeLogger.error("trainer", "device-connect-failed", {
+        name: device.name,
+        reason: error instanceof Error ? error.message : String(error),
+      });
       await connection?.disconnect().catch(() => undefined);
       await this.closeRealSession();
       this.connection = "disconnected";
@@ -292,6 +317,11 @@ class TrainerStore {
       const gap = (event.sequence - this.lastCubeSequence) & 0xffff;
       if (gap === 0) return;
       if (gap > 1 && gap < 0x8000) {
+        safeLogger.warn("trainer", "move-sequence-gap", {
+          previousSequence: this.lastCubeSequence,
+          sequence: event.sequence,
+          gap,
+        });
         this.hadDesync = true;
         this.connection = "degraded";
         this.connectionMessage = `检测到 move counter 跳变 ${gap} 步，正在请求完整状态恢复。`;

@@ -11,6 +11,11 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:report": "playwright show-report",
+    "test:all": "npm test && npm run test:e2e",
     "build:ios:sim": "rm -rf 'src-tauri/gen/apple/build/cfop-trainer_iOS.xcarchive' 'src-tauri/gen/apple/build/arm64-sim/CFOP Trainer.app' && tauri ios build --debug --target aarch64-sim --no-sign --ci",
     "tauri": "tauri"
   },
@@ -25,6 +30,7 @@
     "xstate": "^5.32.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@sveltejs/adapter-static": "^3.0.6",
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
