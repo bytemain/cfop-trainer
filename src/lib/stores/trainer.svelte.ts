@@ -16,6 +16,11 @@ import { ganProtocolAdapterFor, registerBuiltInGanProtocols } from "$lib/protoco
 import type { CubeMoveEvent, SmartCubeSession } from "$lib/protocols/gan/types";
 import { trainingMachine, type TrainingMachineEvent } from "$lib/sessions/trainingMachine";
 import { safeLogger } from "$lib/logging/safeLogger";
+import {
+  lastRememberedCubeDevice,
+  rememberCubeDevice,
+  type RememberedCubeDevice,
+} from "$lib/data/database";
 
 const DEMO_SCRAMBLE = ["R", "U", "R'", "U'", "F2", "D", "L2", "B'"];
 
@@ -76,6 +81,7 @@ class TrainerStore {
   private session: SmartCubeSession | null = null;
   private unsubscribeMoves: (() => Promise<void>) | null = null;
   private lastCubeSequence: number | undefined;
+  private initializationPromise: Promise<void> | null = null;
 
   constructor() {
     registerBuiltInGanProtocols();
@@ -84,6 +90,11 @@ class TrainerStore {
       this.sessionState = String(snapshot.value);
     });
     this.actor.start();
+  }
+
+  initialize(): Promise<void> {
+    this.initializationPromise ??= this.autoReconnectRememberedDevice();
+    return this.initializationPromise;
   }
 
   private send(event: TrainingMachineEvent): void {
@@ -181,6 +192,22 @@ class TrainerStore {
         protocol: adapter.version,
         sequence: snapshot.sequence ?? null,
       });
+
+      try {
+        await rememberCubeDevice({
+          platform_device_id: device.id,
+          display_name: device.name,
+          model: device.name.toUpperCase().startsWith("GAN16UI") ? "GAN16 ui" : device.name,
+          protocol_version: adapter.version,
+          last_connected_at: Date.now(),
+        });
+        safeLogger.info("trainer", "remembered-device-saved", { name: device.name });
+      } catch (error) {
+        safeLogger.warn("trainer", "remembered-device-save-failed", {
+          name: device.name,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
 
       void this.session.batteryLevel().then((level) => {
         this.battery = level ?? null;
@@ -371,6 +398,66 @@ class TrainerStore {
     this.connectedDeviceName = null;
     this.battery = null;
     this.lastCubeSequence = undefined;
+  }
+
+  private async autoReconnectRememberedDevice(): Promise<void> {
+    let remembered: RememberedCubeDevice | null;
+    try {
+      remembered = await lastRememberedCubeDevice();
+    } catch (error) {
+      // Browser preview and first-run database failures should not prevent the
+      // trainer UI from loading. Tauri JSONL still captures the safe reason.
+      safeLogger.debug("trainer", "remembered-device-load-unavailable", {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (!remembered) return;
+
+    const rememberedName = remembered.display_name ?? remembered.model ?? "上次连接的 GAN 魔方";
+    this.connection = "reconnecting";
+    this.connectionMessage = `正在后台寻找 ${rememberedName}…转动魔方即可自动重连。`;
+    safeLogger.info("trainer", "auto-reconnect-start", { name: rememberedName });
+
+    try {
+      const transport = new TauriBlecTransport();
+      if (!(await transport.requestPermissions())) {
+        this.connection = "permission-required";
+        this.connectionMessage = "已记住上次设备，但当前没有蓝牙权限。";
+        return;
+      }
+      if (!(await transport.isAvailable())) {
+        this.connection = "bluetooth-unavailable";
+        this.connectionMessage = "已记住上次设备，但系统蓝牙当前未开启。";
+        return;
+      }
+
+      const candidates = await transport.scan({ timeoutMs: 10_000, namePrefixes: ["GAN"] });
+      this.devices = candidates;
+      const target =
+        candidates.find((device) => device.id === remembered.platform_device_id) ??
+        candidates.find((device) => device.name === remembered.display_name);
+      safeLogger.info("trainer", "auto-reconnect-scan-result", {
+        name: rememberedName,
+        candidates: candidates.length,
+        matched: Boolean(target),
+      });
+
+      if (!target) {
+        this.connection = "disconnected";
+        this.connectionMessage = `已记住 ${rememberedName}，但它当前没有广播。转动魔方后可重新扫描。`;
+        return;
+      }
+
+      await this.connectRealDevice(target);
+    } catch (error) {
+      safeLogger.warn("trainer", "auto-reconnect-failed", {
+        name: rememberedName,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      this.connection = "disconnected";
+      this.connectionMessage = `自动重连 ${rememberedName} 失败：${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   private startTimer(): void {

@@ -26,3 +26,46 @@ export async function recentSessions(limit = 20): Promise<SessionSummary[]> {
   );
 }
 
+export interface RememberedCubeDevice {
+  platform_device_id: string;
+  display_name: string | null;
+  model: string | null;
+  protocol_version: string | null;
+  last_connected_at: number | null;
+}
+
+export async function rememberCubeDevice(device: RememberedCubeDevice): Promise<void> {
+  const database = await getDatabase();
+  await database.execute(
+    `INSERT INTO cube_device (
+       platform_device_id,
+       display_name,
+       model,
+       protocol_version,
+       last_connected_at
+     ) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT(platform_device_id) DO UPDATE SET
+       display_name = excluded.display_name,
+       model = excluded.model,
+       protocol_version = excluded.protocol_version,
+       last_connected_at = excluded.last_connected_at`,
+    [
+      device.platform_device_id,
+      device.display_name,
+      device.model,
+      device.protocol_version,
+      device.last_connected_at,
+    ],
+  );
+}
+
+export async function lastRememberedCubeDevice(): Promise<RememberedCubeDevice | null> {
+  const database = await getDatabase();
+  const devices = await database.select<RememberedCubeDevice[]>(
+    `SELECT platform_device_id, display_name, model, protocol_version, last_connected_at
+       FROM cube_device
+      ORDER BY last_connected_at DESC
+      LIMIT 1`,
+  );
+  return devices[0] ?? null;
+}

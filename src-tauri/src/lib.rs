@@ -338,6 +338,26 @@ async fn native_ble_scan<R: Runtime>(
     timeout_ms: u64,
     prefixes: Vec<String>,
 ) -> Result<Vec<NativeBleDevice>, String> {
+    let stale_connection = {
+        let mut inner = state.inner.lock().await;
+        if let Some(task) = inner.notification_task.take() {
+            task.abort();
+        }
+        inner.connected.take()
+    };
+    if let Some(peripheral) = stale_connection {
+        if peripheral.is_connected().await.unwrap_or(false) {
+            let _ = timeout(Duration::from_secs(5), peripheral.disconnect()).await;
+            write_native_jsonl(
+                &app,
+                "info",
+                "ble-native",
+                "stale-connection-reset",
+                serde_json::json!({ "reason": "new-scan" }),
+            );
+        }
+    }
+
     let adapter = first_native_adapter().await?;
     if !matches!(
         adapter

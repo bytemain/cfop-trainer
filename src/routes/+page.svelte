@@ -36,7 +36,9 @@
   let deviceDialogOpen = $state(false);
 
   const deviceDialogBusy = $derived(
-    ["scanning", "connecting", "authenticating", "synchronizing"].includes(trainer.connection),
+    ["scanning", "connecting", "authenticating", "synchronizing", "reconnecting"].includes(
+      trainer.connection,
+    ),
   );
 
   const connectionTone = $derived(
@@ -117,6 +119,7 @@
   }
 
   onMount(() => {
+    void trainer.initialize();
     const handleKeydown = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
 
@@ -202,7 +205,11 @@
           <p>{trainer.connectionMessage}</p>
         </div>
         <div class="banner-actions">
-          <button class="text-button" onclick={() => void scanForDevices()}>
+          <button
+            class="text-button"
+            disabled={deviceDialogBusy}
+            onclick={() => void scanForDevices()}
+          >
             <BluetoothSearching size={17} /> 扫描真机
           </button>
           {#if trainer.connection !== "ready"}
@@ -653,6 +660,7 @@
   }
   .text-button { color: var(--color-primary); background: transparent; }
   .text-button:hover { background: rgb(135 232 188 / 0.08); }
+  .text-button:disabled { cursor: wait; opacity: 0.48; }
   .primary-button { color: var(--color-on-primary); background: var(--color-primary); }
   .primary-button:hover { background: var(--color-primary-strong); }
   .secondary-button { color: var(--color-text); background: var(--color-surface-highest); }
