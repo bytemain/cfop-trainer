@@ -27,12 +27,12 @@
   --color-on-top-bar-muted: #b8c4c1;
   --color-top-bar-outline: #343b3c;
   --color-cube-frame: #0b0d0e;
-  --cube-white: #f4f3ec;
-  --cube-yellow: #ffd83d;
-  --cube-red: #e84a44;
-  --cube-orange: #ff8a2a;
-  --cube-blue: #3a75db;
-  --cube-green: #35a96b;
+  --cube-white: #ffffff;
+  --cube-yellow: #ffe600;
+  --cube-red: #ff3045;
+  --cube-orange: #ff7a00;
+  --cube-blue: #1687ff;
+  --cube-green: #00d878;
   color-scheme: dark;
 }
 

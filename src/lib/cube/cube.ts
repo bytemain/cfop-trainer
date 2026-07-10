@@ -10,6 +10,7 @@ export type StickerColor =
   | "green";
 
 export type CubeState = Record<Face, StickerColor[]>;
+export type StickerPalette = Record<StickerColor, string>;
 
 export interface PhaseFacts {
   crossSolved: boolean;
@@ -37,6 +38,15 @@ export const SOLVED_COLORS: Record<Face, StickerColor> = {
   D: "yellow",
   L: "orange",
   B: "blue",
+};
+
+export const BRIGHT_STICKER_PALETTE: StickerPalette = {
+  white: "#ffffff",
+  yellow: "#ffe600",
+  red: "#ff3045",
+  orange: "#ff7a00",
+  blue: "#1687ff",
+  green: "#00d878",
 };
 
 export function createSolvedCube(): CubeState {

@@ -114,6 +114,29 @@ test("switches to an interactive 3D cube", async ({ page }) => {
   );
 });
 
+test("uses and customizes the full-bright sticker palette", async ({ page }, testInfo) => {
+  const isMobile = testInfo.project.name === "mobile-chromium";
+  const navigation = isMobile
+    ? page.locator(".bottom-navigation")
+    : page.locator(".navigation-rail");
+  await navigation.getByRole("button", { name: "设置" }).click();
+
+  const white = page.getByLabel("白色贴纸");
+  await expect(white).toHaveValue("#ffffff");
+  await white.fill("#f0f0f0");
+  await expect(white).toHaveValue("#f0f0f0");
+  await expect
+    .poll(() =>
+      page.locator(".app-shell").evaluate((element) =>
+        getComputedStyle(element).getPropertyValue("--cube-white").trim(),
+      ),
+    )
+    .toBe("#f0f0f0");
+
+  await page.getByRole("button", { name: "恢复全亮默认" }).click();
+  await expect(white).toHaveValue("#ffffff");
+});
+
 test("uses the correct responsive navigation without horizontal overflow", async ({ page }, testInfo) => {
   const isMobile = testInfo.project.name === "mobile-chromium";
   await expect(page.locator(".navigation-rail")).toBeVisible({ visible: !isMobile });

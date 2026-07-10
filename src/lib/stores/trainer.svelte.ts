@@ -12,10 +12,12 @@ import {
   isSolved,
   normalizeMove,
   remapCubeColors,
+  BRIGHT_STICKER_PALETTE,
   SOLVED_COLORS,
   type CubeState,
   type Face,
   type StickerColor,
+  type StickerPalette,
 } from "$lib/cube/cube";
 import { ganProtocolAdapterFor, registerBuiltInGanProtocols } from "$lib/protocols/gan";
 import type {
@@ -36,6 +38,7 @@ import {
 const SCRAMBLE_FACES = ["U", "R", "F", "D", "L", "B"] as const;
 const SCRAMBLE_SUFFIXES = ["", "'", "2"] as const;
 const SOLVED_FACELETS = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
+const GLOBAL_CUBE_PROFILE_KEY = "cfop-trainer:cube-profile:default";
 
 function generateScramble(length = 20): string[] {
   const moves: string[] = [];
@@ -95,6 +98,7 @@ class TrainerStore {
   battery = $state<number | null>(null);
   demoPlaying = $state(false);
   faceColors = $state({ ...SOLVED_COLORS });
+  stickerPalette = $state<StickerPalette>({ ...BRIGHT_STICKER_PALETTE });
   gyroCalibration = $state<GyroCalibration>({ ...DEFAULT_GYRO_CALIBRATION });
   gyroQuaternion = $state<CubeQuaternion | null>(null);
   gyroVelocity = $state<{ x: number; y: number; z: number } | null>(null);
@@ -122,6 +126,7 @@ class TrainerStore {
   private lastCubeSequence: number | undefined;
   private connectedDeviceId: string | null = null;
   private initializationPromise: Promise<void> | null = null;
+  private preferencesInitialized = false;
 
   constructor() {
     registerBuiltInGanProtocols();
@@ -133,6 +138,10 @@ class TrainerStore {
   }
 
   initialize(): Promise<void> {
+    if (!this.preferencesInitialized) {
+      this.loadPreferences(GLOBAL_CUBE_PROFILE_KEY);
+      this.preferencesInitialized = true;
+    }
     this.initializationPromise ??= this.autoReconnectRememberedDevice();
     return this.initializationPromise;
   }
@@ -434,6 +443,17 @@ class TrainerStore {
     this.persistDevicePreferences();
   }
 
+  setStickerPaletteColor(color: StickerColor, value: string): void {
+    if (!/^#[0-9a-f]{6}$/i.test(value)) return;
+    this.stickerPalette = { ...this.stickerPalette, [color]: value.toLowerCase() };
+    this.persistDevicePreferences();
+  }
+
+  resetStickerPalette(): void {
+    this.stickerPalette = { ...BRIGHT_STICKER_PALETTE };
+    this.persistDevicePreferences();
+  }
+
   setGyroEnabled(enabled: boolean): void {
     this.gyroCalibration = { ...this.gyroCalibration, enabled };
     this.persistDevicePreferences();
@@ -550,15 +570,23 @@ class TrainerStore {
   }
 
   private loadDevicePreferences(deviceId: string): void {
+    this.loadPreferences("cfop-trainer:cube-profile:" + deviceId);
+  }
+
+  private loadPreferences(storageKey: string): void {
     if (typeof localStorage === "undefined") return;
     try {
-      const raw = localStorage.getItem(`cfop-trainer:cube-profile:${deviceId}`);
+      const raw = localStorage.getItem(storageKey);
       if (!raw) return;
       const profile = JSON.parse(raw) as {
         faceColors?: Record<Face, StickerColor>;
+        stickerPalette?: Partial<StickerPalette>;
         gyroCalibration?: GyroCalibration;
       };
       if (profile.faceColors) this.faceColors = { ...SOLVED_COLORS, ...profile.faceColors };
+      if (profile.stickerPalette) {
+        this.stickerPalette = { ...BRIGHT_STICKER_PALETTE, ...profile.stickerPalette };
+      }
       if (profile.gyroCalibration) {
         this.gyroCalibration = { ...DEFAULT_GYRO_CALIBRATION, ...profile.gyroCalibration };
       }
@@ -568,11 +596,16 @@ class TrainerStore {
   }
 
   private persistDevicePreferences(): void {
-    if (!this.connectedDeviceId || typeof localStorage === "undefined") return;
-    localStorage.setItem(
-      `cfop-trainer:cube-profile:${this.connectedDeviceId}`,
-      JSON.stringify({ faceColors: this.faceColors, gyroCalibration: this.gyroCalibration }),
-    );
+    if (typeof localStorage === "undefined") return;
+    const value = JSON.stringify({
+      faceColors: this.faceColors,
+      stickerPalette: this.stickerPalette,
+      gyroCalibration: this.gyroCalibration,
+    });
+    localStorage.setItem(GLOBAL_CUBE_PROFILE_KEY, value);
+    if (this.connectedDeviceId) {
+      localStorage.setItem("cfop-trainer:cube-profile:" + this.connectedDeviceId, value);
+    }
   }
 
   private async autoReconnectRememberedDevice(): Promise<void> {

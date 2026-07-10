@@ -88,6 +88,14 @@
   );
 
   const primaryLabel = $derived(trainer.scramble.length === 0 ? "生成打乱" : "生成新打乱");
+  const cubePaletteStyle = $derived(
+    "--cube-white:" + trainer.stickerPalette.white + ";" +
+      "--cube-yellow:" + trainer.stickerPalette.yellow + ";" +
+      "--cube-red:" + trainer.stickerPalette.red + ";" +
+      "--cube-orange:" + trainer.stickerPalette.orange + ";" +
+      "--cube-blue:" + trainer.stickerPalette.blue + ";" +
+      "--cube-green:" + trainer.stickerPalette.green + ";",
+  );
 
   function primaryAction(): void {
     trainer.prepareScramble();
@@ -162,7 +170,7 @@
   />
 </svelte:head>
 
-<div class="app-shell">
+<div class="app-shell" style={cubePaletteStyle}>
   <header class="top-app-bar">
     <div class="brand">
       <span class="brand-mark"><Sparkles size={19} strokeWidth={2.4} /></span>
@@ -434,6 +442,33 @@
                     <option value={option.value}>{option.label}</option>
                   {/each}
                 </select>
+              </label>
+            {/each}
+          </div>
+
+          <div class="palette-heading">
+            <div>
+              <strong>贴纸显示色</strong>
+              <small>默认使用全亮配色，2D 和 3D 共用</small>
+            </div>
+            <button class="text-button" onclick={() => trainer.resetStickerPalette()}>
+              恢复全亮默认
+            </button>
+          </div>
+          <div class="sticker-palette-grid" aria-label="贴纸显示色">
+            {#each colorOptions as option}
+              <label>
+                <input
+                  type="color"
+                  aria-label={option.label + "色贴纸"}
+                  value={trainer.stickerPalette[option.value]}
+                  onchange={(event) =>
+                    trainer.setStickerPaletteColor(option.value, event.currentTarget.value)}
+                />
+                <span>
+                  <strong>{option.label}色</strong>
+                  <code>{trainer.stickerPalette[option.value]}</code>
+                </span>
               </label>
             {/each}
           </div>
@@ -926,6 +961,51 @@
   .face-color-grid label { display: grid; min-width: 0; gap: 6px; }
   .face-color-grid select { min-height: 38px; }
   .face-chip { display: grid; height: 44px; place-items: center; border: 3px solid var(--color-cube-frame); border-radius: 9px; color: rgb(0 0 0 / 0.58); font-weight: 850; }
+  .palette-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 4px;
+  }
+  .palette-heading > div { display: grid; gap: 3px; }
+  .palette-heading strong { color: var(--color-text); font-size: 0.84rem; }
+  .palette-heading small { color: var(--color-text-muted); font-size: 0.68rem; }
+  .sticker-palette-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 9px;
+    width: 100%;
+  }
+  .sticker-palette-grid label {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    max-width: none;
+    padding: 9px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 13px;
+    background: var(--color-surface-high);
+  }
+  .sticker-palette-grid input[type="color"] {
+    flex: 0 0 auto;
+    width: 38px;
+    height: 38px;
+    padding: 2px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 10px;
+    background: var(--color-surface-highest);
+    cursor: pointer;
+  }
+  .sticker-palette-grid span { display: grid; min-width: 0; gap: 2px; }
+  .sticker-palette-grid strong { color: var(--color-text); font-size: 0.76rem; }
+  .sticker-palette-grid code {
+    overflow: hidden;
+    color: var(--color-text-muted);
+    font-size: 0.62rem;
+    text-overflow: ellipsis;
+  }
   .sticker-white { background: var(--cube-white); } .sticker-yellow { background: var(--cube-yellow); }
   .sticker-red { background: var(--cube-red); } .sticker-orange { background: var(--cube-orange); }
   .sticker-blue { background: var(--cube-blue); } .sticker-green { background: var(--cube-green); }
@@ -1097,6 +1177,8 @@
     .device-dialog-actions > button { flex: 1; }
     .calibration-heading { align-items: start; flex-direction: column; }
     .face-color-grid { grid-template-columns: repeat(3, 1fr); }
+    .palette-heading { align-items: start; flex-direction: column; }
+    .sticker-palette-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .gyro-offsets { grid-template-columns: 1fr; }
     .protocol-debug { grid-template-columns: 1fr; }
     .training-layout { gap: 10px; }
