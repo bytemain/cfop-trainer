@@ -1,6 +1,7 @@
 import type { BleConnection, DiscoveredDevice } from "$lib/ble/types";
 import type {
   CubeMoveEvent,
+  CubeOrientationEvent,
   CubeSnapshot,
   GanProtocolAdapter,
   GanProtocolMatch,
@@ -32,6 +33,7 @@ interface PendingResponse<T> {
 class GanV4Session implements SmartCubeSession {
   readonly protocol = "v4" as const;
   private listeners = new Set<(event: CubeMoveEvent) => void>();
+  private orientationListeners = new Set<(event: CubeOrientationEvent) => void>();
   private pendingSnapshots: PendingResponse<CubeSnapshot>[] = [];
   private pendingBattery: PendingResponse<number | undefined>[] = [];
   private unsubscribe: (() => Promise<void>) | null = null;
@@ -70,6 +72,13 @@ class GanV4Session implements SmartCubeSession {
     this.listeners.add(listener);
     return Promise.resolve(async () => {
       this.listeners.delete(listener);
+    });
+  }
+
+  orientation(listener: (event: CubeOrientationEvent) => void): Promise<() => Promise<void>> {
+    this.orientationListeners.add(listener);
+    return Promise.resolve(async () => {
+      this.orientationListeners.delete(listener);
     });
   }
 
@@ -218,6 +227,17 @@ class GanV4Session implements SmartCubeSession {
     if (packet.type === "battery") {
       safeLogger.info("gan-v4", "battery-received", { level: packet.level });
       this.resolveNext(this.pendingBattery, packet.level);
+      return;
+    }
+
+    if (packet.type === "gyro") {
+      const event: CubeOrientationEvent = {
+        quaternion: packet.quaternion,
+        velocity: packet.velocity,
+        receivedAt: Date.now(),
+        protocol: "v4",
+      };
+      for (const listener of this.orientationListeners) listener(event);
       return;
     }
 

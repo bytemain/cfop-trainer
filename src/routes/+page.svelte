@@ -11,12 +11,14 @@
     CircleAlert,
     History,
     LayoutDashboard,
+    Pause,
     Play,
     Radio,
     RefreshCcw,
     RotateCcw,
     Settings,
     ShieldAlert,
+    SkipBack,
     SkipForward,
     Smartphone,
     Sparkles,
@@ -28,8 +30,14 @@
   import StatusPill from "$lib/components/StatusPill.svelte";
   import TimerDisplay from "$lib/components/TimerDisplay.svelte";
   import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
+  import { FACES, type StickerColor } from "$lib/cube/cube";
 
   type Section = "train" | "cases" | "history" | "settings";
+  const colorOptions: Array<{ value: StickerColor; label: string }> = [
+    { value: "white", label: "白" }, { value: "yellow", label: "黄" },
+    { value: "red", label: "红" }, { value: "orange", label: "橙" },
+    { value: "green", label: "绿" }, { value: "blue", label: "蓝" },
+  ];
 
   let activeSection = $state<Section>("train");
   let cubeView = $state<"2d" | "3d">("2d");
@@ -73,33 +81,10 @@
     }[trainer.sessionState] ?? trainer.sessionState,
   );
 
-  const primaryLabel = $derived(
-    trainer.connection !== "ready" && trainer.connection !== "degraded"
-      ? "连接演示设备"
-      : trainer.sessionState === "idle" || trainer.sessionState === "complete"
-        ? "准备演示打乱"
-        : trainer.sessionState === "scrambling"
-          ? `执行 ${trainer.currentScrambleMove ?? "下一步"}`
-          : trainer.sessionState === "ready" || trainer.sessionState === "running"
-            ? `还原 ${trainer.currentSolveMove ?? "下一步"}`
-            : "重新同步",
-  );
+  const primaryLabel = $derived(trainer.scramble.length === 0 ? "生成打乱" : "生成新打乱");
 
   function primaryAction(): void {
-    if (trainer.connection !== "ready" && trainer.connection !== "degraded") {
-      void trainer.connectDemo();
-      return;
-    }
-
-    if (trainer.sessionState === "idle" || trainer.sessionState === "complete") {
-      trainer.prepareDemoScramble();
-    } else if (trainer.sessionState === "scrambling") {
-      trainer.applyNextScrambleMove();
-    } else if (["ready", "running"].includes(trainer.sessionState)) {
-      trainer.applyNextSolveMove();
-    } else if (trainer.sessionState === "invalid") {
-      trainer.resync();
-    }
+    trainer.prepareScramble();
   }
 
   async function scanForDevices(): Promise<void> {
@@ -116,6 +101,22 @@
 
   function closeDeviceDialog(): void {
     if (!deviceDialogBusy) deviceDialogOpen = false;
+  }
+
+  function gyroAxisInverted(axis: "X" | "Y" | "Z"): boolean {
+    return axis === "X"
+      ? trainer.gyroCalibration.invertX
+      : axis === "Y"
+        ? trainer.gyroCalibration.invertY
+        : trainer.gyroCalibration.invertZ;
+  }
+
+  function gyroAxisOffset(axis: "X" | "Y" | "Z"): number {
+    return axis === "X"
+      ? trainer.gyroCalibration.offsetX
+      : axis === "Y"
+        ? trainer.gyroCalibration.offsetY
+        : trainer.gyroCalibration.offsetZ;
   }
 
   onMount(() => {
@@ -212,11 +213,6 @@
           >
             <BluetoothSearching size={17} /> 扫描真机
           </button>
-          {#if trainer.connection !== "ready"}
-            <button class="text-button" onclick={() => void trainer.connectDemo()}>
-              <Play size={17} /> 演示连接
-            </button>
-          {/if}
         </div>
       </section>
 
@@ -244,7 +240,11 @@
           {#if cubeView === "2d"}
             <CubeNet cube={trainer.cube} />
           {:else}
-            <Cube3D cube={trainer.cube} />
+            <Cube3D
+              cube={trainer.cube}
+              orientation={trainer.gyroQuaternion}
+              gyroCalibration={trainer.gyroCalibration}
+            />
           {/if}
 
           <div class="timer-panel">
@@ -260,21 +260,8 @@
 
           <div class="primary-actions">
             <button class="primary-button" onclick={primaryAction}>
-              {#if trainer.sessionState === "scrambling" || trainer.sessionState === "running"}
-                <SkipForward size={19} />
-              {:else if trainer.sessionState === "invalid"}
-                <RefreshCcw size={19} />
-              {:else}
-                <Play size={19} />
-              {/if}
+              <Sparkles size={19} />
               {primaryLabel}
-            </button>
-            <button
-              class="secondary-button"
-              disabled={!["scrambling", "ready", "running"].includes(trainer.sessionState)}
-              onclick={() => trainer.simulateDesync()}
-            >
-              <ShieldAlert size={18} /> 模拟丢步
             </button>
           </div>
         </section>
@@ -284,15 +271,15 @@
             <div class="section-heading compact-heading">
               <div>
                 <span class="eyebrow">动作引导</span>
-                <h2>{trainer.sessionState === "scrambling" ? "打乱序列" : "还原路径"}</h2>
+                <h2>打乱序列</h2>
               </div>
-              <StatusPill tone="info">{trainer.connectedDeviceName ? "GAN V4 真机" : "演示 fixture"}</StatusPill>
+              <StatusPill tone="info">{trainer.connectedDeviceName ? "GAN V4 真机" : "演示播放器"}</StatusPill>
             </div>
 
             {#if trainer.scramble.length === 0}
               <div class="empty-guide">
                 <TimerReset size={32} />
-                <p>连接设备后准备一次演示打乱。</p>
+                <p>生成一条打乱，然后按照序列转动实体魔方。</p>
               </div>
             {:else}
               <div class="algorithm-line" aria-label="打乱公式">
@@ -308,8 +295,34 @@
               </div>
               <div class="guide-next">
                 <span>下一动作</span>
-                <strong>{trainer.sessionState === "scrambling" ? trainer.currentScrambleMove ?? "完成" : trainer.currentSolveMove ?? "完成"}</strong>
+                <strong>{trainer.currentScrambleMove ?? "完成"}</strong>
               </div>
+              {#if !trainer.connectedDeviceName}
+                <div class="demo-player" aria-label="打乱演示播放器">
+                  <button
+                    class="icon-button"
+                    aria-label="上一步"
+                    disabled={trainer.scrambleIndex === 0}
+                    onclick={() => trainer.demoStepBack()}
+                  ><SkipBack size={18} /></button>
+                  <button
+                    class="player-toggle"
+                    aria-label={trainer.demoPlaying ? "暂停演示" : "播放演示"}
+                    onclick={() => trainer.toggleDemoPlayback()}
+                  >
+                    {#if trainer.demoPlaying}<Pause size={18} /> 暂停{:else}<Play size={18} /> 播放{/if}
+                  </button>
+                  <button
+                    class="icon-button"
+                    aria-label="下一步"
+                    disabled={trainer.scrambleIndex >= trainer.scramble.length}
+                    onclick={() => trainer.demoStepForward()}
+                  ><SkipForward size={18} /></button>
+                  <button class="player-reset" onclick={() => trainer.resetDemoPlayback()}>
+                    <RotateCcw size={16} /> 复位
+                  </button>
+                </div>
+              {/if}
             {/if}
           </section>
 
@@ -394,6 +407,85 @@
           </select>
         </label>
         <div class="platform-note"><Smartphone size={18} /> 手机训练时保持前台和屏幕常亮。</div>
+
+        <div class="calibration-panel">
+          <div class="calibration-heading">
+            <div><span class="eyebrow">Device calibration</span><h2>颜色与陀螺仪</h2></div>
+            <button class="secondary-button" onclick={() => trainer.resetGyroCalibration()}>恢复陀螺仪默认值</button>
+          </div>
+
+          <label class="toggle-row">
+            <span><strong>白色 / 黄色对调</strong><small>标准配色默认 U 白、D 黄</small></span>
+            <input
+              type="checkbox"
+              checked={trainer.whiteYellowSwapped}
+              onchange={(event) => trainer.setWhiteYellowSwapped(event.currentTarget.checked)}
+            />
+          </label>
+
+          <div class="face-color-grid" aria-label="六面中心色映射">
+            {#each FACES as face}
+              <label>
+                <span class="face-chip sticker-{trainer.faceColors[face]}">{face}</span>
+                <select
+                  value={trainer.faceColors[face]}
+                  onchange={(event) => trainer.setFaceColor(face, event.currentTarget.value as StickerColor)}
+                >
+                  {#each colorOptions as option}
+                    <option value={option.value}>{option.label}</option>
+                  {/each}
+                </select>
+              </label>
+            {/each}
+          </div>
+
+          <label class="toggle-row">
+            <span><strong>跟随魔方陀螺仪</strong><small>关闭后 3D 只响应手动拖拽</small></span>
+            <input
+              type="checkbox"
+              checked={trainer.gyroCalibration.enabled}
+              onchange={(event) => trainer.setGyroEnabled(event.currentTarget.checked)}
+            />
+          </label>
+
+          <div class="gyro-actions">
+            <button class="primary-button" disabled={!trainer.gyroQuaternion} onclick={() => trainer.zeroGyro()}>
+              当前姿态设为正面
+            </button>
+            {#each ["X", "Y", "Z"] as axis}
+              <label class="axis-toggle">
+                <input
+                  type="checkbox"
+                  checked={gyroAxisInverted(axis as "X" | "Y" | "Z")}
+                  onchange={(event) => trainer.setGyroInverted(axis as "X" | "Y" | "Z", event.currentTarget.checked)}
+                /> 反转 {axis} 轴
+              </label>
+            {/each}
+          </div>
+
+          <div class="gyro-offsets">
+            {#each ["X", "Y", "Z"] as axis}
+              <label>
+                <span>{axis} 轴微调 <strong>{gyroAxisOffset(axis as "X" | "Y" | "Z")}°</strong></span>
+                <input
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value={gyroAxisOffset(axis as "X" | "Y" | "Z")}
+                  oninput={(event) => trainer.setGyroOffset(axis as "X" | "Y" | "Z", Number(event.currentTarget.value))}
+                />
+              </label>
+            {/each}
+          </div>
+
+          <div class="protocol-debug">
+            <article><span>最后动作</span><strong>{trainer.lastMove ?? "—"}</strong></article>
+            <article><span>Move counter</span><strong>{trainer.cubeSequence ?? "—"}</strong></article>
+            <article><span>Quaternion</span><code>{trainer.gyroQuaternion ? `${trainer.gyroQuaternion.x.toFixed(3)}, ${trainer.gyroQuaternion.y.toFixed(3)}, ${trainer.gyroQuaternion.z.toFixed(3)}, ${trainer.gyroQuaternion.w.toFixed(3)}` : "等待 0xEC"}</code></article>
+            <article><span>Angular velocity</span><code>{trainer.gyroVelocity ? `${trainer.gyroVelocity.x}, ${trainer.gyroVelocity.y}, ${trainer.gyroVelocity.z}` : "—"}</code></article>
+          </div>
+        </div>
       </section>
     {/if}
   </main>
@@ -767,6 +859,31 @@
   .guide-next { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; }
   .guide-next span { color: var(--color-text-muted); font-size: 0.74rem; }
   .guide-next strong { font: 750 1.45rem "SFMono-Regular", Consolas, monospace; }
+  .demo-player {
+    display: grid;
+    grid-template-columns: 40px minmax(96px, 1fr) 40px auto;
+    gap: 8px;
+    align-items: center;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--color-outline-soft);
+  }
+  .demo-player button { min-height: 40px; }
+  .demo-player .icon-button { border: 1px solid var(--color-outline-soft); background: var(--color-surface-high); }
+  .demo-player .icon-button:disabled { cursor: default; opacity: 0.34; }
+  .player-toggle,
+  .player-reset {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 11px;
+    color: var(--color-text);
+    background: var(--color-surface-high);
+  }
+  .player-toggle { color: var(--color-on-primary); border-color: var(--color-primary); background: var(--color-primary); }
+  .player-reset { padding-inline: 12px; color: var(--color-text-muted); }
 
   .metrics-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .metric-card { display: grid; gap: 4px; min-height: 112px; padding: 14px; border-radius: 18px; }
@@ -814,6 +931,33 @@
     background: var(--color-surface-high);
   }
   .platform-note { display: flex; gap: 8px; margin-top: 12px; color: var(--color-warning); font-size: 0.8rem; }
+  .calibration-panel { display: grid; width: 100%; gap: 16px; margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--color-outline-soft); }
+  .calibration-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+  .calibration-heading h2 { margin: 4px 0 0; }
+  .toggle-row { display: flex !important; grid-template-columns: none !important; flex-direction: row !important; align-items: center; justify-content: space-between; max-width: none !important; gap: 18px !important; padding: 13px 14px; border-radius: 14px; background: var(--color-surface-high); }
+  .toggle-row > span { display: grid; gap: 3px; }
+  .toggle-row strong { color: var(--color-text); }
+  .toggle-row small { color: var(--color-text-muted); }
+  .toggle-row input { width: 20px; height: 20px; accent-color: var(--color-primary-strong); }
+  .face-color-grid { display: grid; grid-template-columns: repeat(6, minmax(72px, 1fr)); gap: 8px; width: 100%; }
+  .face-color-grid label { display: grid; min-width: 0; gap: 6px; }
+  .face-color-grid select { min-height: 38px; }
+  .face-chip { display: grid; height: 44px; place-items: center; border: 3px solid var(--color-cube-frame); border-radius: 9px; color: rgb(0 0 0 / 0.58); font-weight: 850; }
+  .sticker-white { background: var(--cube-white); } .sticker-yellow { background: var(--cube-yellow); }
+  .sticker-red { background: var(--cube-red); } .sticker-orange { background: var(--cube-orange); }
+  .sticker-blue { background: var(--cube-blue); } .sticker-green { background: var(--cube-green); }
+  .gyro-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .axis-toggle { display: inline-flex !important; width: auto !important; align-items: center; gap: 6px !important; }
+  .axis-toggle input { accent-color: var(--color-primary-strong); }
+  .gyro-offsets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: 100%; }
+  .gyro-offsets label { display: grid; gap: 7px; }
+  .gyro-offsets label span { display: flex; justify-content: space-between; }
+  .gyro-offsets input { width: 100%; accent-color: var(--color-primary-strong); }
+  .protocol-debug { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  .protocol-debug article { display: grid; gap: 5px; min-width: 0; padding: 12px; border: 1px solid var(--color-outline-soft); border-radius: 13px; background: var(--color-surface-high); }
+  .protocol-debug span { color: var(--color-text-muted); font-size: 0.68rem; }
+  .protocol-debug strong { font-size: 1.1rem; }
+  .protocol-debug code { overflow: hidden; color: var(--color-info); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
 
   .bottom-navigation { display: none; }
 
@@ -979,6 +1123,10 @@
       border-radius: 24px 24px 0 0;
     }
     .device-dialog-actions > button { flex: 1; }
+    .calibration-heading { align-items: start; flex-direction: column; }
+    .face-color-grid { grid-template-columns: repeat(3, 1fr); }
+    .gyro-offsets { grid-template-columns: 1fr; }
+    .protocol-debug { grid-template-columns: 1fr; }
     .training-layout { gap: 10px; }
     .workspace-card { border-radius: 20px; }
     .cube-workspace { padding: 14px 10px; }
@@ -990,6 +1138,8 @@
     .secondary-button { min-height: 50px; }
     .guide-card,
     .architecture-card { padding: 15px; }
+    .demo-player { grid-template-columns: 40px minmax(88px, 1fr) 40px; }
+    .player-reset { grid-column: 1 / -1; }
     .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .metric-card { min-height: 104px; }
     .bottom-navigation {

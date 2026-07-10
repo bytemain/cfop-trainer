@@ -21,6 +21,12 @@ export interface GanV4BatteryPacket {
   level: number;
 }
 
+export interface GanV4GyroPacket {
+  type: "gyro";
+  quaternion: { x: number; y: number; z: number; w: number };
+  velocity: { x: number; y: number; z: number };
+}
+
 export interface GanV4HardwarePacket {
   type: "hardware";
   mode: number;
@@ -42,6 +48,7 @@ export type GanV4Packet =
   | GanV4MovePacket
   | GanV4SnapshotPacket
   | GanV4BatteryPacket
+  | GanV4GyroPacket
   | GanV4HardwarePacket
   | GanV4MoveHistoryPacket
   | GanV4UnknownPacket;
@@ -62,6 +69,10 @@ function readUint16LE(data: Uint8Array, offset: number): number {
 function readUint32LE(data: Uint8Array, offset: number): number {
   return (data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) |
     (data[offset + 3] << 24)) >>> 0;
+}
+
+function decodeSignedMagnitude(value: number, magnitudeMask: number, signBit: number): number {
+  return (1 - ((value >> signBit) & 1) * 2) * (value & magnitudeMask) / magnitudeMask;
 }
 
 function parseSnapshot(data: Uint8Array): GanV4SnapshotPacket {
@@ -115,6 +126,30 @@ export function parseGanV4Packet(data: Uint8Array): GanV4Packet {
   }
 
   if (mode === 0xed) return parseSnapshot(data);
+
+  if (mode === 0xec) {
+    const qw = readBits(data, 16, 16);
+    const qx = readBits(data, 32, 16);
+    const qy = readBits(data, 48, 16);
+    const qz = readBits(data, 64, 16);
+    const vx = readBits(data, 80, 4);
+    const vy = readBits(data, 84, 4);
+    const vz = readBits(data, 88, 4);
+    return {
+      type: "gyro",
+      quaternion: {
+        x: decodeSignedMagnitude(qx, 0x7fff, 15),
+        y: decodeSignedMagnitude(qy, 0x7fff, 15),
+        z: decodeSignedMagnitude(qz, 0x7fff, 15),
+        w: decodeSignedMagnitude(qw, 0x7fff, 15),
+      },
+      velocity: {
+        x: decodeSignedMagnitude(vx, 0x7, 3) * 7,
+        y: decodeSignedMagnitude(vy, 0x7, 3) * 7,
+        z: decodeSignedMagnitude(vz, 0x7, 3) * 7,
+      },
+    };
+  }
 
   if (mode === 0xd1) {
     const startSequence = data[2];

@@ -73,6 +73,25 @@ describe("GAN V4 packet parser", () => {
     expect(parseGanV4Packet(battery)).toEqual({ type: "battery", level: 87 });
   });
 
+  it("decodes GAN V4 orientation and angular velocity telemetry", () => {
+    const gyro = new Uint8Array(20);
+    gyro.set([0xec, 0x0a]);
+    setBits(gyro, 16, 16, 0x7fff);
+    setBits(gyro, 32, 16, 0x4000);
+    setBits(gyro, 48, 16, 0xc000);
+    setBits(gyro, 64, 16, 0x0000);
+    setBits(gyro, 80, 4, 0x3);
+    setBits(gyro, 84, 4, 0xa);
+    setBits(gyro, 88, 4, 0x0);
+    const packet = parseGanV4Packet(gyro);
+    expect(packet.type).toBe("gyro");
+    if (packet.type !== "gyro") return;
+    expect(packet.quaternion.w).toBeCloseTo(1, 4);
+    expect(packet.quaternion.x).toBeCloseTo(0.5, 3);
+    expect(packet.quaternion.y).toBeCloseTo(-0.5, 3);
+    expect(packet.velocity).toEqual({ x: 3, y: -2, z: 0 });
+  });
+
   it("builds the public V4 request formats and aligns history windows", () => {
     expect([...createGanV4Request("snapshot").slice(0, 4)]).toEqual([0xdd, 0x04, 0, 0xed]);
     expect([...createGanV4Request("battery").slice(0, 4)]).toEqual([0xdd, 0x04, 0, 0xef]);

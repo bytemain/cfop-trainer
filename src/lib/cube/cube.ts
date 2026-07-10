@@ -31,10 +31,10 @@ interface Sticker {
 }
 
 export const SOLVED_COLORS: Record<Face, StickerColor> = {
-  U: "yellow",
+  U: "white",
   R: "red",
   F: "green",
-  D: "white",
+  D: "yellow",
   L: "orange",
   B: "blue",
 };
@@ -45,16 +45,10 @@ export function createSolvedCube(): CubeState {
   ) as CubeState;
 }
 
-const FACELET_COLORS: Record<Face, StickerColor> = {
-  U: "yellow",
-  R: "red",
-  F: "green",
-  D: "white",
-  L: "orange",
-  B: "blue",
-};
-
-export function cubeStateFromFacelets(facelets: string): CubeState {
+export function cubeStateFromFacelets(
+  facelets: string,
+  faceColors: Record<Face, StickerColor> = SOLVED_COLORS,
+): CubeState {
   if (!/^[URFDLB]{54}$/.test(facelets)) {
     throw new Error("Cube snapshot must contain exactly 54 URFDLB facelets");
   }
@@ -69,8 +63,24 @@ export function cubeStateFromFacelets(facelets: string): CubeState {
     FACES.map((face, faceIndex) => [
       face,
       [...facelets.slice(faceIndex * 9, faceIndex * 9 + 9)].map(
-        (facelet) => FACELET_COLORS[facelet as Face],
+        (facelet) => faceColors[facelet as Face],
       ),
+    ]),
+  ) as CubeState;
+}
+
+export function remapCubeColors(
+  state: CubeState,
+  previous: Record<Face, StickerColor>,
+  next: Record<Face, StickerColor>,
+): CubeState {
+  const substitutions = new Map<StickerColor, StickerColor>(
+    FACES.map((face) => [previous[face], next[face]]),
+  );
+  return Object.fromEntries(
+    FACES.map((face) => [
+      face,
+      state[face].map((color) => substitutions.get(color) ?? color),
     ]),
   ) as CubeState;
 }

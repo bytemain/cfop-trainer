@@ -58,26 +58,31 @@ test("renders an accessible connection status", async ({ page }, testInfo) => {
   }
 });
 
-test("supports the complete demo training flow", async ({ page }) => {
-  await page.getByRole("button", { name: "演示连接" }).click();
-  await expect(page.locator(".connection-banner strong")).toHaveText("已连接并同步");
-
+test("generates one scramble and controls its demo from the sequence player", async ({ page }) => {
   const primary = page.locator(".primary-button");
-  await expect(primary).toContainText("准备演示打乱");
+  await expect(primary).toContainText("生成打乱");
   await primary.click();
+  await expect(primary).toContainText("生成新打乱");
 
-  for (let index = 0; index < 8; index += 1) {
-    await expect(primary).toContainText("执行");
-    await primary.click();
-  }
-  await expect(page.locator(".timer-wrap .eyebrow")).toHaveText("等待第一步");
+  const algorithm = page.getByLabel("打乱公式");
+  await expect(algorithm.locator("span")).toHaveCount(20);
+  const player = page.getByLabel("打乱演示播放器");
+  const next = player.getByRole("button", { name: "下一步" });
+  const previous = player.getByRole("button", { name: "上一步" });
 
-  for (let index = 0; index < 8; index += 1) {
-    await expect(primary).toContainText("还原");
-    await primary.click();
-  }
-  await expect(page.locator(".timer-wrap .eyebrow")).toHaveText("本次完成");
-  await expect(page.getByText("0 moves")).not.toBeVisible();
+  await expect(previous).toBeDisabled();
+  await next.click();
+  await expect(algorithm.locator("span.completed")).toHaveCount(1);
+  await expect(previous).toBeEnabled();
+  await previous.click();
+  await expect(algorithm.locator("span.completed")).toHaveCount(0);
+
+  await player.getByRole("button", { name: "播放演示" }).click();
+  await expect(player.getByRole("button", { name: "暂停演示" })).toBeVisible();
+  await expect(algorithm.locator("span.completed")).not.toHaveCount(0, { timeout: 2_000 });
+  await player.getByRole("button", { name: "暂停演示" }).click();
+  await player.getByRole("button", { name: "复位" }).click();
+  await expect(algorithm.locator("span.completed")).toHaveCount(0);
 });
 
 test("opens device selection in a modal dialog", async ({ page }) => {

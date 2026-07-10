@@ -3,6 +3,7 @@ import type { BleConnection, CubeConnectionState, DiscoveredDevice } from "$lib/
 import { TauriBlecTransport } from "$lib/ble/tauriBlecTransport";
 import {
   applyMove,
+  applyMoves,
   createSolvedCube,
   cubeStateFromFacelets,
   derivePhase,
@@ -10,10 +11,20 @@ import {
   invertAlgorithm,
   isSolved,
   normalizeMove,
+  remapCubeColors,
+  SOLVED_COLORS,
   type CubeState,
+  type Face,
+  type StickerColor,
 } from "$lib/cube/cube";
 import { ganProtocolAdapterFor, registerBuiltInGanProtocols } from "$lib/protocols/gan";
-import type { CubeMoveEvent, SmartCubeSession } from "$lib/protocols/gan/types";
+import type {
+  CubeMoveEvent,
+  CubeOrientationEvent,
+  CubeQuaternion,
+  SmartCubeSession,
+} from "$lib/protocols/gan/types";
+import { DEFAULT_GYRO_CALIBRATION, type GyroCalibration } from "$lib/cube/orientation";
 import { trainingMachine, type TrainingMachineEvent } from "$lib/sessions/trainingMachine";
 import { safeLogger } from "$lib/logging/safeLogger";
 import {
@@ -22,7 +33,24 @@ import {
   type RememberedCubeDevice,
 } from "$lib/data/database";
 
-const DEMO_SCRAMBLE = ["R", "U", "R'", "U'", "F2", "D", "L2", "B'"];
+const SCRAMBLE_FACES = ["U", "R", "F", "D", "L", "B"] as const;
+const SCRAMBLE_SUFFIXES = ["", "'", "2"] as const;
+const SOLVED_FACELETS = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
+
+function generateScramble(length = 20): string[] {
+  const moves: string[] = [];
+  let previousFace: (typeof SCRAMBLE_FACES)[number] | null = null;
+
+  while (moves.length < length) {
+    const face = SCRAMBLE_FACES[Math.floor(Math.random() * SCRAMBLE_FACES.length)];
+    if (face === previousFace) continue;
+    const suffix = SCRAMBLE_SUFFIXES[Math.floor(Math.random() * SCRAMBLE_SUFFIXES.length)];
+    moves.push(`${face}${suffix}`);
+    previousFace = face;
+  }
+
+  return moves;
+}
 
 export const CONNECTION_LABELS: Record<CubeConnectionState, string> = {
   "bluetooth-unavailable": "蓝牙不可用",
@@ -65,6 +93,12 @@ class TrainerStore {
   selectedMode = $state("full_cfop");
   connectedDeviceName = $state<string | null>(null);
   battery = $state<number | null>(null);
+  demoPlaying = $state(false);
+  faceColors = $state({ ...SOLVED_COLORS });
+  gyroCalibration = $state<GyroCalibration>({ ...DEFAULT_GYRO_CALIBRATION });
+  gyroQuaternion = $state<CubeQuaternion | null>(null);
+  gyroVelocity = $state<{ x: number; y: number; z: number } | null>(null);
+  cubeSequence = $state<number | null>(null);
 
   phase = $derived(derivePhase(this.cube));
   facts = $derived(derivePhaseFacts(this.cube));
@@ -73,14 +107,20 @@ class TrainerStore {
   scrambleProgress = $derived(
     this.scramble.length === 0 ? 0 : this.scrambleIndex / this.scramble.length,
   );
+  whiteYellowSwapped = $derived(
+    this.faceColors.U === "yellow" && this.faceColors.D === "white",
+  );
 
   private actor = createActor(trainingMachine);
   private startedAt: number | null = null;
   private completedMs = 0;
   private timerHandle: ReturnType<typeof setInterval> | null = null;
+  private demoPlaybackHandle: ReturnType<typeof setInterval> | null = null;
   private session: SmartCubeSession | null = null;
   private unsubscribeMoves: (() => Promise<void>) | null = null;
+  private unsubscribeOrientation: (() => Promise<void>) | null = null;
   private lastCubeSequence: number | undefined;
+  private connectedDeviceId: string | null = null;
   private initializationPromise: Promise<void> | null = null;
 
   constructor() {
@@ -110,7 +150,7 @@ class TrainerStore {
     await new Promise((resolve) => setTimeout(resolve, 250));
     this.connection = "ready";
     this.connectionMessage = "演示设备已同步。正式成绩必须来自真机协议 adapter。";
-    this.cube = createSolvedCube();
+    this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
   }
 
   async scanRealDevices(): Promise<void> {
@@ -159,6 +199,8 @@ class TrainerStore {
 
     try {
       await this.closeRealSession();
+      this.connectedDeviceId = device.id;
+      this.loadDevicePreferences(device.id);
       const adapter = ganProtocolAdapterFor(device);
       if (!adapter) {
         safeLogger.warn("trainer", "protocol-unsupported", { name: device.name });
@@ -181,9 +223,11 @@ class TrainerStore {
       this.connection = "synchronizing";
       this.connectionMessage = "正在读取完整 54 格状态和 move counter…";
       const snapshot = await this.session.initialSnapshot();
-      this.cube = cubeStateFromFacelets(snapshot.facelets);
+      this.cube = cubeStateFromFacelets(snapshot.facelets, this.faceColors);
       this.lastCubeSequence = snapshot.sequence;
+      this.cubeSequence = snapshot.sequence ?? null;
       this.unsubscribeMoves = await this.session.moves((event) => this.handleRealMove(event));
+      this.unsubscribeOrientation = await this.session.orientation((event) => this.handleOrientation(event));
       this.connectedDeviceName = device.name;
       this.connection = "ready";
       this.connectionMessage = `${device.name} 已通过 GAN V4 加密协议同步。`;
@@ -224,11 +268,11 @@ class TrainerStore {
     }
   }
 
-  prepareDemoScramble(): void {
-    if (this.connection !== "ready") return;
+  prepareScramble(): void {
     this.stopTimer();
-    this.cube = createSolvedCube();
-    this.scramble = [...DEMO_SCRAMBLE];
+    this.stopDemoPlayback();
+    if (!this.session) this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
+    this.scramble = generateScramble();
     this.scrambleIndex = 0;
     this.solveMoves = [];
     this.solveIndex = 0;
@@ -237,6 +281,7 @@ class TrainerStore {
     this.lastMove = null;
     this.eventCount = 0;
     this.hadDesync = false;
+    this.send({ type: "RESET" });
     this.send({ type: "PREPARE" });
   }
 
@@ -250,6 +295,52 @@ class TrainerStore {
       this.solveIndex = 0;
       this.send({ type: "SCRAMBLE_COMPLETE" });
     }
+  }
+
+  toggleDemoPlayback(): void {
+    if (this.session || this.scramble.length === 0) return;
+    if (this.demoPlaying) {
+      this.stopDemoPlayback();
+      return;
+    }
+    if (this.scrambleIndex >= this.scramble.length) this.resetDemoPlayback();
+    this.demoPlaying = true;
+    this.demoPlaybackHandle = setInterval(() => {
+      this.demoStepForward();
+      if (this.scrambleIndex >= this.scramble.length) this.stopDemoPlayback();
+    }, 520);
+  }
+
+  demoStepForward(): void {
+    if (this.session || this.scrambleIndex >= this.scramble.length) return;
+    this.applyNextScrambleMove();
+  }
+
+  demoStepBack(): void {
+    if (this.session || this.scrambleIndex <= 0) return;
+    this.stopDemoPlayback();
+    this.scrambleIndex -= 1;
+    const solved = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
+    this.cube = applyMoves(solved, this.scramble.slice(0, this.scrambleIndex));
+    this.solveMoves = [];
+    this.solveIndex = 0;
+    this.lastMove = this.scramble[this.scrambleIndex - 1] ?? null;
+    this.eventCount = this.scrambleIndex;
+    this.send({ type: "RESET" });
+    this.send({ type: "PREPARE" });
+  }
+
+  resetDemoPlayback(): void {
+    if (this.session) return;
+    this.stopDemoPlayback();
+    this.scrambleIndex = 0;
+    this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
+    this.solveMoves = [];
+    this.solveIndex = 0;
+    this.lastMove = null;
+    this.eventCount = 0;
+    this.send({ type: "RESET" });
+    this.send({ type: "PREPARE" });
   }
 
   applyNextSolveMove(): void {
@@ -286,15 +377,16 @@ class TrainerStore {
     if (this.session) {
       try {
         const snapshot = await this.session.requestSnapshot();
-        this.cube = cubeStateFromFacelets(snapshot.facelets);
+        this.cube = cubeStateFromFacelets(snapshot.facelets, this.faceColors);
         this.lastCubeSequence = snapshot.sequence;
+        this.cubeSequence = snapshot.sequence ?? null;
       } catch (error) {
         this.connection = "degraded";
         this.connectionMessage = `重同步失败：${error instanceof Error ? error.message : String(error)}`;
         return;
       }
     } else {
-      this.cube = createSolvedCube();
+      this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
     }
     this.scramble = [];
     this.scrambleIndex = 0;
@@ -311,7 +403,8 @@ class TrainerStore {
 
   reset(): void {
     this.stopTimer();
-    this.cube = createSolvedCube();
+    this.stopDemoPlayback();
+    if (!this.session) this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
     this.scramble = [];
     this.scrambleIndex = 0;
     this.solveMoves = [];
@@ -321,6 +414,50 @@ class TrainerStore {
     this.eventCount = 0;
     this.hadDesync = false;
     this.send({ type: "RESET" });
+  }
+
+  setWhiteYellowSwapped(swapped: boolean): void {
+    const next = {
+      ...this.faceColors,
+      U: swapped ? "yellow" as const : "white" as const,
+      D: swapped ? "white" as const : "yellow" as const,
+    };
+    this.cube = remapCubeColors(this.cube, this.faceColors, next);
+    this.faceColors = next;
+    this.persistDevicePreferences();
+  }
+
+  setFaceColor(face: Face, color: StickerColor): void {
+    const next = { ...this.faceColors, [face]: color };
+    this.cube = remapCubeColors(this.cube, this.faceColors, next);
+    this.faceColors = next;
+    this.persistDevicePreferences();
+  }
+
+  setGyroEnabled(enabled: boolean): void {
+    this.gyroCalibration = { ...this.gyroCalibration, enabled };
+    this.persistDevicePreferences();
+  }
+
+  zeroGyro(): void {
+    if (!this.gyroQuaternion) return;
+    this.gyroCalibration = { ...this.gyroCalibration, zero: { ...this.gyroQuaternion } };
+    this.persistDevicePreferences();
+  }
+
+  resetGyroCalibration(): void {
+    this.gyroCalibration = { ...DEFAULT_GYRO_CALIBRATION };
+    this.persistDevicePreferences();
+  }
+
+  setGyroOffset(axis: "X" | "Y" | "Z", value: number): void {
+    this.gyroCalibration = { ...this.gyroCalibration, [`offset${axis}`]: value };
+    this.persistDevicePreferences();
+  }
+
+  setGyroInverted(axis: "X" | "Y" | "Z", value: boolean): void {
+    this.gyroCalibration = { ...this.gyroCalibration, [`invert${axis}`]: value };
+    this.persistDevicePreferences();
   }
 
   formatTime(milliseconds = this.elapsedMs): string {
@@ -363,6 +500,7 @@ class TrainerStore {
     }
 
     this.lastCubeSequence = event.sequence;
+    this.cubeSequence = event.sequence;
     const move = normalizeMove(event.move);
     this.applyDomainMove(move);
 
@@ -393,11 +531,48 @@ class TrainerStore {
   private async closeRealSession(): Promise<void> {
     await this.unsubscribeMoves?.().catch(() => undefined);
     this.unsubscribeMoves = null;
+    await this.unsubscribeOrientation?.().catch(() => undefined);
+    this.unsubscribeOrientation = null;
     await this.session?.disconnect().catch(() => undefined);
     this.session = null;
     this.connectedDeviceName = null;
     this.battery = null;
     this.lastCubeSequence = undefined;
+    this.cubeSequence = null;
+    this.gyroQuaternion = null;
+    this.gyroVelocity = null;
+    this.connectedDeviceId = null;
+  }
+
+  private handleOrientation(event: CubeOrientationEvent): void {
+    this.gyroQuaternion = event.quaternion;
+    this.gyroVelocity = event.velocity ?? null;
+  }
+
+  private loadDevicePreferences(deviceId: string): void {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const raw = localStorage.getItem(`cfop-trainer:cube-profile:${deviceId}`);
+      if (!raw) return;
+      const profile = JSON.parse(raw) as {
+        faceColors?: Record<Face, StickerColor>;
+        gyroCalibration?: GyroCalibration;
+      };
+      if (profile.faceColors) this.faceColors = { ...SOLVED_COLORS, ...profile.faceColors };
+      if (profile.gyroCalibration) {
+        this.gyroCalibration = { ...DEFAULT_GYRO_CALIBRATION, ...profile.gyroCalibration };
+      }
+    } catch {
+      // Invalid local calibration is ignored and can be recreated in Settings.
+    }
+  }
+
+  private persistDevicePreferences(): void {
+    if (!this.connectedDeviceId || typeof localStorage === "undefined") return;
+    localStorage.setItem(
+      `cfop-trainer:cube-profile:${this.connectedDeviceId}`,
+      JSON.stringify({ faceColors: this.faceColors, gyroCalibration: this.gyroCalibration }),
+    );
   }
 
   private async autoReconnectRememberedDevice(): Promise<void> {
@@ -471,6 +646,12 @@ class TrainerStore {
     if (this.timerHandle !== null) clearInterval(this.timerHandle);
     this.timerHandle = null;
     this.startedAt = null;
+  }
+
+  private stopDemoPlayback(): void {
+    if (this.demoPlaybackHandle !== null) clearInterval(this.demoPlaybackHandle);
+    this.demoPlaying = false;
+    this.demoPlaybackHandle = null;
   }
 }
 

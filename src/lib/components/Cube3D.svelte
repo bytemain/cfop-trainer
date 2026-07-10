@@ -1,7 +1,14 @@
 <script lang="ts">
   import { FACES, type CubeState, type Face } from "$lib/cube/cube";
+  import { gyroCssTransform, type GyroCalibration } from "$lib/cube/orientation";
+  import type { CubeQuaternion } from "$lib/protocols/gan/types";
 
-  let { cube }: { cube: CubeState } = $props();
+  let {
+    cube,
+    orientation = null,
+    gyroCalibration,
+  }: { cube: CubeState; orientation?: CubeQuaternion | null; gyroCalibration: GyroCalibration } = $props();
+  const gyroTransform = $derived(gyroCssTransform(orientation, gyroCalibration) || "rotateX(0deg)");
 
   let rotationX = $state(-24);
   let rotationY = $state(34);
@@ -76,7 +83,7 @@
     <span
       class="cube-object"
       class:no-transition={dragging}
-      style={`--rotation-x:${rotationX}deg; --rotation-y:${rotationY}deg`}
+      style={`--rotation-x:${rotationX}deg; --rotation-y:${rotationY}deg; --gyro-transform:${gyroTransform}`}
     >
       {#each FACES as face}
         <span class="cube-3d-face face-{face}" style={`--face-transform:${faceTransforms[face]}`}>
@@ -134,7 +141,7 @@
     display: block;
     width: var(--cube-size);
     height: var(--cube-size);
-    transform: rotateX(var(--rotation-x)) rotateY(var(--rotation-y));
+    transform: rotateX(var(--rotation-x)) rotateY(var(--rotation-y)) var(--gyro-transform);
     transform-style: preserve-3d;
     transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
     will-change: transform;
@@ -148,10 +155,10 @@
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     grid-template-rows: repeat(3, 1fr);
-    gap: clamp(4px, 0.65vw, 7px);
-    padding: clamp(7px, 1vw, 11px);
+    gap: clamp(3px, 0.48vw, 5px);
+    padding: clamp(5px, 0.72vw, 8px);
     border: 2px solid #050707;
-    border-radius: 13px;
+    border-radius: 6px;
     background: #090c0c;
     box-shadow:
       inset 0 0 0 2px rgb(255 255 255 / 0.025),
@@ -165,7 +172,7 @@
     display: block;
     min-width: 0;
     border: 1px solid rgb(0 0 0 / 0.28);
-    border-radius: clamp(5px, 0.8vw, 9px);
+    border-radius: clamp(4px, 0.55vw, 7px);
     box-shadow:
       inset 0 2px 2px rgb(255 255 255 / 0.2),
       inset 0 -2px 3px rgb(0 0 0 / 0.12);
