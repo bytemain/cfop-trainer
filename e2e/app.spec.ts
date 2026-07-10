@@ -28,17 +28,16 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
-test("renders an accessible connection status", async ({ page }, testInfo) => {
-  const isMobile = testInfo.project.name === "mobile-chromium";
+test("renders an accessible connection status", async ({ page }) => {
   const topBar = page.locator(".top-app-bar");
   const brand = topBar.locator(".brand strong");
   const status = topBar.locator(".status-pill");
 
   await expect(brand).toHaveText("CFOP Trainer");
   await expect(status).toContainText("未连接");
-  await expect(status).toBeVisible({ visible: !isMobile });
-  await expect(page.locator(".connection-banner strong")).toHaveText("未连接");
-  await expect(page.locator(".connection-banner strong")).toBeVisible();
+  await expect(status).toBeVisible();
+  await expect(topBar.getByRole("button", { name: "未连接" })).toBeVisible();
+  await expect(page.locator(".connection-banner")).toHaveCount(0);
 
   const colors = await page.evaluate(() => {
     const topBarElement = document.querySelector<HTMLElement>(".top-app-bar");
@@ -53,9 +52,7 @@ test("renders an accessible connection status", async ({ page }, testInfo) => {
   });
 
   expect(contrastRatio(colors.brand, colors.background)).toBeGreaterThanOrEqual(4.5);
-  if (!isMobile) {
-    expect(contrastRatio(colors.status, colors.background)).toBeGreaterThanOrEqual(4.5);
-  }
+  expect(contrastRatio(colors.status, colors.background)).toBeGreaterThanOrEqual(4.5);
 });
 
 test("generates one scramble and controls its demo from the sequence player", async ({ page }) => {
@@ -86,7 +83,7 @@ test("generates one scramble and controls its demo from the sequence player", as
 });
 
 test("opens device selection in a modal dialog", async ({ page }) => {
-  await page.getByRole("button", { name: "扫描真机" }).click();
+  await page.locator(".top-app-bar").getByRole("button", { name: "未连接" }).click();
   const dialog = page.getByRole("dialog", { name: "选择蓝牙魔方" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "选择蓝牙魔方" })).toBeVisible();

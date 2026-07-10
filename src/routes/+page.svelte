@@ -69,6 +69,12 @@
           ? "error"
           : "neutral",
   );
+  const connectionLabel = $derived(
+    trainer.connectedDeviceName &&
+      (trainer.connection === "ready" || trainer.connection === "degraded")
+      ? `已连接 ${trainer.connectedDeviceName}`
+      : CONNECTION_LABELS[trainer.connection],
+  );
 
   const sessionLabel = $derived(
     {
@@ -90,6 +96,17 @@
   async function scanForDevices(): Promise<void> {
     deviceDialogOpen = true;
     await trainer.scanRealDevices();
+  }
+
+  function openCubeConnection(): void {
+    if (
+      trainer.connectedDeviceName &&
+      (trainer.connection === "ready" || trainer.connection === "degraded")
+    ) {
+      deviceDialogOpen = true;
+      return;
+    }
+    void scanForDevices();
   }
 
   async function connectSelectedDevice(device: (typeof trainer.devices)[number]): Promise<void> {
@@ -156,14 +173,22 @@
     </div>
 
     <div class="top-status">
-      <StatusPill tone={connectionTone}>
-        {#if trainer.connection === "scanning"}
-          <BluetoothSearching size={15} />
-        {:else}
-          <Bluetooth size={15} />
-        {/if}
-        {CONNECTION_LABELS[trainer.connection]}
-      </StatusPill>
+      <button
+        class="top-connection"
+        aria-label={connectionLabel}
+        title={trainer.connectionMessage}
+        disabled={deviceDialogBusy}
+        onclick={openCubeConnection}
+      >
+        <StatusPill tone={connectionTone}>
+          {#if trainer.connection === "scanning"}
+            <BluetoothSearching size={15} />
+          {:else}
+            <Bluetooth size={15} />
+          {/if}
+          <span>{connectionLabel}</span>
+        </StatusPill>
+      </button>
       <button class="icon-button" aria-label="重置当前训练" onclick={() => trainer.reset()}>
         <RotateCcw size={18} />
       </button>
@@ -191,31 +216,6 @@
 
   <main class="content">
     {#if activeSection === "train"}
-      <section class="connection-banner tone-{connectionTone}">
-        <div class="banner-icon">
-          {#if trainer.connection === "degraded"}
-            <ShieldAlert size={21} />
-          {:else if connectionTone === "error"}
-            <CircleAlert size={21} />
-          {:else}
-            <Radio size={21} />
-          {/if}
-        </div>
-        <div>
-          <strong>{CONNECTION_LABELS[trainer.connection]}</strong>
-          <p>{trainer.connectionMessage}</p>
-        </div>
-        <div class="banner-actions">
-          <button
-            class="text-button"
-            disabled={deviceDialogBusy}
-            onclick={() => void scanForDevices()}
-          >
-            <BluetoothSearching size={17} /> 扫描真机
-          </button>
-        </div>
-      </section>
-
       <div class="training-layout">
         <section class="workspace-card cube-workspace">
           <div class="section-heading">
@@ -273,7 +273,6 @@
                 <span class="eyebrow">动作引导</span>
                 <h2>打乱序列</h2>
               </div>
-              <StatusPill tone="info">{trainer.connectedDeviceName ? "GAN V4 真机" : "演示播放器"}</StatusPill>
             </div>
 
             {#if trainer.scramble.length === 0}
@@ -558,7 +557,7 @@
                 <span class="device-dialog-icon"><Bluetooth size={19} /></span>
                 <span class="device-dialog-copy">
                   <strong>{device.name}</strong>
-                  <small>GAN V4 · RSSI {device.rssi ?? "—"}</small>
+                  <small>信号强度 {device.rssi ?? "—"} dBm</small>
                 </span>
                 <StatusPill tone={trainer.connectedDeviceName === device.name ? "success" : "info"}>
                   {trainer.connectedDeviceName === device.name
@@ -617,7 +616,6 @@
 
   .brand,
   .top-status,
-  .banner-actions,
   .primary-actions,
   .timer-meta {
     display: flex;
@@ -638,6 +636,20 @@
   .brand strong { color: var(--color-on-top-bar); font-size: 0.95rem; letter-spacing: -0.02em; }
   .brand span:last-child { color: var(--color-on-top-bar-muted); font-size: 0.68rem; }
   .top-status { gap: 9px; }
+  .top-connection {
+    min-width: 0;
+    padding: 0;
+    border-radius: 999px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .top-connection:disabled { cursor: wait; }
+  .top-connection :global(.status-pill) { max-width: min(42vw, 360px); }
+  .top-connection :global(.status-pill span) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .top-app-bar :global(.status-pill) {
     color: var(--color-on-top-bar-muted);
     border-color: rgb(244 247 246 / 0.42);
@@ -707,35 +719,6 @@
     margin: 0 auto;
     padding: 20px 24px 34px;
   }
-
-  .connection-banner {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 13px;
-    min-height: 66px;
-    margin-bottom: 18px;
-    padding: 11px 14px;
-    border: 1px solid var(--color-outline-soft);
-    border-radius: 18px;
-    background: var(--color-surface);
-  }
-  .connection-banner.tone-warning { border-color: rgb(241 201 111 / 0.42); }
-  .connection-banner.tone-error { border-color: rgb(255 180 171 / 0.38); }
-  .banner-icon {
-    display: grid;
-    width: 40px;
-    height: 40px;
-    place-items: center;
-    border-radius: 12px;
-    color: var(--color-primary);
-    background: rgb(135 232 188 / 0.09);
-  }
-  .tone-warning .banner-icon { color: var(--color-warning); background: rgb(241 201 111 / 0.09); }
-  .tone-error .banner-icon { color: var(--color-error); background: rgb(255 180 171 / 0.09); }
-  .connection-banner strong { font-size: 0.86rem; }
-  .connection-banner p { margin: 3px 0 0; color: var(--color-text-muted); font-size: 0.77rem; line-height: 1.4; }
-  .banner-actions { gap: 6px; }
 
   .text-button,
   .secondary-button,
@@ -1093,8 +1076,6 @@
     .top-app-bar { padding: 0 14px; }
     .navigation-rail { top: 64px; height: calc(100vh - 64px); padding-inline: 7px; }
     .content { padding: 14px 14px 28px; }
-    .connection-banner { grid-template-columns: auto minmax(0, 1fr); }
-    .banner-actions { grid-column: 2; }
     .insight-column { grid-template-columns: 1fr; }
     .cube-workspace { min-height: auto; }
   }
@@ -1102,19 +1083,10 @@
   @media (max-width: 599px) {
     .app-shell { display: block; padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
     .top-app-bar { height: 58px; padding-top: env(safe-area-inset-top); }
-    .brand span:last-child,
-    .top-status > :global(.status-pill) { display: none; }
+    .brand > div { display: none; }
+    .top-connection :global(.status-pill) { max-width: min(58vw, 220px); }
     .navigation-rail { display: none; }
     .content { padding: 10px 10px 22px; }
-    .connection-banner {
-      grid-template-columns: auto minmax(0, 1fr);
-      gap: 9px;
-      margin-bottom: 10px;
-      border-radius: 17px;
-    }
-    .connection-banner p { font-size: 0.7rem; }
-    .banner-actions { grid-column: 1 / -1; justify-content: stretch; }
-    .banner-actions .text-button { flex: 1; min-height: 42px; }
     .device-dialog-backdrop { align-items: end; padding: 0; }
     .device-dialog {
       width: 100%;

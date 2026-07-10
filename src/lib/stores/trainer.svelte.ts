@@ -61,7 +61,7 @@ export const CONNECTION_LABELS: Record<CubeConnectionState, string> = {
   "discovering-services": "正在发现服务",
   authenticating: "正在识别协议",
   synchronizing: "正在同步状态",
-  ready: "已连接并同步",
+  ready: "已连接",
   degraded: "连接降级",
   reconnecting: "正在重连",
   disconnected: "连接已断开",
@@ -230,7 +230,7 @@ class TrainerStore {
       this.unsubscribeOrientation = await this.session.orientation((event) => this.handleOrientation(event));
       this.connectedDeviceName = device.name;
       this.connection = "ready";
-      this.connectionMessage = `${device.name} 已通过 GAN V4 加密协议同步。`;
+      this.connectionMessage = `${device.name} 已连接。`;
       safeLogger.info("trainer", "device-ready", {
         name: device.name,
         protocol: adapter.version,
@@ -397,8 +397,8 @@ class TrainerStore {
     this.send({ type: "RESYNC" });
     this.connection = "ready";
     this.connectionMessage = this.session
-      ? "已通过 GAN V4 完整 snapshot 恢复实时魔方状态。"
-      : "已通过完整 snapshot 恢复到演示 solved 状态。";
+      ? "魔方状态已重新同步。"
+      : "演示状态已复位。";
   }
 
   reset(): void {
