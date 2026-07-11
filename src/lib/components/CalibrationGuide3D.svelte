@@ -102,7 +102,7 @@
       <span><b class="swatch face-{guideFront}"></b>{colorLabels[guideFront]}色中心朝向你</span>
     {:else}
       <span><b class="swatch face-{guideFront}"></b>先让{colorLabels[guideFront]}色中心正对你</span>
-      <span class="axis-caption">沿 {axisPair} 中心轴，像转方向盘一样转整颗</span>
+      <span class="axis-caption">{axisPair} 轴指向你（垂直屏幕），像转方向盘一样转整颗</span>
       <strong class="layer-warning">✕ 不要只拧{colorLabels[guideFront]}色这一层</strong>
     {/if}
   </div>

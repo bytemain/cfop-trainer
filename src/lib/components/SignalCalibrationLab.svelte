@@ -117,6 +117,8 @@
   let dynamicLayerMoves = $state<string[]>([]);
   let dynamicStartedAt = $state<number | null>(null);
   let liveOrientationRows = $state<LiveOrientationRow[]>([]);
+  let diagnosticJson = $state("");
+  let diagnosticCopyStatus = $state("");
   let lastLivePanelAt = 0;
   let lastOrientationSerial = -1;
   let lastMoveSerial = -1;
@@ -410,16 +412,14 @@
   }
 
   async function copyProfile(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(serializeSignalCalibrationProfile(buildProfile(renderConfirmed)));
-      message = "标定 JSON 已复制。回到 Codex 对话直接粘贴即可。";
-    } catch (error) {
-      message = `复制失败：${error instanceof Error ? error.message : String(error)}。请使用文件导出。`;
-    }
+    const copied = await copyTextReliably(serializeSignalCalibrationProfile(buildProfile(renderConfirmed)));
+    message = copied
+      ? "标定 JSON 已复制。回到 Codex 对话直接粘贴即可。"
+      : "自动复制失败，请使用文件导出。";
   }
 
-  async function copyDiagnosticSnapshot(): Promise<void> {
-    const snapshot = {
+  function createDiagnosticSnapshot(): Record<string, unknown> {
+    return {
       schemaVersion: 1,
       kind: "signal-lab-live-diagnostic",
       protocol,
@@ -439,12 +439,46 @@
       changedByteIndexes,
       observedLayerMoves: dynamicLayerMoves,
     };
+  }
+
+  async function copyTextReliably(value: string): Promise<boolean> {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
-      message = "实时诊断快照已复制，可以直接粘贴到 Codex 对话。";
-    } catch (error) {
-      message = `复制诊断快照失败：${error instanceof Error ? error.message : String(error)}`;
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      textarea.style.pointerEvents = "none";
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      const copied = document.execCommand("copy");
+      textarea.remove();
+      return copied;
     }
+  }
+
+  async function copyDiagnosticSnapshot(): Promise<void> {
+    diagnosticJson = JSON.stringify(createDiagnosticSnapshot(), null, 2);
+    const copied = await copyTextReliably(diagnosticJson);
+    diagnosticCopyStatus = copied
+      ? "已复制到剪贴板，可以直接粘贴给 Codex。"
+      : "自动复制被 WKWebView 拒绝；请在下方文本框按 ⌘A、⌘C，或下载 JSON。";
+  }
+
+  function downloadDiagnosticSnapshot(): void {
+    diagnosticJson = JSON.stringify(createDiagnosticSnapshot(), null, 2);
+    const blob = new Blob([diagnosticJson], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `cube-live-diagnostic-${protocol}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    diagnosticCopyStatus = "诊断 JSON 已下载，可以把文件直接拖进 Codex 对话。";
   }
 
   function goBack(): void {
@@ -519,7 +553,7 @@
         <div class="instruction-icon"><Rotate3D size={34} /></div>
         <span class="stage-label">动态轴 {dynamicIndex + 1}/3</span>
         <h3>{currentDynamic.title}</h3>
-        <p class="instruction">先让目标颜色正对着你的眼睛。开始记录后，像转方向盘一样顺时针转动整颗魔方约 90°；不要拧任何单独一层。</p>
+        <p class="instruction">先让目标颜色正对着你的眼睛，让目标轴沿“你 ↔ 魔方”的前后方向、垂直于屏幕。开始记录后，像转方向盘一样顺时针转动整颗魔方约 90°；不要左右翻滚，也不要拧任何单独一层。</p>
         <CalibrationGuide3D
           mode="dynamic"
           physicalAxis={currentDynamic.physicalAxis}
@@ -672,9 +706,25 @@
         </div>
       </section>
 
-      <button class="copy-diagnostic" onclick={() => void copyDiagnosticSnapshot()}>
-        <ClipboardCopy size={15} /> 复制诊断快照给 Codex
-      </button>
+      <div class="diagnostic-actions">
+        <button class="copy-diagnostic" onclick={() => void copyDiagnosticSnapshot()}>
+          <ClipboardCopy size={15} /> 生成并复制诊断
+        </button>
+        <button class="copy-diagnostic" onclick={downloadDiagnosticSnapshot}>
+          <Download size={15} /> 下载 JSON
+        </button>
+      </div>
+      {#if diagnosticJson}
+        <div class="diagnostic-output">
+          <strong>{diagnosticCopyStatus}</strong>
+          <textarea
+            readonly
+            aria-label="诊断 JSON"
+            value={diagnosticJson}
+            onfocus={(event) => event.currentTarget.select()}
+          ></textarea>
+        </div>
+      {/if}
       <p class="stream-privacy">仅当前页面内存展示 · 不写 JSONL · 不保存原始 packet</p>
     </aside>
     </div>
@@ -785,6 +835,10 @@
   .live-table > div:not(.live-table-head):first-of-type code { color: var(--color-primary); }
   .stream-privacy { margin: 0; color: var(--color-text-muted); font-size: 0.58rem; line-height: 1.5; text-align: center; }
   .copy-diagnostic { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 7px; padding: 0 10px; border: 1px solid var(--color-outline); border-radius: 10px; color: var(--color-primary); background: var(--color-surface-highest); font-size: 0.68rem; font-weight: 750; }
+  .diagnostic-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .diagnostic-output { display: grid; gap: 7px; }
+  .diagnostic-output strong { color: var(--color-warning); font-size: 0.64rem; line-height: 1.45; }
+  .diagnostic-output textarea { width: 100%; min-height: 150px; resize: vertical; padding: 9px; border: 1px solid var(--color-outline); border-radius: 9px; color: var(--color-text); background: #0d1111; font: 0.58rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
   footer { padding: 0 24px 20px; }
   .back { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-muted); background: transparent; }
   @keyframes pulse { 50% { opacity: 0.45; } }
