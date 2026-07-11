@@ -124,9 +124,11 @@
   let lastMoveSerial = -1;
   let lastSignalFrameSerial = -1;
   let recentQuaternions: TimedQuaternionSample[] = [];
+  let diagnosticQuaternions: TimedQuaternionSample[] = [];
   let dynamicVelocities: TimedVelocitySample[] = [];
   let dynamicQuaternions: TimedQuaternionSample[] = [];
   let recentSignalFrames: InMemorySignalFrame[] = [];
+  let diagnosticSignalFrames: InMemorySignalFrame[] = [];
   let staticSignalGroups: InMemorySignalFrame[][] = [];
   let dynamicSignalGroups: Partial<Record<DynamicAxisCapture["physicalAxis"], InMemorySignalFrame[]>> = {};
   let dynamicSignalFrames: InMemorySignalFrame[] = [];
@@ -168,7 +170,9 @@
   );
   const quaternionRanges = $derived.by(() => {
     orientationSerial;
-    const samples = dynamicRecording ? dynamicQuaternions : recentQuaternions;
+    const samples = dynamicRecording && dynamicQuaternions.length > 0
+      ? dynamicQuaternions
+      : diagnosticQuaternions;
     if (samples.length === 0) return null;
     const axes = ["x", "y", "z", "w"] as const;
     return Object.fromEntries(axes.map((axis) => {
@@ -180,7 +184,14 @@
   });
   const changedByteIndexes = $derived.by(() => {
     signalFrameSerial;
-    const frames = dynamicRecording ? dynamicSignalFrames : recentSignalFrames;
+    const sourceFrames = dynamicRecording && dynamicSignalFrames.length > 0
+      ? dynamicSignalFrames
+      : diagnosticSignalFrames;
+    const gyroFrames = sourceFrames.filter((frame) => frame.packetType === "gyro");
+    const referenceLength = gyroFrames[0]?.bytes.length;
+    const frames = referenceLength === undefined
+      ? []
+      : gyroFrames.filter((frame) => frame.bytes.length === referenceLength);
     if (frames.length < 2) return [] as number[];
     const first = frames[0].bytes;
     const length = Math.min(...frames.map((frame) => frame.bytes.length));
@@ -198,6 +209,21 @@
     }
     return recentQuaternionCount / 1.4;
   });
+  const rollingRotationDeg = $derived.by(() => {
+    orientationSerial;
+    const start = diagnosticQuaternions[0]?.quaternion;
+    if (!start) return 0;
+    return diagnosticQuaternions.reduce(
+      (maximum, sample) => Math.max(
+        maximum,
+        quaternionAngularDistanceDeg(start, sample.quaternion),
+      ),
+      0,
+    );
+  });
+  const displayedRotationDeg = $derived(
+    dynamicRecording ? detectedRotationDeg : rollingRotationDeg,
+  );
 
   $effect(() => {
     const serial = orientationSerial;
@@ -206,6 +232,8 @@
     const now = Date.now();
     recentQuaternions.push({ at: now, quaternion: { ...orientation } });
     recentQuaternions = recentQuaternions.filter((sample) => now - sample.at <= 1_400);
+    diagnosticQuaternions.push({ at: now, quaternion: { ...orientation } });
+    diagnosticQuaternions = diagnosticQuaternions.filter((sample) => now - sample.at <= 12_000);
     recentQuaternionCount = recentQuaternions.length;
     if (now - lastLivePanelAt >= 80) {
       lastLivePanelAt = now;
@@ -240,6 +268,8 @@
     };
     recentSignalFrames.push(frame);
     recentSignalFrames = recentSignalFrames.filter((sample) => Date.now() - sample.at <= 1_400);
+    diagnosticSignalFrames.push(frame);
+    diagnosticSignalFrames = diagnosticSignalFrames.filter((sample) => Date.now() - sample.at <= 12_000);
     if (dynamicRecording) dynamicSignalFrames.push(frame);
     if (moveRecording) moveSignalFrames.push(frame);
   });
@@ -286,6 +316,8 @@
     detectedRotationDeg = 0;
     dynamicLayerMoves = [];
     dynamicStartedAt = Date.now();
+    diagnosticJson = "";
+    diagnosticCopyStatus = "";
     dynamicRecording = true;
     message = "正在记录：朝正面看目标颜色，将整颗魔方顺时针转约 90°，然后点击确认。";
   }
@@ -425,13 +457,15 @@
       protocol,
       stage,
       dynamicAxis: currentDynamic?.physicalAxis ?? null,
+      dynamicRecording,
+      diagnosticWindow: dynamicRecording ? "active-recording" : "rolling-12-seconds",
       orientationSerial,
       signalFrameSerial,
       orientationRate: Number(orientationRate.toFixed(2)),
       quaternion: orientation,
       quaternionRanges,
       velocity,
-      detectedRotationDeg: Number(detectedRotationDeg.toFixed(3)),
+      detectedRotationDeg: Number(displayedRotationDeg.toFixed(3)),
       dynamicSampleCount,
       packetType: signalFrame?.packetType ?? null,
       packetLayer: signalFrame?.layer ?? null,
@@ -657,18 +691,18 @@
           <span class="eyebrow">In-memory diagnostics</span>
           <h3>实时协议流</h3>
         </div>
-        <span class="live-indicator"><i></i> LIVE</span>
+        <span class="live-indicator" class:recording={dynamicRecording}><i></i> {dynamicRecording ? "RECORDING" : "IDLE · 12S ROLLING"}</span>
       </div>
 
       <div class="stream-metrics">
         <article><span>Orientation</span><strong>#{orientationSerial}</strong><small>{orientationRate.toFixed(1)} samples/s</small></article>
         <article><span>Signal frame</span><strong>#{signalFrameSerial}</strong><small>{signalFrame?.packetType ?? "—"} · {signalFrame?.bytes.length ?? 0} bytes</small></article>
-        <article><span>最大角位移</span><strong>{detectedRotationDeg.toFixed(2)}°</strong><small>{dynamicRecording ? "本轮记录" : "等待开始"}</small></article>
+        <article><span>最大角位移</span><strong>{displayedRotationDeg.toFixed(2)}°</strong><small>{dynamicRecording ? "本轮记录" : "最近 12 秒"}</small></article>
         <article><span>最后层转</span><strong>{lastMove ?? "—"}</strong><small>{dynamicLayerMoves.length} moves in axis capture</small></article>
       </div>
 
       <section class="stream-block">
-        <div class="stream-block-title"><strong>Quaternion range</strong><span>当前采样窗口</span></div>
+        <div class="stream-block-title"><strong>Quaternion range</strong><span>{dynamicRecording ? "本轮记录" : "最近 12 秒"}</span></div>
         <div class="range-table">
           {#each ["x", "y", "z", "w"] as axis}
             <div>
@@ -812,6 +846,7 @@
   .stream-heading { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
   .stream-heading h3 { margin: 4px 0 0; font-size: 1.05rem; letter-spacing: -0.025em; }
   .live-indicator { display: inline-flex; align-items: center; gap: 6px; color: var(--color-success); font: 800 0.62rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .live-indicator:not(.recording) { color: var(--color-text-muted); }
   .live-indicator i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; animation: pulse 1s infinite; }
   .stream-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
   .stream-metrics article { display: grid; min-width: 0; gap: 3px; padding: 10px; border: 1px solid var(--color-outline-soft); border-radius: 11px; background: var(--color-surface); }
