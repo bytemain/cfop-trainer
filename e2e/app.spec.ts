@@ -177,7 +177,8 @@ test("opens signal calibration as a dedicated page", async ({ page }, testInfo) 
 
   await expect(page).toHaveURL(/\/signal-lab$/);
   await expect(page.getByRole("heading", { name: "先连接蓝牙魔方" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "返回并连接魔方" })).toBeVisible();
+  await page.getByRole("button", { name: "扫描并连接魔方" }).click();
+  await expect(page.getByRole("dialog", { name: "选择蓝牙魔方" })).toBeVisible();
 });
 
 test("uses the correct responsive navigation without horizontal overflow", async ({ page }, testInfo) => {

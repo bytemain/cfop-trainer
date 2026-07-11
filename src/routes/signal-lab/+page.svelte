@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
-  import { ArrowLeft, Bluetooth, Radio } from "lucide-svelte";
+  import { ArrowLeft, Bluetooth, BluetoothSearching, Radio } from "lucide-svelte";
+  import CubeConnectionDialog from "$lib/components/CubeConnectionDialog.svelte";
   import SignalCalibrationLab from "$lib/components/SignalCalibrationLab.svelte";
   import { trainer } from "$lib/stores/trainer.svelte";
+
+  let connectionDialogOpen = $state(false);
 
   const cubePaletteStyle = $derived(
     "--cube-white:" + trainer.stickerPalette.white + ";" +
@@ -47,10 +50,19 @@
       <div class="icon"><Bluetooth size={34} /></div>
       <span>Signal calibration lab</span>
       <h1>先连接蓝牙魔方</h1>
-      <p>信号采集页面已经打开，但当前没有可复用的实体魔方会话。返回训练页连接设备后，再进入采集实验室。</p>
+      <p>信号采集页面已经打开，但当前没有可复用的实体魔方会话。可以直接在这里扫描并连接，成功后会原地进入采集实验室。</p>
       <div class="status"><Radio size={17} /> {trainer.connectionMessage}</div>
-      <button onclick={() => void goto("/")}><ArrowLeft size={18} /> 返回并连接魔方</button>
+      <div class="connection-actions">
+        <button class="connect-button" onclick={() => (connectionDialogOpen = true)}>
+          <BluetoothSearching size={18} /> 扫描并连接魔方
+        </button>
+        <button class="back-button" onclick={() => void goto("/")}><ArrowLeft size={18} /> 返回训练页</button>
+      </div>
     </main>
+  {/if}
+
+  {#if connectionDialogOpen}
+    <CubeConnectionDialog autoScan onclose={() => (connectionDialogOpen = false)} />
   {/if}
 </div>
 
@@ -69,5 +81,8 @@
   h1 { margin: 0; font-size: clamp(2rem, 6vw, 3.6rem); letter-spacing: -0.055em; }
   p { max-width: 560px; margin: 0; color: var(--color-text-muted); line-height: 1.7; }
   .status { display: inline-flex; align-items: center; gap: 8px; margin: 7px 0; padding: 11px 14px; border-radius: 12px; color: var(--color-text-muted); background: var(--color-surface); }
-  button { display: inline-flex; min-height: 46px; align-items: center; gap: 8px; padding: 0 18px; border: 0; border-radius: 12px; color: #06251a; background: var(--color-primary); font: inherit; font-weight: 780; cursor: pointer; }
+  .connection-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+  button { display: inline-flex; min-height: 46px; align-items: center; gap: 8px; padding: 0 18px; border: 0; border-radius: 12px; font: inherit; font-weight: 780; cursor: pointer; }
+  .connect-button { color: #06251a; background: var(--color-primary); }
+  .back-button { color: var(--color-text); background: var(--color-surface); }
 </style>

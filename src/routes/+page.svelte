@@ -15,7 +15,6 @@
     LayoutDashboard,
     Pause,
     Play,
-    Radio,
     ScanSearch,
     RefreshCcw,
     RotateCcw,
@@ -26,12 +25,12 @@
     Smartphone,
     Sparkles,
     TimerReset,
-    X,
   } from "lucide-svelte";
   import Cube3D from "$lib/components/Cube3D.svelte";
   import CubeNet from "$lib/components/CubeNet.svelte";
   import StatusPill from "$lib/components/StatusPill.svelte";
   import TimerDisplay from "$lib/components/TimerDisplay.svelte";
+  import CubeConnectionDialog from "$lib/components/CubeConnectionDialog.svelte";
   import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
   import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
@@ -46,6 +45,7 @@
   let activeSection = $state<Section>("train");
   let cubeView = $state<"2d" | "3d">("2d");
   let deviceDialogOpen = $state(false);
+  let deviceDialogAutoScan = $state(false);
 
   const deviceDialogBusy = $derived(
     ["scanning", "connecting", "authenticating", "synchronizing", "reconnecting"].includes(
@@ -105,27 +105,9 @@
     trainer.prepareScramble();
   }
 
-  async function scanForDevices(): Promise<void> {
-    deviceDialogOpen = true;
-    await trainer.scanRealDevices();
-  }
-
   function openCubeConnection(): void {
-    if (
-      trainer.connectedDeviceName &&
-      (trainer.connection === "ready" || trainer.connection === "degraded")
-    ) {
-      deviceDialogOpen = true;
-      return;
-    }
-    void scanForDevices();
-  }
-
-  async function connectSelectedDevice(device: (typeof trainer.devices)[number]): Promise<void> {
-    await trainer.connectRealDevice(device);
-    if (trainer.connection === "ready" || trainer.connection === "degraded") {
-      deviceDialogOpen = false;
-    }
+    deviceDialogAutoScan = !trainer.connectedDeviceName && !deviceDialogBusy;
+    deviceDialogOpen = true;
   }
 
   function closeDeviceDialog(): void {
@@ -606,88 +588,7 @@
   </nav>
 
   {#if deviceDialogOpen}
-    <div class="device-dialog-backdrop" role="presentation">
-      <div
-        class="device-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="device-dialog-title"
-      >
-        <header class="device-dialog-header">
-          <div>
-            <span class="eyebrow">Bluetooth LE</span>
-            <h2 id="device-dialog-title">选择蓝牙魔方</h2>
-          </div>
-          <button
-            class="dialog-close-button"
-            aria-label="关闭设备选择"
-            disabled={deviceDialogBusy}
-            onclick={closeDeviceDialog}
-          >
-            <X size={19} />
-          </button>
-        </header>
-
-        <div class="device-dialog-status tone-{connectionTone}">
-          {#if trainer.connection === "scanning"}
-            <BluetoothSearching class="spinning" size={21} />
-          {:else if connectionTone === "error"}
-            <CircleAlert size={21} />
-          {:else}
-            <Radio size={21} />
-          {/if}
-          <div>
-            <strong>{CONNECTION_LABELS[trainer.connection]}</strong>
-            <p>{trainer.connectionMessage}</p>
-          </div>
-        </div>
-
-        {#if trainer.connection === "scanning"}
-          <div class="device-dialog-scanning">
-            <span class="scan-radar"><BluetoothSearching size={28} /></span>
-            <strong>正在查找附近的 GAN 魔方</strong>
-            <p>保持魔方唤醒并靠近设备，扫描约需 10 秒。</p>
-          </div>
-        {:else if trainer.devices.length > 0}
-          <div class="device-dialog-list" aria-label="发现的设备">
-            {#each trainer.devices as device}
-              <button
-                disabled={deviceDialogBusy}
-                onclick={() => void connectSelectedDevice(device)}
-              >
-                <span class="device-dialog-icon"><Bluetooth size={19} /></span>
-                <span class="device-dialog-copy">
-                  <strong>{device.name}</strong>
-                  <small>信号强度 {device.rssi ?? "—"} dBm</small>
-                </span>
-                <StatusPill tone={trainer.connectedDeviceName === device.name ? "success" : "info"}>
-                  {trainer.connectedDeviceName === device.name
-                    ? `已连接${trainer.battery === null ? "" : ` · ${trainer.battery}%`}`
-                    : deviceDialogBusy
-                      ? "连接中"
-                      : "连接"}
-                </StatusPill>
-              </button>
-            {/each}
-          </div>
-        {:else}
-          <div class="device-dialog-empty">
-            <BluetoothSearching size={30} />
-            <strong>暂未发现 GAN 魔方</strong>
-            <p>转动魔方使其重新广播，然后再次扫描。</p>
-          </div>
-        {/if}
-
-        <footer class="device-dialog-actions">
-          <button class="secondary-button" disabled={deviceDialogBusy} onclick={closeDeviceDialog}>
-            取消
-          </button>
-          <button class="primary-button" disabled={deviceDialogBusy} onclick={() => void scanForDevices()}>
-            <RefreshCcw size={17} /> 重新扫描
-          </button>
-        </footer>
-      </div>
-    </div>
+    <CubeConnectionDialog autoScan={deviceDialogAutoScan} onclose={closeDeviceDialog} />
   {/if}
 
 </div>
@@ -1116,127 +1017,6 @@
 
   .bottom-navigation { display: none; }
 
-  .device-dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 100;
-    display: grid;
-    place-items: center;
-    padding: 24px;
-    background: rgb(4 10 8 / 0.66);
-    backdrop-filter: blur(12px);
-  }
-  .device-dialog {
-    display: grid;
-    gap: 16px;
-    width: min(540px, 100%);
-    max-height: min(720px, calc(100vh - 48px));
-    overflow: auto;
-    padding: 22px;
-    border: 1px solid var(--color-outline);
-    border-radius: 24px;
-    color: var(--color-text);
-    background: var(--color-surface);
-    box-shadow: 0 32px 100px rgb(0 0 0 / 0.42);
-  }
-  .device-dialog-header,
-  .device-dialog-status,
-  .device-dialog-list > button,
-  .device-dialog-actions {
-    display: flex;
-    align-items: center;
-  }
-  .device-dialog-header { justify-content: space-between; gap: 16px; }
-  .device-dialog-header h2 { margin: 4px 0 0; font-size: 1.35rem; letter-spacing: -0.035em; }
-  .dialog-close-button {
-    display: grid;
-    width: 40px;
-    height: 40px;
-    flex: 0 0 auto;
-    place-items: center;
-    border-radius: 50%;
-    color: var(--color-text-muted);
-    background: var(--color-surface-high);
-    cursor: pointer;
-  }
-  .dialog-close-button:hover { color: var(--color-text); background: var(--color-surface-highest); }
-  .dialog-close-button:disabled { cursor: not-allowed; opacity: 0.42; }
-  .device-dialog-status {
-    gap: 11px;
-    min-height: 66px;
-    padding: 12px 14px;
-    border: 1px solid var(--color-outline-soft);
-    border-radius: 16px;
-    background: var(--color-surface-high);
-  }
-  .device-dialog-status > :global(svg) { flex: 0 0 auto; color: var(--color-primary); }
-  .device-dialog-status.tone-error > :global(svg) { color: var(--color-error); }
-  .device-dialog-status.tone-warning > :global(svg) { color: var(--color-warning); }
-  .device-dialog-status strong { font-size: 0.84rem; }
-  .device-dialog-status p { margin: 3px 0 0; color: var(--color-text-muted); font-size: 0.74rem; line-height: 1.45; }
-  .device-dialog-scanning,
-  .device-dialog-empty {
-    display: grid;
-    min-height: 210px;
-    place-items: center;
-    align-content: center;
-    gap: 8px;
-    padding: 24px;
-    color: var(--color-text-muted);
-    text-align: center;
-  }
-  .device-dialog-scanning strong,
-  .device-dialog-empty strong { color: var(--color-text); }
-  .device-dialog-scanning p,
-  .device-dialog-empty p { max-width: 330px; margin: 0; font-size: 0.76rem; line-height: 1.5; }
-  .scan-radar,
-  .device-dialog-empty > :global(svg) {
-    display: grid;
-    width: 58px;
-    height: 58px;
-    place-items: center;
-    border-radius: 50%;
-    color: var(--color-primary);
-    background: rgb(135 232 188 / 0.1);
-  }
-  .scan-radar { animation: scan-pulse 1.4s ease-in-out infinite; }
-  :global(.spinning) { animation: spin 1.2s linear infinite; }
-  .device-dialog-list { display: grid; gap: 9px; }
-  .device-dialog-list > button {
-    gap: 12px;
-    width: 100%;
-    min-height: 70px;
-    padding: 11px 13px;
-    border: 1px solid var(--color-outline-soft);
-    border-radius: 16px;
-    color: var(--color-text);
-    background: var(--color-surface-high);
-    text-align: left;
-    cursor: pointer;
-  }
-  .device-dialog-list > button:hover { border-color: var(--color-primary); background: var(--color-surface-highest); }
-  .device-dialog-list > button:disabled { cursor: wait; opacity: 0.72; }
-  .device-dialog-icon {
-    display: grid;
-    width: 42px;
-    height: 42px;
-    flex: 0 0 auto;
-    place-items: center;
-    border-radius: 13px;
-    color: var(--color-primary);
-    background: rgb(135 232 188 / 0.09);
-  }
-  .device-dialog-copy { display: grid; min-width: 0; flex: 1; gap: 3px; }
-  .device-dialog-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .device-dialog-copy small { color: var(--color-text-muted); font-size: 0.7rem; }
-  .device-dialog-actions { justify-content: flex-end; gap: 9px; padding-top: 2px; }
-
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes scan-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgb(135 232 188 / 0.18); transform: scale(0.96); }
-    50% { box-shadow: 0 0 0 14px rgb(135 232 188 / 0); transform: scale(1); }
-  }
-
   @media (max-width: 1100px) {
     .training-layout { grid-template-columns: 1fr; }
     .insight-column { grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr); }
@@ -1259,14 +1039,6 @@
     .top-connection :global(.status-pill) { max-width: min(58vw, 220px); }
     .navigation-rail { display: none; }
     .content { padding: 10px 10px 22px; }
-    .device-dialog-backdrop { align-items: end; padding: 0; }
-    .device-dialog {
-      width: 100%;
-      max-height: min(82vh, 720px);
-      padding: 20px 16px calc(18px + env(safe-area-inset-bottom));
-      border-radius: 24px 24px 0 0;
-    }
-    .device-dialog-actions > button { flex: 1; }
     .calibration-heading { align-items: start; flex-direction: column; }
     .state-sync-panel { align-items: stretch; flex-direction: column; }
     .saved-profile-panel { align-items: stretch; flex-direction: column; }
