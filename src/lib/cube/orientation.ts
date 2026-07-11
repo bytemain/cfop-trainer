@@ -90,7 +90,16 @@ export function gyroCssTransform(
   quaternion: CubeQuaternion | null,
   calibration: GyroCalibration,
 ): string {
-  if (!quaternion || !calibration.enabled) return "";
+  const model = gyroModelMatrix(quaternion, calibration);
+  if (!model) return "";
+  return `${matrixCssTransform(model)} rotateX(${calibration.offsetX}deg) rotateY(${calibration.offsetY}deg) rotateZ(${calibration.offsetZ}deg)`;
+}
+
+export function gyroModelMatrix(
+  quaternion: CubeQuaternion | null,
+  calibration: GyroCalibration,
+): number[][] | null {
+  if (!quaternion || !calibration.enabled) return null;
   const current = quaternionMatrix(quaternion);
   // GAN reports world -> cube-body orientation. The cube body uses +X red,
   // +Y blue and +Z white, while the UI model uses +X red, +Y white and
@@ -118,5 +127,5 @@ export function gyroCssTransform(
   const signs = [calibration.invertX ? -1 : 1, calibration.invertY ? -1 : 1, calibration.invertZ ? -1 : 1];
   const inversion = [[signs[0], 0, 0], [0, signs[1], 0], [0, 0, signs[2]]];
   model = matrixMultiply(matrixMultiply(inversion, model), inversion);
-  return `${matrixCssTransform(model)} rotateX(${calibration.offsetX}deg) rotateY(${calibration.offsetY}deg) rotateZ(${calibration.offsetZ}deg)`;
+  return model;
 }

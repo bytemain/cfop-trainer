@@ -12,6 +12,7 @@
   import Cube3D from "$lib/components/Cube3D.svelte";
   import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
   import type { CubeState } from "$lib/cube/cube";
+  import type { Face, StickerColor } from "$lib/cube/cube";
   import type { GyroCalibration } from "$lib/cube/orientation";
   import type {
     CubeQuaternion,
@@ -20,6 +21,7 @@
   } from "$lib/protocols/gan/types";
   import {
     createSignalCalibrationProfile,
+    averageQuaternions,
     quaternionAngularDistanceDeg,
     serializeSignalCalibrationProfile,
     summarizeFrameFieldEvidence,
@@ -34,6 +36,7 @@
     type TimedVelocitySample,
     type InMemorySignalFrame,
   } from "$lib/calibration/signalProfile";
+  import { recognizeCubePose } from "$lib/calibration/poseRecognition";
 
   let {
     deviceModel,
@@ -47,6 +50,7 @@
     signalFrame,
     signalFrameSerial,
     gyroCalibration,
+    faceColors,
     onclose,
     onsave,
     standalone = false,
@@ -62,6 +66,7 @@
     signalFrame: CubeSignalFrameEvent | null;
     signalFrameSerial: number;
     gyroCalibration: GyroCalibration;
+    faceColors: Record<Face, StickerColor>;
     onclose: () => void;
     onsave: (profile: SignalCalibrationProfile) => void;
     standalone?: boolean;
@@ -87,6 +92,9 @@
     { physicalAxis: "white-yellow", positiveFace: "white", title: "绕白—黄轴转动" },
   ];
   const expectedMoves = ["R", "U", "R'", "U'"];
+  const colorLabels: Record<CubeColor, string> = {
+    white: "白色", yellow: "黄色", red: "红色", orange: "橙色", green: "绿色", blue: "蓝色",
+  };
 
   let stage = $state<Stage>("static");
   let staticIndex = $state(0);
@@ -127,6 +135,26 @@
   const currentStatic = $derived(staticSteps[staticIndex]);
   const currentDynamic = $derived(dynamicSteps[dynamicIndex]);
   const moveValidation = $derived(summarizeMoveValidation(expectedMoves, observedMoves));
+  const recognizedStaticPose = $derived.by(() => {
+    orientationSerial;
+    if (recentQuaternions.length < 8) return null;
+    const samples = recentQuaternions.filter((sample) => Date.now() - sample.at <= 1_200);
+    if (samples.length < 8) return null;
+    const average = averageQuaternions(samples.map((sample) => sample.quaternion));
+    const maxDeviation = Math.max(
+      ...samples.map((sample) => quaternionAngularDistanceDeg(sample.quaternion, average)),
+    );
+    if (maxDeviation > 5) return null;
+    return recognizeCubePose(average, gyroCalibration, faceColors);
+  });
+  const staticPoseMatches = $derived(
+    Boolean(
+      currentStatic &&
+      recognizedStaticPose?.confident &&
+      recognizedStaticPose.topColor === currentStatic.top &&
+      recognizedStaticPose.frontColor === currentStatic.front,
+    ),
+  );
 
   $effect(() => {
     const serial = orientationSerial;
@@ -207,6 +235,39 @@
     detectedRotationDeg = 0;
     dynamicRecording = true;
     message = "正在记录：朝正面看目标颜色，将整颗魔方顺时针转约 90°，然后点击确认。";
+  }
+
+  function skipStaticPose(): void {
+    if (staticIndex + 1 >= staticSteps.length) {
+      stage = "dynamic";
+      message = "已跳过剩余静态姿态，开始采集动态旋转轴。";
+    } else {
+      staticIndex += 1;
+      message = "已跳过上一静态姿态；未采集的步骤会降低最终档案置信度。";
+    }
+  }
+
+  function skipAllStaticPoses(): void {
+    stage = "dynamic";
+    dynamicIndex = 0;
+    message = "已跳过全部静态姿态，直接进入动态旋转轴。";
+  }
+
+  function skipDynamicAxis(): void {
+    dynamicRecording = false;
+    if (dynamicIndex + 1 >= dynamicSteps.length) {
+      stage = "moves";
+      message = "已跳过剩余动态轴，进入动作公式验证。";
+    } else {
+      dynamicIndex += 1;
+      message = "已跳过上一动态轴；可以继续采集下一条轴。";
+    }
+  }
+
+  function skipMoveValidation(): void {
+    moveRecording = false;
+    stage = "render";
+    message = "已跳过公式验证；最终档案会保留为未验证状态。";
   }
 
   function confirmDynamicCapture(): void {
@@ -353,9 +414,24 @@
         <p class="instruction">将魔方中心色严格按提示摆放，平放或稳定握持。必须同时对齐“朝上”和“朝前”，保持至少 1 秒。</p>
         <CalibrationGuide3D mode="static" top={currentStatic.top} front={currentStatic.front} />
         <div class="live-samples"><span class:ready={recentQuaternionCount >= 8}></span>最近窗口 {recentQuaternionCount} 个姿态样本</div>
-        <button class="primary" disabled={!orientation || recentQuaternionCount < 8} onclick={confirmStaticPose}>
-          <Check size={18} /> 确认此姿态
-        </button>
+        <div class="pose-recognition" class:matched={staticPoseMatches} class:mismatch={recognizedStaticPose?.confident && !staticPoseMatches}>
+          {#if recognizedStaticPose?.confident}
+            <Check size={16} />
+            <span>
+              {staticPoseMatches ? "姿态正确" : "当前识别"}：
+              {colorLabels[recognizedStaticPose.topColor]}朝上 · {colorLabels[recognizedStaticPose.frontColor]}朝前
+            </span>
+          {:else}
+            <Radio size={16} /> <span>正在自动识别朝上面与朝前面…</span>
+          {/if}
+        </div>
+        <div class="step-actions">
+          <button class="primary" disabled={!orientation || recentQuaternionCount < 8} onclick={confirmStaticPose}>
+            <Check size={18} /> 确认此姿态
+          </button>
+          <button class="secondary" onclick={skipStaticPose}>跳过此姿态</button>
+        </div>
+        <button class="skip-all" onclick={skipAllStaticPoses}>跳过全部静态姿态，直接进入动态轴</button>
       {:else if stage === "dynamic" && currentDynamic}
         <div class="instruction-icon"><Rotate3D size={34} /></div>
         <span class="stage-label">动态轴 {dynamicIndex + 1}/3</span>
@@ -380,9 +456,15 @@
               ? "已经检测到整机旋转，可以继续转到约 90° 后确认"
               : "请按动画转动整颗魔方，至少达到 20°"}
           </small>
-          <button class="primary" disabled={detectedRotationDeg < 20} onclick={confirmDynamicCapture}><Check size={18} /> 完成并识别轴</button>
+          <div class="step-actions">
+            <button class="primary" disabled={detectedRotationDeg < 20} onclick={confirmDynamicCapture}><Check size={18} /> 完成并识别轴</button>
+            <button class="secondary" onclick={skipDynamicAxis}>跳过此轴</button>
+          </div>
         {:else}
-          <button class="primary" disabled={!orientation} onclick={startDynamicCapture}><Radio size={18} /> 开始记录</button>
+          <div class="step-actions">
+            <button class="primary" disabled={!orientation} onclick={startDynamicCapture}><Radio size={18} /> 开始记录</button>
+            <button class="secondary" onclick={skipDynamicAxis}>跳过此轴</button>
+          </div>
         {/if}
       {:else if stage === "moves"}
         <div class="instruction-icon"><Radio size={34} /></div>
@@ -392,9 +474,15 @@
         <p class="instruction">按标准记号执行一次。采集器会比较协议报告的面编号、顺逆时针和顺序。</p>
         <div class="observed"><span>收到</span><code>{observedMoves.join(" ") || "—"}</code></div>
         {#if moveRecording}
-          <button class="primary" onclick={confirmMoves}><Check size={18} /> 完成并验证</button>
+          <div class="step-actions">
+            <button class="primary" onclick={confirmMoves}><Check size={18} /> 完成并验证</button>
+            <button class="secondary" onclick={skipMoveValidation}>跳过公式验证</button>
+          </div>
         {:else}
-          <button class="primary" onclick={startMoveCapture}><Radio size={18} /> 开始记录公式</button>
+          <div class="step-actions">
+            <button class="primary" onclick={startMoveCapture}><Radio size={18} /> 开始记录公式</button>
+            <button class="secondary" onclick={skipMoveValidation}>跳过公式验证</button>
+          </div>
           {#if observedMoves.length > 0 && !moveValidation.matched}
             <button class="secondary" onclick={continueWithMoveMismatch}>保留差异并继续</button>
           {/if}
@@ -475,12 +563,18 @@
   .live-samples { display: flex; align-items: center; gap: 8px; color: var(--color-text-muted); font-size: 0.75rem; }
   .live-samples span { width: 8px; height: 8px; border-radius: 50%; background: var(--color-warning); }
   .live-samples span.ready { background: #50d69c; box-shadow: 0 0 9px #50d69c; }
+  .pose-recognition { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid var(--color-outline); border-radius: 11px; color: var(--color-text-muted); background: var(--color-surface-highest); font-size: 0.72rem; }
+  .pose-recognition.matched { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 42%, transparent); background: color-mix(in srgb, var(--color-success) 8%, var(--color-surface-highest)); }
+  .pose-recognition.mismatch { color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 38%, transparent); }
   button { border: 0; font: inherit; cursor: pointer; }
   button:disabled { cursor: not-allowed; opacity: 0.42; }
   .primary, .secondary { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: 8px; padding: 0 18px; border-radius: 12px; font-weight: 750; }
   .primary { color: #06251a; background: var(--color-primary); }
   .secondary { color: var(--color-text); background: var(--color-surface-highest); }
   .secondary.danger { color: #ff948f; }
+  .step-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; }
+  .skip-all { padding: 5px 8px; color: var(--color-text-muted); background: transparent; font-size: 0.7rem; text-decoration: underline; text-decoration-color: var(--color-outline); text-underline-offset: 4px; }
+  .skip-all:hover { color: var(--color-primary); }
   .recording-card { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; width: min(420px, 100%); padding: 16px; border: 1px solid var(--color-outline); border-radius: 14px; text-align: left; }
   .recording-card > span { width: 10px; height: 10px; border-radius: 50%; background: var(--color-text-muted); }
   .recording-card.recording > span { background: #ff625e; box-shadow: 0 0 0 6px rgb(255 98 94 / 0.12); animation: pulse 1s infinite; }
