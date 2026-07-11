@@ -35,7 +35,10 @@ import {
   rememberCubeDevice,
   type RememberedCubeDevice,
 } from "$lib/data/database";
-import type { SignalCalibrationProfile } from "$lib/calibration/signalProfile";
+import {
+  deriveGyroCalibrationFromSignalProfile,
+  type SignalCalibrationProfile,
+} from "$lib/calibration/signalProfile";
 
 const SCRAMBLE_FACES = ["U", "R", "F", "D", "L", "B"] as const;
 const SCRAMBLE_SUFFIXES = ["", "'", "2"] as const;
@@ -566,6 +569,17 @@ class TrainerStore {
 
   saveSignalCalibrationProfile(profile: SignalCalibrationProfile): void {
     this.signalCalibrationProfile = profile;
+    const derivedCalibration = profile.renderValidation.confirmed
+      ? deriveGyroCalibrationFromSignalProfile(profile)
+      : null;
+    if (derivedCalibration) {
+      this.gyroCalibration = {
+        ...this.gyroCalibration,
+        zero: derivedCalibration.zero,
+        bodyToModel: derivedCalibration.bodyToModel,
+      };
+      this.persistDevicePreferences();
+    }
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(GLOBAL_CUBE_PROFILE_KEY + ":signal-calibration", JSON.stringify(profile));
       if (this.connectedDeviceId) {
@@ -582,6 +596,8 @@ class TrainerStore {
       moveMappingMatched: profile.moveValidation.matched,
       renderConfirmed: profile.renderValidation.confirmed,
       confidence: profile.overallConfidence,
+      gyroMappingApplied: Boolean(derivedCalibration),
+      gyroMappingConfidence: derivedCalibration?.confidence,
     });
   }
 
@@ -711,6 +727,16 @@ class TrainerStore {
         Array.isArray(profile.dynamicAxes)
       ) {
         this.signalCalibrationProfile = profile;
+        const derivedCalibration = profile.renderValidation.confirmed
+          ? deriveGyroCalibrationFromSignalProfile(profile)
+          : null;
+        if (derivedCalibration) {
+          this.gyroCalibration = {
+            ...this.gyroCalibration,
+            zero: derivedCalibration.zero,
+            bodyToModel: derivedCalibration.bodyToModel,
+          };
+        }
       }
     } catch {
       // Invalid or obsolete calibration profiles can be replaced by rerunning the lab.

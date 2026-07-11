@@ -12,7 +12,6 @@
   import Cube3D from "$lib/components/Cube3D.svelte";
   import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
   import type { CubeState } from "$lib/cube/cube";
-  import type { Face, StickerColor } from "$lib/cube/cube";
   import type { GyroCalibration } from "$lib/cube/orientation";
   import type {
     CubeQuaternion,
@@ -21,6 +20,7 @@
   } from "$lib/protocols/gan/types";
   import {
     createSignalCalibrationProfile,
+    deriveGyroCalibrationFromSignalProfile,
     averageQuaternions,
     quaternionAngularDistanceDeg,
     serializeSignalCalibrationProfile,
@@ -36,7 +36,6 @@
     type TimedVelocitySample,
     type InMemorySignalFrame,
   } from "$lib/calibration/signalProfile";
-  import { recognizeCubePose } from "$lib/calibration/poseRecognition";
   import { exportJsonFile } from "$lib/data/jsonExport";
 
   let {
@@ -51,7 +50,6 @@
     signalFrame,
     signalFrameSerial,
     gyroCalibration,
-    faceColors,
     onclose,
     onsave,
     standalone = false,
@@ -67,7 +65,6 @@
     signalFrame: CubeSignalFrameEvent | null;
     signalFrameSerial: number;
     gyroCalibration: GyroCalibration;
-    faceColors: Record<Face, StickerColor>;
     onclose: () => void;
     onsave: (profile: SignalCalibrationProfile) => void;
     standalone?: boolean;
@@ -120,6 +117,7 @@
   let liveOrientationRows = $state<LiveOrientationRow[]>([]);
   let diagnosticJson = $state("");
   let diagnosticCopyStatus = $state("");
+  let manualFormulaReference = $state<CubeQuaternion | null>(null);
   let lastLivePanelAt = 0;
   let lastOrientationSerial = -1;
   let lastMoveSerial = -1;
@@ -149,7 +147,7 @@
   const currentStatic = $derived(staticSteps[staticIndex]);
   const currentDynamic = $derived(dynamicSteps[dynamicIndex]);
   const moveValidation = $derived(summarizeMoveValidation(expectedMoves, observedMoves));
-  const recognizedStaticPose = $derived.by(() => {
+  const stableAverageQuaternion = $derived.by(() => {
     orientationSerial;
     if (recentQuaternions.length < 8) return null;
     const samples = recentQuaternions.filter((sample) => Date.now() - sample.at <= 1_200);
@@ -159,22 +157,34 @@
       ...samples.map((sample) => quaternionAngularDistanceDeg(sample.quaternion, average)),
     );
     if (maxDeviation > 5) return null;
-    return recognizeCubePose(average, gyroCalibration, faceColors);
+    return average;
   });
-  const staticPoseMatches = $derived(
-    Boolean(
-      currentStatic &&
-      recognizedStaticPose?.confident &&
-      recognizedStaticPose.topColor === currentStatic.top &&
-      recognizedStaticPose.frontColor === currentStatic.front,
-    ),
+  const capturedFormulaReference = $derived(
+    staticCaptures.find((capture) => capture.top === "white" && capture.front === "green")?.average ?? null,
+  );
+  const formulaGripReference = $derived(capturedFormulaReference ?? manualFormulaReference);
+  const formulaGripDistanceDeg = $derived(
+    stableAverageQuaternion && formulaGripReference
+      ? quaternionAngularDistanceDeg(stableAverageQuaternion, formulaGripReference)
+      : null,
   );
   const formulaGripMatches = $derived(
-    Boolean(
-      recognizedStaticPose?.confident &&
-      recognizedStaticPose.topColor === "white" &&
-      recognizedStaticPose.frontColor === "green",
-    ),
+    formulaGripDistanceDeg !== null && formulaGripDistanceDeg <= 12,
+  );
+  const derivedGyroCalibration = $derived(
+    deriveGyroCalibrationFromSignalProfile({
+      staticPoses: staticCaptures,
+      dynamicAxes: dynamicCaptures,
+    }),
+  );
+  const previewGyroCalibration = $derived(
+    derivedGyroCalibration
+      ? {
+          ...gyroCalibration,
+          zero: derivedGyroCalibration.zero,
+          bodyToModel: derivedGyroCalibration.bodyToModel,
+        }
+      : gyroCalibration,
   );
   const quaternionRanges = $derived.by(() => {
     orientationSerial;
@@ -401,6 +411,15 @@
     message = "正在记录动作，请完整执行 R U R' U'，随后点击验证。";
   }
 
+  function setCurrentFormulaReference(): void {
+    if (!stableAverageQuaternion) {
+      message = "当前姿态仍在抖动，请稳定握持约 1 秒后再设为公式基准。";
+      return;
+    }
+    manualFormulaReference = { ...stableAverageQuaternion };
+    message = "已将当前白上绿前姿态设为本次公式基准。";
+  }
+
   function confirmMoves(): void {
     moveRecording = false;
     if (!moveValidation.matched) {
@@ -578,15 +597,12 @@
           <button class="primary" disabled={!orientation || recentQuaternionCount < 8} onclick={confirmStaticPose}>
             <Check size={18} /> 确认此姿态
           </button>
-          <div class="pose-recognition" class:matched={staticPoseMatches} class:mismatch={recognizedStaticPose?.confident && !staticPoseMatches}>
-            {#if recognizedStaticPose?.confident}
+          <div class="pose-recognition" class:matched={Boolean(stableAverageQuaternion)}>
+            {#if stableAverageQuaternion}
               <Check size={16} />
-              <span>
-                {staticPoseMatches ? "姿态正确" : "当前识别"}：
-                {colorLabels[recognizedStaticPose.topColor]}朝上 · {colorLabels[recognizedStaticPose.frontColor]}朝前
-              </span>
+              <span>{staticIndex === 0 ? "基准姿态已稳定，可以手动确认" : "当前姿态已稳定，可以手动确认"}</span>
             {:else}
-              <Radio size={16} /> <span>正在自动识别朝上面与朝前面…</span>
+              <Radio size={16} /> <span>{staticIndex === 0 ? "此步用于建立你的握持基准，请按示意摆放并保持稳定…" : "请按示意摆放并保持稳定…"}</span>
             {/if}
           </div>
         </div>
@@ -643,17 +659,25 @@
         <h3>执行公式验证面与方向</h3>
         <p class="instruction">先固定整颗魔方坐标：白色中心朝上，绿色中心朝向你，红色中心自然位于右手侧。整个公式过程中不要改变握姿。</p>
         <CalibrationGuide3D mode="static" top="white" front="green" />
-        <div class="pose-recognition formula-grip" class:matched={formulaGripMatches} class:mismatch={recognizedStaticPose?.confident && !formulaGripMatches}>
-          {#if recognizedStaticPose?.confident}
+        <div class="pose-recognition formula-grip" class:matched={formulaGripMatches} class:mismatch={formulaGripDistanceDeg !== null && !formulaGripMatches}>
+          {#if formulaGripReference && formulaGripDistanceDeg !== null}
             <Check size={16} />
             <span>
-              {formulaGripMatches ? "基准握姿正确" : "当前握姿"}：
-              {colorLabels[recognizedStaticPose.topColor]}朝上 · {colorLabels[recognizedStaticPose.frontColor]}朝前
+              {formulaGripMatches ? "已回到公式基准" : "尚未对齐公式基准"}
+              · 角度偏差 {formulaGripDistanceDeg.toFixed(1)}°
+              · {capturedFormulaReference ? "来自静态姿态 1" : "本次手动设定"}
             </span>
+          {:else if !formulaGripReference}
+            <Radio size={16} /> <span>前面未采集白上绿前参考；摆好后请设为本次公式基准。</span>
           {:else}
-            <Radio size={16} /> <span>正在识别基准握姿，请保持魔方稳定…</span>
+            <Radio size={16} /> <span>正在与前面的白上绿前参考对齐，请保持魔方稳定…</span>
           {/if}
         </div>
+        {#if !capturedFormulaReference}
+          <button class="secondary" disabled={!stableAverageQuaternion} onclick={setCurrentFormulaReference}>
+            将当前白上绿前姿态设为公式基准
+          </button>
+        {/if}
         <div class="algorithm">{#each expectedMoves as move}<strong>{move}</strong>{/each}</div>
         <div class="notation-guide">
           <article><strong>R</strong><span>右侧红色面</span><small>面对红面看，顺时针</small></article>
@@ -684,7 +708,13 @@
         <span class="stage-label">最终验证</span>
         <h3>对照实体魔方确认完整渲染</h3>
         <p class="instruction">逐面转动并整体旋转魔方，确认贴纸位置、动作方向和空间姿态都一致。</p>
-        <div class="cube-preview"><Cube3D {cube} {orientation} {gyroCalibration} /></div>
+        {#if derivedGyroCalibration}
+          <div class="pose-recognition matched">
+            <Check size={16} />
+            <span>已从本次三轴采集实时求出姿态映射 · 置信度 {Math.round(derivedGyroCalibration.confidence * 100)}%</span>
+          </div>
+        {/if}
+        <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} /></div>
         <div class="render-actions">
           <button class="secondary danger" onclick={() => confirmRender(false)}>仍然不一致</button>
           <button class="primary" onclick={() => confirmRender(true)}><Check size={18} /> 完全一致</button>

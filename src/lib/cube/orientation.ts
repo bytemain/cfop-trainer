@@ -3,6 +3,7 @@ import type { CubeQuaternion } from "$lib/protocols/gan/types";
 export interface GyroCalibration {
   enabled: boolean;
   zero: CubeQuaternion | null;
+  bodyToModel: Matrix3 | null;
   offsetX: number;
   offsetY: number;
   offsetZ: number;
@@ -11,9 +12,16 @@ export interface GyroCalibration {
   invertZ: boolean;
 }
 
+export type Matrix3 = [
+  [number, number, number],
+  [number, number, number],
+  [number, number, number],
+];
+
 export const DEFAULT_GYRO_CALIBRATION: GyroCalibration = {
   enabled: true,
   zero: null,
+  bodyToModel: null,
   offsetX: 0,
   offsetY: 0,
   offsetZ: 0,
@@ -101,17 +109,17 @@ export function gyroModelMatrix(
 ): number[][] | null {
   if (!quaternion || !calibration.enabled) return null;
   const current = quaternionMatrix(quaternion);
-  // CubeStation's reordered GAN quaternion is cube-body -> GAN-world. The cube body uses +X red,
-  // +Y blue and +Z white, while the UI model uses +X red, +Y white and
-  // +Z green. GAN's gravity-aligned world frame has -X pointing up.
-  const bodyToModel = [[1, 0, 0], [0, 0, 1], [0, -1, 0]];
-  const ganWorldToUiWorld = [[-1, 0, 0], [0, -1, 0], [0, 0, 1]];
+  // The signal lab derives this signed permutation independently for each
+  // physical cube. Until calibration is complete, retain the protocol's
+  // conservative legacy fallback so gyro rendering remains usable.
+  const bodyToModel = calibration.bodyToModel ?? [[1, 0, 0], [0, 0, 1], [0, -1, 0]];
+  const ganWorldToUiWorld = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
   let model: number[][];
   if (calibration.zero) {
-    // Calibrated body -> current body. At the calibration pose this is identity.
+    // Current body -> calibrated body. At the calibration pose this is identity.
     const relative = matrixMultiply(
-      transpose(quaternionMatrix(calibration.zero)),
-      current,
+      quaternionMatrix(calibration.zero),
+      transpose(current),
     );
     model = matrixMultiply(
       matrixMultiply(bodyToModel, relative),
@@ -120,7 +128,7 @@ export function gyroModelMatrix(
   } else {
     // UI model body -> GAN body -> GAN world -> UI world.
     model = matrixMultiply(
-      matrixMultiply(ganWorldToUiWorld, current),
+      matrixMultiply(ganWorldToUiWorld, transpose(current)),
       transpose(bodyToModel),
     );
   }

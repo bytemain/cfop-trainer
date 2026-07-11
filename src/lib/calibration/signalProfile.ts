@@ -1,4 +1,5 @@
 import type { CubeQuaternion, GanProtocolVersion } from "$lib/protocols/gan/types";
+import type { Matrix3 } from "$lib/cube/orientation";
 
 export type CubeColor = "white" | "yellow" | "red" | "orange" | "green" | "blue";
 export type ProtocolAxis = "x" | "y" | "z";
@@ -82,6 +83,79 @@ export interface SignalCalibrationProfile {
 }
 
 const AXES: ProtocolAxis[] = ["x", "y", "z"];
+const MODEL_VECTOR_FOR_POSITIVE_FACE: Record<CubeColor, [number, number, number]> = {
+  red: [1, 0, 0],
+  orange: [-1, 0, 0],
+  white: [0, 1, 0],
+  yellow: [0, -1, 0],
+  green: [0, 0, 1],
+  blue: [0, 0, -1],
+};
+
+export interface DerivedGyroCalibration {
+  zero: CubeQuaternion;
+  bodyToModel: Matrix3;
+  confidence: number;
+}
+
+/**
+ * Solves protocol-body -> rendered-model axes from the user's three controlled
+ * whole-cube rotations. A signed protocol sample represents the requested
+ * positive physical face, so each observed axis directly supplies one matrix
+ * column. The first white-up/green-front capture is the user's persisted zero.
+ */
+export function deriveGyroCalibrationFromSignalProfile(
+  profile: Pick<SignalCalibrationProfile, "staticPoses" | "dynamicAxes">,
+): DerivedGyroCalibration | null {
+  const zeroCapture = profile.staticPoses.find(
+    (capture) => capture.top === "white" && capture.front === "green",
+  );
+  if (!zeroCapture) return null;
+
+  const requiredPhysicalAxes: DynamicAxisCapture["physicalAxis"][] = [
+    "red-orange",
+    "blue-green",
+    "white-yellow",
+  ];
+  const captures = requiredPhysicalAxes.map((physicalAxis) =>
+    profile.dynamicAxes.find((capture) => capture.physicalAxis === physicalAxis),
+  );
+  if (captures.some((capture) => !capture)) return null;
+  const completeCaptures = captures as DynamicAxisCapture[];
+  if (new Set(completeCaptures.map((capture) => capture.protocolAxis)).size !== 3) return null;
+
+  const columns: Array<[number, number, number] | null> = [null, null, null];
+  for (const capture of completeCaptures) {
+    const physical = MODEL_VECTOR_FOR_POSITIVE_FACE[capture.positiveFace];
+    const column = physical.map((value) => value === 0 ? 0 : value * capture.sign) as [number, number, number];
+    columns[AXES.indexOf(capture.protocolAxis)] = column;
+  }
+  if (columns.some((column) => !column)) return null;
+  const [x, y, z] = columns as [
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+  ];
+  const bodyToModel: Matrix3 = [
+    [x[0], y[0], z[0]],
+    [x[1], y[1], z[1]],
+    [x[2], y[2], z[2]],
+  ];
+  const determinant =
+    bodyToModel[0][0] * (bodyToModel[1][1] * bodyToModel[2][2] - bodyToModel[1][2] * bodyToModel[2][1]) -
+    bodyToModel[0][1] * (bodyToModel[1][0] * bodyToModel[2][2] - bodyToModel[1][2] * bodyToModel[2][0]) +
+    bodyToModel[0][2] * (bodyToModel[1][0] * bodyToModel[2][1] - bodyToModel[1][1] * bodyToModel[2][0]);
+  if (determinant !== 1) return null;
+
+  return {
+    zero: { ...zeroCapture.average },
+    bodyToModel,
+    confidence: Number((
+      (zeroCapture.confidence + completeCaptures.reduce((sum, capture) => sum + capture.confidence, 0)) /
+      (completeCaptures.length + 1)
+    ).toFixed(3)),
+  };
+}
 
 export function normalizeQuaternion(value: CubeQuaternion): CubeQuaternion {
   const length = Math.hypot(value.x, value.y, value.z, value.w) || 1;

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_GYRO_CALIBRATION,
   gyroCssTransform,
-  multiplyQuaternions,
 } from "./orientation";
 
 function matrixValues(transform: string): number[] {
@@ -12,27 +11,37 @@ function matrixValues(transform: string): number[] {
 }
 
 describe("GAN orientation mapping", () => {
-  const yellowUpFixture = {
-    x: 0.042,
-    y: -0.700,
-    z: -0.711,
-    w: -0.047,
+  const whiteUpGreenFrontFixture = {
+    w: -0.5278115896786351,
+    x: -0.07567134227142988,
+    y: 0.018830564884244807,
+    z: 0.8457743100768033,
+  };
+  const yellowUpBlueFrontFixture = {
+    w: -0.07250381914004346,
+    x: 0.843315264867377,
+    y: -0.5272494414657792,
+    z: 0.07463636329429311,
   };
 
-  it("maps the captured yellow-up GAN16 pose to yellow up in the UI", () => {
+  it("maps controlled white/green and yellow/blue captures to a model X half-turn", () => {
     const values = matrixValues(
-      gyroCssTransform(yellowUpFixture, DEFAULT_GYRO_CALIBRATION),
+      gyroCssTransform(yellowUpBlueFrontFixture, {
+        ...DEFAULT_GYRO_CALIBRATION,
+        zero: whiteUpGreenFrontFixture,
+        bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+      }),
     );
-    // The UI model's white normal is +Y, represented by matrix column 2.
-    // With yellow physically up, white must point down in UI world space.
-    expect(values[5]).toBeLessThan(-0.95);
+    expect(values[0]).toBeGreaterThan(0.98);
+    expect(values[5]).toBeLessThan(-0.98);
+    expect(values[10]).toBeLessThan(-0.98);
   });
 
   it("uses the calibration pose as an identity orientation", () => {
     const values = matrixValues(
-      gyroCssTransform(yellowUpFixture, {
+      gyroCssTransform(whiteUpGreenFrontFixture, {
         ...DEFAULT_GYRO_CALIBRATION,
-        zero: yellowUpFixture,
+        zero: whiteUpGreenFrontFixture,
       }),
     );
     expect(values.slice(0, 12)).toEqual([
@@ -42,7 +51,7 @@ describe("GAN orientation mapping", () => {
     ]);
   });
 
-  it("maps the captured red-orange whole-cube turn to the semantic X body axis", () => {
+  it("maps the captured red-orange whole-cube turn to the model X axis", () => {
     const start = {
       x: -0.000946073793755913,
       y: -0.002044740134891812,
@@ -55,12 +64,15 @@ describe("GAN orientation mapping", () => {
       z: -0.3562425611133152,
       w: 0.2522965178380688,
     };
-    const relative = multiplyQuaternions(
-      { x: -start.x, y: -start.y, z: -start.z, w: start.w },
-      end,
+    const values = matrixValues(
+      gyroCssTransform(end, {
+        ...DEFAULT_GYRO_CALIBRATION,
+        zero: start,
+        bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+      }),
     );
-    expect(Math.abs(relative.x)).toBeGreaterThan(0.85);
-    expect(Math.abs(relative.x)).toBeGreaterThan(Math.abs(relative.y) * 5);
-    expect(Math.abs(relative.x)).toBeGreaterThan(Math.abs(relative.z) * 5);
+    expect(values[0]).toBeGreaterThan(0.9);
+    expect(Math.abs(values[1])).toBeLessThan(0.3);
+    expect(Math.abs(values[2])).toBeLessThan(0.4);
   });
 });

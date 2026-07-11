@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   averageQuaternions,
   createSignalCalibrationProfile,
+  deriveGyroCalibrationFromSignalProfile,
   quaternionAngularDistanceDeg,
   serializeSignalCalibrationProfile,
   summarizeDynamicAxis,
@@ -84,6 +85,50 @@ describe("signal calibration profile", () => {
     expect(summarizeMoveValidation(["R", "U", "R'", "U'"], ["r", "u", "r’", "u’"]).matched)
       .toBe(true);
     expect(summarizeMoveValidation(["R"], ["R'"]).matched).toBe(false);
+  });
+
+  it("derives the GAN body mapping and user zero from a complete v4 profile", () => {
+    const zero = {
+      w: -0.5278115896786351,
+      x: -0.07567134227142988,
+      y: 0.018830564884244807,
+      z: 0.8457743100768033,
+    };
+    const derived = deriveGyroCalibrationFromSignalProfile({
+      staticPoses: [{
+        top: "white",
+        front: "green",
+        average: zero,
+        sampleCount: 20,
+        maxAngularDeviationDeg: 0.5,
+        confidence: 0.95,
+      }],
+      dynamicAxes: [
+        { physicalAxis: "red-orange", positiveFace: "red", protocolAxis: "y", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.736, confidence: 0.789, signalSource: "quaternion-delta" },
+        { physicalAxis: "blue-green", positiveFace: "blue", protocolAxis: "x", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.744, confidence: 0.795, signalSource: "quaternion-delta" },
+        { physicalAxis: "white-yellow", positiveFace: "white", protocolAxis: "z", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.682, confidence: 0.746, signalSource: "quaternion-delta" },
+      ],
+    });
+    expect(derived?.zero).toEqual(zero);
+    expect(derived?.bodyToModel).toEqual([
+      [0, -1, 0],
+      [0, 0, -1],
+      [1, 0, 0],
+    ]);
+  });
+
+  it("refuses to persist an ambiguous axis solution", () => {
+    expect(deriveGyroCalibrationFromSignalProfile({
+      staticPoses: [{
+        top: "white", front: "green", average: { x: 0, y: 0, z: 0, w: 1 },
+        sampleCount: 20, maxAngularDeviationDeg: 0, confidence: 1,
+      }],
+      dynamicAxes: [
+        { physicalAxis: "red-orange", positiveFace: "red", protocolAxis: "x", sign: 1, sampleCount: 20, activeSampleCount: 10, dominance: 1, confidence: 1, signalSource: "quaternion-delta" },
+        { physicalAxis: "blue-green", positiveFace: "blue", protocolAxis: "x", sign: 1, sampleCount: 20, activeSampleCount: 10, dominance: 1, confidence: 1, signalSource: "quaternion-delta" },
+        { physicalAxis: "white-yellow", positiveFace: "white", protocolAxis: "z", sign: 1, sampleCount: 20, activeSampleCount: 10, dominance: 1, confidence: 1, signalSource: "quaternion-delta" },
+      ],
+    })).toBeNull();
   });
 
   it("reduces in-memory frames to byte indexes instead of persisted bytes", () => {
