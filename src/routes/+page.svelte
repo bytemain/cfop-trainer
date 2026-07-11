@@ -34,6 +34,7 @@
   import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
   import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
+  import { exportJsonFile } from "$lib/data/jsonExport";
 
   type Section = "train" | "cases" | "history" | "settings";
   const colorOptions: Array<{ value: StickerColor; label: string }> = [
@@ -130,16 +131,13 @@
         : trainer.gyroCalibration.offsetZ;
   }
 
-  function downloadSavedSignalProfile(): void {
+  async function downloadSavedSignalProfile(): Promise<void> {
     const profile = trainer.signalCalibrationProfile;
     if (!profile) return;
-    const blob = new Blob([serializeSignalCalibrationProfile(profile)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `cube-signal-profile-${profile.protocol}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    await exportJsonFile(
+      `cube-signal-profile-${profile.protocol}.json`,
+      serializeSignalCalibrationProfile(profile),
+    );
   }
 
   onMount(() => {
@@ -457,7 +455,7 @@
                 · {trainer.signalCalibrationProfile.dynamicAxes.length}/3 轴
               </small>
             </div>
-            <button class="secondary-button" onclick={downloadSavedSignalProfile}>
+            <button class="secondary-button" onclick={() => void downloadSavedSignalProfile()}>
               <Download size={17} /> 重新导出 JSON
             </button>
           </div>

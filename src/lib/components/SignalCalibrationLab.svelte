@@ -37,6 +37,7 @@
     type InMemorySignalFrame,
   } from "$lib/calibration/signalProfile";
   import { recognizeCubePose } from "$lib/calibration/poseRecognition";
+  import { exportJsonFile } from "$lib/data/jsonExport";
 
   let {
     deviceModel,
@@ -166,6 +167,13 @@
       recognizedStaticPose?.confident &&
       recognizedStaticPose.topColor === currentStatic.top &&
       recognizedStaticPose.frontColor === currentStatic.front,
+    ),
+  );
+  const formulaGripMatches = $derived(
+    Boolean(
+      recognizedStaticPose?.confident &&
+      recognizedStaticPose.topColor === "white" &&
+      recognizedStaticPose.frontColor === "green",
     ),
   );
   const quaternionRanges = $derived.by(() => {
@@ -382,7 +390,11 @@
     }
   }
 
-  function startMoveCapture(): void {
+  function startMoveCapture(force = false): void {
+    if (!force && !formulaGripMatches) {
+      message = "请先把白色中心朝上、绿色中心朝向你，等待基准握姿显示正确后再开始。";
+      return;
+    }
     observedMoves = [];
     moveSignalFrames = [];
     moveRecording = true;
@@ -431,16 +443,17 @@
       : "采集完成，并已标记渲染仍有映射错误。";
   }
 
-  function downloadProfile(): void {
+  async function downloadProfile(): Promise<void> {
     const profile = buildProfile(renderConfirmed);
-    const blob = new Blob([serializeSignalCalibrationProfile(profile)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `cube-signal-profile-${protocol}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    message = "标定 JSON 已下载。把这个文件直接拖进与 Codex 的对话即可。";
+    try {
+      const path = await exportJsonFile(
+        `cube-signal-profile-${protocol}.json`,
+        serializeSignalCalibrationProfile(profile),
+      );
+      message = `标定 JSON 已保存到 ${path}。把这个文件直接拖进 Codex 对话即可。`;
+    } catch (error) {
+      message = `导出标定 JSON 失败：${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   async function copyProfile(): Promise<void> {
@@ -503,16 +516,14 @@
       : "自动复制被 WKWebView 拒绝；请在下方文本框按 ⌘A、⌘C，或下载 JSON。";
   }
 
-  function downloadDiagnosticSnapshot(): void {
+  async function downloadDiagnosticSnapshot(): Promise<void> {
     diagnosticJson = JSON.stringify(createDiagnosticSnapshot(), null, 2);
-    const blob = new Blob([diagnosticJson], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `cube-live-diagnostic-${protocol}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    diagnosticCopyStatus = "诊断 JSON 已下载，可以把文件直接拖进 Codex 对话。";
+    try {
+      const path = await exportJsonFile(`cube-live-diagnostic-${protocol}.json`, diagnosticJson);
+      diagnosticCopyStatus = `诊断 JSON 已保存到 ${path}，可以把文件直接拖进 Codex 对话。`;
+    } catch (error) {
+      diagnosticCopyStatus = `下载诊断 JSON 失败：${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   function goBack(): void {
@@ -630,8 +641,27 @@
         <div class="instruction-icon"><Radio size={34} /></div>
         <span class="stage-label">动作协议</span>
         <h3>执行公式验证面与方向</h3>
+        <p class="instruction">先固定整颗魔方坐标：白色中心朝上，绿色中心朝向你，红色中心自然位于右手侧。整个公式过程中不要改变握姿。</p>
+        <CalibrationGuide3D mode="static" top="white" front="green" />
+        <div class="pose-recognition formula-grip" class:matched={formulaGripMatches} class:mismatch={recognizedStaticPose?.confident && !formulaGripMatches}>
+          {#if recognizedStaticPose?.confident}
+            <Check size={16} />
+            <span>
+              {formulaGripMatches ? "基准握姿正确" : "当前握姿"}：
+              {colorLabels[recognizedStaticPose.topColor]}朝上 · {colorLabels[recognizedStaticPose.frontColor]}朝前
+            </span>
+          {:else}
+            <Radio size={16} /> <span>正在识别基准握姿，请保持魔方稳定…</span>
+          {/if}
+        </div>
         <div class="algorithm">{#each expectedMoves as move}<strong>{move}</strong>{/each}</div>
-        <p class="instruction">按标准记号执行一次。采集器会比较协议报告的面编号、顺逆时针和顺序。</p>
+        <div class="notation-guide">
+          <article><strong>R</strong><span>右侧红色面</span><small>面对红面看，顺时针</small></article>
+          <article><strong>U</strong><span>顶部白色面</span><small>从白面上方看，顺时针</small></article>
+          <article><strong>R'</strong><span>右侧红色面</span><small>面对红面看，逆时针</small></article>
+          <article><strong>U'</strong><span>顶部白色面</span><small>从白面上方看，逆时针</small></article>
+        </div>
+        <p class="instruction">基准握姿正确后再开始。采集器会比较协议报告的面编号、顺逆时针和顺序。</p>
         <div class="observed"><span>收到</span><code>{observedMoves.join(" ") || "—"}</code></div>
         {#if moveRecording}
           <div class="step-actions">
@@ -640,9 +670,12 @@
           </div>
         {:else}
           <div class="step-actions">
-            <button class="primary" onclick={startMoveCapture}><Radio size={18} /> 开始记录公式</button>
+            <button class="primary" disabled={!formulaGripMatches} onclick={() => startMoveCapture()}><Radio size={18} /> 开始记录公式</button>
             <button class="secondary" onclick={skipMoveValidation}>跳过公式验证</button>
           </div>
+          {#if !formulaGripMatches}
+            <button class="skip-all" onclick={() => startMoveCapture(true)}>忽略姿态识别并开始（仅用于协议调试）</button>
+          {/if}
           {#if observedMoves.length > 0 && !moveValidation.matched}
             <button class="secondary" onclick={continueWithMoveMismatch}>保留差异并继续</button>
           {/if}
@@ -676,7 +709,7 @@
           </ol>
         </div>
         <div class="export-actions">
-          <button class="primary" onclick={downloadProfile}><Download size={18} /> 导出并发给 Codex</button>
+          <button class="primary" onclick={() => void downloadProfile()}><Download size={18} /> 导出并发给 Codex</button>
           <button class="secondary" onclick={() => void copyProfile()}><ClipboardCopy size={18} /> 复制标定 JSON</button>
         </div>
         <button class="secondary" onclick={onclose}>完成</button>
@@ -744,7 +777,7 @@
         <button class="copy-diagnostic" onclick={() => void copyDiagnosticSnapshot()}>
           <ClipboardCopy size={15} /> 生成并复制诊断
         </button>
-        <button class="copy-diagnostic" onclick={downloadDiagnosticSnapshot}>
+        <button class="copy-diagnostic" onclick={() => void downloadDiagnosticSnapshot()}>
           <Download size={15} /> 下载 JSON
         </button>
       </div>
@@ -806,6 +839,7 @@
   .pose-recognition { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid var(--color-outline); border-radius: 11px; color: var(--color-text-muted); background: var(--color-surface-highest); font-size: 0.72rem; }
   .pose-recognition.matched { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 42%, transparent); background: color-mix(in srgb, var(--color-success) 8%, var(--color-surface-highest)); }
   .pose-recognition.mismatch { color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 38%, transparent); }
+  .formula-grip { max-width: 100%; }
   button { border: 0; font: inherit; cursor: pointer; }
   button:disabled { cursor: not-allowed; opacity: 0.42; }
   .primary, .secondary { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: 8px; padding: 0 18px; border-radius: 12px; font-weight: 750; }
@@ -827,6 +861,11 @@
   .gyro-still-warning { width: min(520px, 100%); padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent); border-radius: 12px; color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface-highest)); font-size: 0.72rem; line-height: 1.55; }
   .algorithm { display: flex; gap: 9px; padding: 15px 18px; border-radius: 14px; background: var(--color-surface-highest); }
   .algorithm strong { display: grid; min-width: 38px; height: 38px; place-items: center; border-radius: 9px; color: var(--color-primary); background: var(--color-surface); }
+  .notation-guide { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; gap: 7px; }
+  .notation-guide article { display: grid; min-width: 0; gap: 3px; padding: 10px 7px; border: 1px solid var(--color-outline-soft); border-radius: 11px; background: var(--color-surface-highest); }
+  .notation-guide strong { color: var(--color-primary); font-size: 1rem; }
+  .notation-guide span { color: var(--color-text); font-size: 0.68rem; }
+  .notation-guide small { color: var(--color-text-muted); font-size: 0.58rem; line-height: 1.4; }
   .observed { display: grid; grid-template-columns: auto 1fr; gap: 12px; width: min(500px, 100%); padding: 12px 15px; border-radius: 12px; color: var(--color-text-muted); background: var(--color-surface-highest); text-align: left; }
   .observed code { color: var(--color-text); }
   .cube-preview { width: 100%; max-height: 370px; overflow: hidden; border: 1px solid var(--color-outline); border-radius: 18px; background: var(--color-surface-low); }
@@ -890,5 +929,6 @@
     main { padding: 24px 18px; }
     .signal-stream { padding: 18px 12px 24px; }
     .summary-grid { grid-template-columns: repeat(2, 1fr); }
+    .notation-guide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>

@@ -197,6 +197,46 @@ fn write_jsonl_log<R: Runtime>(
 }
 
 #[tauri::command]
+fn save_json_export<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    filename: String,
+    content: String,
+) -> Result<String, String> {
+    if content.len() > 1024 * 1024 {
+        return Err("JSON export exceeds the 1 MiB safety limit".to_owned());
+    }
+    if !filename.ends_with(".json")
+        || filename.is_empty()
+        || !filename
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '.' | '-' | '_'))
+    {
+        return Err("JSON export filename is invalid".to_owned());
+    }
+    let value: Value = serde_json::from_str(&content)
+        .map_err(|error| format!("JSON export content is invalid: {error}"))?;
+    let canonical = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+    let directory = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|error| error.to_string())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+
+    let mut path = directory.join(&filename);
+    if path.exists() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let stem = filename.trim_end_matches(".json");
+        path = directory.join(format!("{stem}-{timestamp}.json"));
+    }
+    fs::write(&path, canonical).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 async fn gan_ble_subscribe<R: Runtime>(
     app: tauri::AppHandle<R>,
     characteristic: String,
@@ -857,6 +897,7 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             write_jsonl_log,
+            save_json_export,
             gan_ble_subscribe,
             ble_backend,
             native_ble_adapter_available,
