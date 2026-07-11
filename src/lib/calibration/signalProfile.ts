@@ -336,7 +336,10 @@ export function summarizeStaticPose(
     throw new Error(`姿态窗口仍在移动（最大偏差 ${maxAngularDeviationDeg.toFixed(1)}°），请稳定后重新确认`);
   }
   const stability = Math.max(0, Math.min(1, 1 - maxAngularDeviationDeg / 8));
-  const coverage = Math.min(1, samples.length / 24);
+  const sampleDurationMs = Math.max(0, samples.at(-1)!.at - samples[0].at);
+  // GAN16 V4 is typically around 11.4 Hz. Confidence follows the actual
+  // stable time span instead of an impossible 24-sample target in 1.2 s.
+  const coverage = Math.min(1, sampleDurationMs / 900);
   return {
     top,
     front,
@@ -478,7 +481,8 @@ function quaternionDeltaCandidates(samples: readonly TimedQuaternionSample[]): A
         ? multiplyRaw(conjugate(previous), current)
         : multiplyRaw(current, conjugate(previous));
       const stepAngle = quaternionAngularDistanceDeg(previous, current);
-      if (stepAngle < 0.08 || stepAngle > 20) continue;
+      const gapMs = samples[index].at - samples[index - 1].at;
+      if (gapMs <= 0 || gapMs > 500 || stepAngle < 0.08 || stepAngle > 75) continue;
       vectors.push({ x: delta.x, y: delta.y, z: delta.z });
     }
     const energy = AXES.map((axis) =>
@@ -521,7 +525,8 @@ export function summarizeCompoundMotionValidation(
     const current = alignedTo(previous, samples[index].quaternion);
     const delta = multiplyRaw(current, conjugate(previous));
     const angle = quaternionAngularDistanceDeg(previous, current);
-    if (angle < 0.05 || angle > 25) continue;
+    const gapMs = samples[index].at - samples[index - 1].at;
+    if (gapMs <= 0 || gapMs > 500 || angle < 0.05 || angle > 75) continue;
     pathRotationDeg += angle;
     energy.x += Math.abs(delta.x);
     energy.y += Math.abs(delta.y);

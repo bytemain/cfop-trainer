@@ -51,11 +51,16 @@
   let poseGroup: Group | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let animationFrame: number | null = null;
+  let poseAnimationFrame: number | null = null;
+  let lastPoseFrameAt = 0;
+  let hasDisplayedPose = false;
   let stickerMeshes: Record<Face, Mesh[]> | null = null;
   let dragging = $state(false);
   let dragLastX = 0;
   let dragLastY = 0;
   const viewQuaternion = new Quaternion();
+  const targetPoseQuaternion = new Quaternion();
+  const displayedPoseQuaternion = new Quaternion();
   const stickerMaterials = new Map<string, MeshStandardMaterial>();
 
   const faceRotations: Record<Face, [number, number, number]> = {
@@ -147,7 +152,7 @@
     if (!poseGroup) return;
     const matrix = gyroModelMatrix(orientation, gyroCalibration);
     if (!matrix) {
-      poseGroup.quaternion.identity();
+      targetPoseQuaternion.identity();
     } else {
       const rotation = new Matrix4().set(
         matrix[0][0], matrix[0][1], matrix[0][2], 0,
@@ -155,12 +160,51 @@
         matrix[2][0], matrix[2][1], matrix[2][2], 0,
         0, 0, 0, 1,
       );
-      poseGroup.quaternion.setFromRotationMatrix(rotation).normalize();
+      targetPoseQuaternion.setFromRotationMatrix(rotation).normalize();
     }
-    poseGroup.rotation.x += gyroCalibration.offsetX * Math.PI / 180;
-    poseGroup.rotation.y += gyroCalibration.offsetY * Math.PI / 180;
-    poseGroup.rotation.z += gyroCalibration.offsetZ * Math.PI / 180;
-    requestRender();
+    const offset = new Quaternion().setFromEuler(new Euler(
+      gyroCalibration.offsetX * Math.PI / 180,
+      gyroCalibration.offsetY * Math.PI / 180,
+      gyroCalibration.offsetZ * Math.PI / 180,
+      "XYZ",
+    ));
+    targetPoseQuaternion.multiply(offset).normalize();
+    if (!hasDisplayedPose) {
+      hasDisplayedPose = true;
+      displayedPoseQuaternion.copy(targetPoseQuaternion);
+      poseGroup.quaternion.copy(displayedPoseQuaternion);
+      requestRender();
+      return;
+    }
+    startPoseSmoothing();
+  }
+
+  function startPoseSmoothing(): void {
+    if (poseAnimationFrame !== null) return;
+    lastPoseFrameAt = performance.now();
+    const animate = (now: number) => {
+      if (!poseGroup || !renderer || !camera) {
+        poseAnimationFrame = null;
+        return;
+      }
+      const elapsed = Math.min(64, Math.max(1, now - lastPoseFrameAt));
+      lastPoseFrameAt = now;
+      // GAN16 is about 11.4 Hz. A short exponential SLERP fills visual frames
+      // without inventing protocol samples or extrapolating through long gaps.
+      const factor = 1 - Math.exp(-elapsed / 45);
+      displayedPoseQuaternion.slerp(targetPoseQuaternion, factor).normalize();
+      poseGroup.quaternion.copy(displayedPoseQuaternion);
+      renderer.render(rendererScene, camera);
+      if (displayedPoseQuaternion.angleTo(targetPoseQuaternion) > 0.0005) {
+        poseAnimationFrame = requestAnimationFrame(animate);
+      } else {
+        displayedPoseQuaternion.copy(targetPoseQuaternion);
+        poseGroup.quaternion.copy(displayedPoseQuaternion);
+        renderer.render(rendererScene, camera);
+        poseAnimationFrame = null;
+      }
+    };
+    poseAnimationFrame = requestAnimationFrame(animate);
   }
 
   function resetView(): void {
@@ -282,6 +326,7 @@
     return () => {
       resizeObserver?.disconnect();
       if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+      if (poseAnimationFrame !== null) cancelAnimationFrame(poseAnimationFrame);
       rendererScene.traverse((object) => {
         if (object instanceof Mesh) {
           object.geometry.dispose();

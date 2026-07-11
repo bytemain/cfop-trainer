@@ -122,6 +122,26 @@ large return error, the failure is temporal IMU/session drift rather than an
 axis mapping problem. The correct remedy is a session anchor or sensor fusion,
 not a larger static correction matrix.
 
+### Sampling and loss compensation
+
+GAN16 V4 orientation notifications are typically about 11.4 Hz. They are
+absolute orientations, so a missing intermediate notification does not require
+host-side angle integration: the next quaternion is still the latest absolute
+pose. Compensation is deliberately split by responsibility:
+
+- **Renderer only**: SLERP from the displayed pose toward the latest canonical
+  pose at the display refresh rate. These visual interpolation frames are never
+  persisted, logged, fitted, or counted as BLE samples.
+- **Calibration**: score static coverage by elapsed stable time rather than an
+  assumed sample count. Accept quaternion steps up to 75° so a fast 90° turn at
+  low notification rate is not discarded. Ignore deltas separated by more than
+  500 ms, because they cross an unobserved gap.
+- **Sticker state**: never interpolate layer moves. Move-counter gaps trigger a
+  full cube snapshot and domain-state resynchronization.
+- **Long gaps**: freeze at the latest absolute orientation. Do not extrapolate
+  indefinitely from estimated angular velocity; GAN16 currently reports zero
+  angular velocity, and runaway prediction is worse than a short visual hold.
+
 ## 5. Renderer boundary
 
 The production 3D renderer is Three.js WebGL. Three.js consumes the canonical

@@ -31,7 +31,7 @@ describe("signal calibration profile", () => {
       "white",
       "green",
       Array.from({ length: 24 }, (_, index) => ({
-        at: index,
+        at: index * 100,
         quaternion: { x: index % 2 ? 0.001 : -0.001, y: 0, z: 0, w: 1 },
       })),
     );
@@ -112,6 +112,25 @@ describe("signal calibration profile", () => {
     expect(capture.protocolAxis).toBe("x");
     expect(capture.sign).toBe(1);
     expect(capture.signalSource).toBe("quaternion-delta");
+    expect(capture.dominance).toBeGreaterThan(0.99);
+  });
+
+  it("keeps fast absolute-orientation deltas instead of dropping valid low-rate motion", () => {
+    const quaternionSamples = [0, 30, 60, 90].map((degrees, index) => ({
+      at: index * 88,
+      quaternion: quaternionFromAxisAngle("z", degrees),
+    }));
+    const capture = summarizeDynamicAxis(
+      "white-yellow",
+      "white",
+      quaternionSamples.map((sample) => ({
+        at: sample.at,
+        velocity: { x: 0, y: 0, z: 0 },
+      })),
+      quaternionSamples,
+    );
+    expect(capture.protocolAxis).toBe("z");
+    expect(capture.activeSampleCount).toBe(3);
     expect(capture.dominance).toBeGreaterThan(0.99);
   });
 
