@@ -72,6 +72,16 @@ struct NativeBleDevice {
     manufacturer_data: HashMap<u16, Vec<u8>>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeBleConnectedDevice {
+    id: String,
+    name: String,
+    rssi: Option<i16>,
+    service_uuids: Vec<String>,
+}
+
 fn rotated_log_path(active: &Path, index: usize) -> PathBuf {
     active.with_file_name(format!("cfop-trainer.{index}.jsonl"))
 }
@@ -359,6 +369,49 @@ async fn native_ble_adapter_available() -> Result<bool, String> {
     ))
 }
 
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn native_ble_connected_device(
+    state: tauri::State<'_, NativeBleState>,
+) -> Result<Option<NativeBleConnectedDevice>, String> {
+    let peripheral = {
+        let inner = state.inner.lock().await;
+        inner.connected.clone()
+    };
+    let Some(peripheral) = peripheral else {
+        return Ok(None);
+    };
+    let connected = timeout(Duration::from_secs(3), peripheral.is_connected())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false);
+    if !connected {
+        return Ok(None);
+    }
+    let properties = peripheral
+        .properties()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Some(NativeBleConnectedDevice {
+        id: peripheral.id().to_string(),
+        name: properties
+            .as_ref()
+            .and_then(|value| value.local_name.clone())
+            .unwrap_or_else(|| "Connected GAN cube".to_owned()),
+        rssi: properties.as_ref().and_then(|value| value.rssi),
+        service_uuids: properties
+            .map(|value| {
+                value
+                    .services
+                    .into_iter()
+                    .map(|uuid| uuid.to_string())
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }))
+}
+
 #[tauri::command]
 fn ble_backend() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -372,6 +425,12 @@ fn ble_backend() -> &'static str {
 #[tauri::command]
 async fn native_ble_adapter_available() -> Result<bool, String> {
     Err("The native desktop BLE backend is only available on macOS".to_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn native_ble_connected_device() -> Result<Option<Value>, String> {
+    Ok(None)
 }
 
 #[cfg(target_os = "macos")]
@@ -523,6 +582,28 @@ async fn native_ble_connect<R: Runtime>(
     name: String,
 ) -> Result<(), String> {
     let _operation = state.operation.lock().await;
+    let retained = {
+        let inner = state.inner.lock().await;
+        inner.connected.clone()
+    };
+    if let Some(retained) = retained {
+        let same_device = retained.id().to_string() == id;
+        let still_connected = timeout(Duration::from_secs(3), retained.is_connected())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false);
+        if same_device && still_connected {
+            write_native_jsonl(
+                &app,
+                "info",
+                "ble-native",
+                "connect-reused",
+                serde_json::json!({ "name": name }),
+            );
+            return Ok(());
+        }
+    }
     let (previous, peripheral) = {
         let mut inner = state.inner.lock().await;
         if let Some(task) = inner.notification_task.take() {
@@ -901,6 +982,7 @@ pub fn run() {
             gan_ble_subscribe,
             ble_backend,
             native_ble_adapter_available,
+            native_ble_connected_device,
             native_ble_scan,
             native_ble_connect,
             native_ble_read,

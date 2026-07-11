@@ -11,7 +11,7 @@
   } from "lucide-svelte";
   import Cube3D from "$lib/components/Cube3D.svelte";
   import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
-  import type { CubeState } from "$lib/cube/cube";
+  import type { CubeState, StickerPalette } from "$lib/cube/cube";
   import type { GyroCalibration } from "$lib/cube/orientation";
   import type {
     CubeQuaternion,
@@ -26,10 +26,12 @@
     serializeSignalCalibrationProfile,
     summarizeFrameFieldEvidence,
     summarizeDynamicAxis,
+    summarizeCompoundMotionValidation,
     summarizeMoveValidation,
     summarizeStaticPose,
     type CubeColor,
     type DynamicAxisCapture,
+    type CompoundMotionValidationCapture,
     type SignalCalibrationProfile,
     type StaticPoseCapture,
     type TimedQuaternionSample,
@@ -50,6 +52,7 @@
     signalFrame,
     signalFrameSerial,
     gyroCalibration,
+    stickerPalette,
     onclose,
     onsave,
     standalone = false,
@@ -65,39 +68,60 @@
     signalFrame: CubeSignalFrameEvent | null;
     signalFrameSerial: number;
     gyroCalibration: GyroCalibration;
+    stickerPalette: StickerPalette;
     onclose: () => void;
     onsave: (profile: SignalCalibrationProfile) => void;
     standalone?: boolean;
   } = $props();
 
-  type Stage = "static" | "dynamic" | "moves" | "render" | "complete";
+  type Stage = "static" | "dynamic" | "compound" | "moves" | "render" | "complete";
   type LiveOrientationRow = {
     at: number;
     q: CubeQuaternion;
     v: { x: number; y: number; z: number } | null;
   };
 
-  const staticSteps: Array<{ top: CubeColor; front: CubeColor; title: string }> = [
-    { top: "white", front: "green", title: "白色朝上 · 绿色朝前" },
-    { top: "yellow", front: "blue", title: "黄色朝上 · 蓝色朝前" },
-    { top: "red", front: "white", title: "红色朝上 · 白色朝前" },
-    { top: "orange", front: "white", title: "橙色朝上 · 白色朝前" },
-    { top: "green", front: "white", title: "绿色朝上 · 白色朝前" },
-    { top: "blue", front: "white", title: "蓝色朝上 · 白色朝前" },
-  ];
-  const dynamicSteps: Array<{
-    physicalAxis: DynamicAxisCapture["physicalAxis"];
-    positiveFace: CubeColor;
-    title: string;
-  }> = [
-    { physicalAxis: "red-orange", positiveFace: "red", title: "绕红—橙轴转动" },
-    { physicalAxis: "blue-green", positiveFace: "blue", title: "绕蓝—绿轴转动" },
-    { physicalAxis: "white-yellow", positiveFace: "white", title: "绕白—黄轴转动" },
-  ];
-  const expectedMoves = ["R", "U", "R'", "U'"];
   const colorLabels: Record<CubeColor, string> = {
     white: "白色", yellow: "黄色", red: "红色", orange: "橙色", green: "绿色", blue: "蓝色",
   };
+  const oppositeColor: Record<CubeColor, CubeColor> = {
+    white: "yellow", yellow: "white", red: "orange", orange: "red", green: "blue", blue: "green",
+  };
+  const frontOrder: Record<CubeColor, CubeColor[]> = {
+    white: ["green", "red", "blue", "orange"],
+    yellow: ["blue", "red", "green", "orange"],
+    red: ["white", "green", "yellow", "blue"],
+    orange: ["white", "blue", "yellow", "green"],
+    green: ["white", "orange", "yellow", "red"],
+    blue: ["white", "red", "yellow", "orange"],
+  };
+  const staticSteps: Array<{ top: CubeColor; front: CubeColor; title: string }> =
+    (["white", "yellow", "red", "orange", "green", "blue"] as CubeColor[])
+      .flatMap((top) => frontOrder[top]
+        .filter((front) => front !== top && front !== oppositeColor[top])
+        .map((front) => ({
+          top,
+          front,
+          title: `${colorLabels[top]}朝上 · ${colorLabels[front]}朝前`,
+        })));
+  const dynamicSteps: Array<{
+    physicalAxis: DynamicAxisCapture["physicalAxis"];
+    positiveFace: CubeColor;
+    motionDirection: NonNullable<DynamicAxisCapture["motionDirection"]>;
+    targetAngleDeg: NonNullable<DynamicAxisCapture["targetAngleDeg"]>;
+    title: string;
+  }> = ([
+    { physicalAxis: "red-orange", positiveFace: "red", axisLabel: "红—橙" },
+    { physicalAxis: "blue-green", positiveFace: "blue", axisLabel: "蓝—绿" },
+    { physicalAxis: "white-yellow", positiveFace: "white", axisLabel: "白—黄" },
+  ] as const).flatMap((axis) => [
+    { ...axis, motionDirection: "clockwise" as const, targetAngleDeg: 90 as const, title: `${colorLabels[axis.positiveFace]}朝上 · 顺时针 90°` },
+    { ...axis, motionDirection: "counterclockwise" as const, targetAngleDeg: 90 as const, title: `${colorLabels[axis.positiveFace]}朝上 · 逆时针 90°` },
+    { ...axis, motionDirection: "clockwise" as const, targetAngleDeg: 180 as const, title: `${colorLabels[axis.positiveFace]}朝上 · 顺时针 180° 验证` },
+  ]).map(({ physicalAxis, positiveFace, motionDirection, targetAngleDeg, title }) => ({
+    physicalAxis, positiveFace, motionDirection, targetAngleDeg, title,
+  }));
+  const expectedMoves = ["R", "U", "R'", "U'"];
 
   let stage = $state<Stage>("static");
   let staticIndex = $state(0);
@@ -105,6 +129,9 @@
   let staticCaptures = $state<StaticPoseCapture[]>([]);
   let dynamicCaptures = $state<DynamicAxisCapture[]>([]);
   let dynamicRecording = $state(false);
+  let compoundRecording = $state(false);
+  let compoundCapture = $state<CompoundMotionValidationCapture | null>(null);
+  let compoundSampleCount = $state(0);
   let moveRecording = $state(false);
   let observedMoves = $state<string[]>([]);
   let renderConfirmed = $state(false);
@@ -126,6 +153,7 @@
   let diagnosticQuaternions: TimedQuaternionSample[] = [];
   let dynamicVelocities: TimedVelocitySample[] = [];
   let dynamicQuaternions: TimedQuaternionSample[] = [];
+  let compoundQuaternions: TimedQuaternionSample[] = [];
   let recentSignalFrames: InMemorySignalFrame[] = [];
   let diagnosticSignalFrames: InMemorySignalFrame[] = [];
   let staticSignalGroups: InMemorySignalFrame[][] = [];
@@ -133,16 +161,19 @@
   let dynamicSignalFrames: InMemorySignalFrame[] = [];
   let moveSignalFrames: InMemorySignalFrame[] = [];
 
+  const totalProgressSteps = $derived(staticSteps.length + dynamicSteps.length + 4);
   const progress = $derived(
     stage === "static"
       ? staticIndex
       : stage === "dynamic"
-        ? 6 + dynamicIndex
+        ? staticSteps.length + dynamicIndex
+        : stage === "compound"
+          ? staticSteps.length + dynamicSteps.length
         : stage === "moves"
-          ? 9
+          ? staticSteps.length + dynamicSteps.length + 1
           : stage === "render"
-            ? 10
-            : 11,
+            ? staticSteps.length + dynamicSteps.length + 2
+            : staticSteps.length + dynamicSteps.length + 3,
   );
   const currentStatic = $derived(staticSteps[staticIndex]);
   const currentDynamic = $derived(dynamicSteps[dynamicIndex]);
@@ -178,11 +209,13 @@
     }),
   );
   const previewGyroCalibration = $derived(
-    derivedGyroCalibration
+    derivedGyroCalibration?.valid
       ? {
           ...gyroCalibration,
           zero: derivedGyroCalibration.zero,
           bodyToModel: derivedGyroCalibration.bodyToModel,
+          relativeOrder: derivedGyroCalibration.relativeOrder,
+          meanPoseErrorDeg: derivedGyroCalibration.meanPoseErrorDeg,
         }
       : gyroCalibration,
   );
@@ -272,6 +305,10 @@
         );
       }
     }
+    if (compoundRecording) {
+      compoundQuaternions.push({ at: now, quaternion: { ...orientation } });
+      compoundSampleCount = compoundQuaternions.length;
+    }
   });
 
   $effect(() => {
@@ -320,6 +357,10 @@
         message = "接下来识别物理旋转轴。每一步先开始记录，再按提示转动整颗魔方。";
       } else {
         staticIndex += 1;
+        recentQuaternions = [];
+        recentSignalFrames = [];
+        recentQuaternionCount = 0;
+        message = "已进入下一个独立姿态窗口，请重新摆放并保持稳定至少 1 秒。";
       }
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
@@ -337,7 +378,7 @@
     diagnosticJson = "";
     diagnosticCopyStatus = "";
     dynamicRecording = true;
-    message = "正在记录：朝正面看目标颜色，将整颗魔方顺时针转约 90°，然后点击确认。";
+    message = `正在记录：保持${colorLabels[currentDynamic?.positiveFace ?? "white"]}朝上、魔方贴住桌面，从正上方看${currentDynamic?.motionDirection === "counterclockwise" ? "逆时针" : "顺时针"}转 ${currentDynamic?.targetAngleDeg ?? 90}°。`;
   }
 
   function skipStaticPose(): void {
@@ -346,6 +387,9 @@
       message = "已跳过剩余静态姿态，开始采集动态旋转轴。";
     } else {
       staticIndex += 1;
+      recentQuaternions = [];
+      recentSignalFrames = [];
+      recentQuaternionCount = 0;
       message = "已跳过上一静态姿态；未采集的步骤会降低最终档案置信度。";
     }
   }
@@ -381,6 +425,8 @@
         currentDynamic.positiveFace,
         dynamicVelocities,
         dynamicQuaternions,
+        currentDynamic.motionDirection,
+        currentDynamic.targetAngleDeg,
       );
       dynamicRecording = false;
       dynamicCaptures = [...dynamicCaptures, capture];
@@ -390,14 +436,55 @@
       }));
       message = `通过${capture.signalSource === "angular-velocity" ? "角速度" : "四元数差分"}识别为协议 ${capture.protocolAxis.toUpperCase()} 轴，方向 ${capture.sign > 0 ? "+" : "−"}，主导度 ${Math.round(capture.dominance * 100)}%。`;
       if (dynamicIndex + 1 >= dynamicSteps.length) {
-        stage = "moves";
-        message = "现在验证面编号和顺逆时针。开始记录后执行给定公式。";
+        stage = "compound";
+        message = "单轴采集完成。接下来做空中全向组合旋转，并回到白上绿前测量漂移。";
       } else {
         dynamicIndex += 1;
       }
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  function startCompoundCapture(): void {
+    if (!capturedFormulaReference || !formulaGripMatches) {
+      message = "请先回到白色朝上、绿色朝前的桌面基准，稳定后再开始自由旋转。";
+      return;
+    }
+    compoundQuaternions = [];
+    compoundSampleCount = 0;
+    compoundCapture = null;
+    compoundRecording = true;
+    message = "正在记录：拿起整颗魔方，缓慢覆盖上下、左右、翻滚等多个方向；至少旋转 6 秒，最后放回白上绿前。";
+  }
+
+  function confirmCompoundCapture(): void {
+    if (!capturedFormulaReference || !stableAverageQuaternion) {
+      message = "请先把魔方放回白上绿前并保持稳定约 1 秒，再完成验证。";
+      return;
+    }
+    try {
+      compoundCapture = summarizeCompoundMotionValidation(
+        compoundQuaternions,
+        capturedFormulaReference,
+        stableAverageQuaternion,
+      );
+      compoundRecording = false;
+      if (!compoundCapture.passed) {
+        message = `组合验证未通过：路径 ${compoundCapture.pathRotationDeg}°，三轴覆盖 ${Math.round(compoundCapture.axisCoverage.x * 100)}/${Math.round(compoundCapture.axisCoverage.y * 100)}/${Math.round(compoundCapture.axisCoverage.z * 100)}%，回零误差 ${compoundCapture.returnToReferenceErrorDeg}°。请重新记录。`;
+        return;
+      }
+      stage = "moves";
+      message = `组合验证通过，回零误差 ${compoundCapture.returnToReferenceErrorDeg}°。现在验证层转面编号和方向。`;
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function skipCompoundCapture(): void {
+    compoundRecording = false;
+    stage = "moves";
+    message = "已跳过空中组合与漂移验证；最终模型置信度会降低。";
   }
 
   function startMoveCapture(force = false): void {
@@ -444,6 +531,7 @@
       dynamicAxes: dynamicCaptures,
       moveValidation,
       renderValidation: { confirmed },
+      compoundMotionValidation: compoundCapture ?? undefined,
       frameFieldEvidence: summarizeFrameFieldEvidence({
         staticPoseGroups: staticSignalGroups,
         dynamicGroups: dynamicSignalGroups,
@@ -550,7 +638,7 @@
       dynamicRecording = false;
       if (dynamicIndex === 0) {
         stage = "static";
-        staticIndex = 5;
+        staticIndex = staticSteps.length - 1;
         staticCaptures = staticCaptures.slice(0, -1);
         staticSignalGroups = staticSignalGroups.slice(0, -1);
       } else {
@@ -559,12 +647,15 @@
         dynamicCaptures = dynamicCaptures.slice(0, -1);
         if (removed) delete dynamicSignalGroups[removed.physicalAxis];
       }
-    } else if (stage === "moves") {
+    } else if (stage === "compound") {
       stage = "dynamic";
-      dynamicIndex = 2;
+      dynamicIndex = dynamicSteps.length - 1;
       const removed = dynamicCaptures.at(-1);
       dynamicCaptures = dynamicCaptures.slice(0, -1);
       if (removed) delete dynamicSignalGroups[removed.physicalAxis];
+    } else if (stage === "moves") {
+      stage = "compound";
+      compoundCapture = null;
     } else if (stage === "render") {
       stage = "moves";
     }
@@ -577,20 +668,20 @@
       <div>
         <span class="eyebrow">Signal calibration lab</span>
         <h2 id="signal-lab-title">魔方信号采集</h2>
-        <p>{deviceModel} · {protocol.toUpperCase()} · 步骤 {Math.min(progress + 1, 11)}/11</p>
+        <p>{deviceModel} · {protocol.toUpperCase()} · 步骤 {Math.min(progress + 1, totalProgressSteps)}/{totalProgressSteps}</p>
       </div>
       <button class="close" aria-label="关闭信号采集" onclick={onclose}><X size={20} /></button>
     </header>
 
-    <div class="progress"><span style={`width:${(progress / 11) * 100}%`}></span></div>
+    <div class="progress"><span style={`width:${(progress / Math.max(1, totalProgressSteps - 1)) * 100}%`}></span></div>
 
     <div class="lab-body">
     <main>
       {#if stage === "static" && currentStatic}
         <div class="instruction-icon"><Radio size={34} /></div>
-        <span class="stage-label">静态姿态 {staticIndex + 1}/6</span>
+        <span class="stage-label">桌面静态姿态 {staticIndex + 1}/{staticSteps.length}</span>
         <h3>{currentStatic.title}</h3>
-        <p class="instruction">将魔方中心色严格按提示摆放，平放或稳定握持。必须同时对齐“朝上”和“朝前”，保持至少 1 秒。</p>
+        <p class="instruction">把魔方放在桌面上，中心色严格按提示摆放。必须同时对齐“朝上”和“朝前”，本步骤会使用全新的独立采样窗口，保持至少 1 秒。</p>
         <CalibrationGuide3D mode="static" top={currentStatic.top} front={currentStatic.front} />
         <div class="live-samples"><span class:ready={recentQuaternionCount >= 8}></span>最近窗口 {recentQuaternionCount} 个姿态样本</div>
         <div class="confirm-pose-row">
@@ -612,9 +703,9 @@
         <button class="skip-all" onclick={skipAllStaticPoses}>跳过全部静态姿态，直接进入动态轴</button>
       {:else if stage === "dynamic" && currentDynamic}
         <div class="instruction-icon"><Rotate3D size={34} /></div>
-        <span class="stage-label">动态轴 {dynamicIndex + 1}/3</span>
+        <span class="stage-label">桌面转盘验证 {dynamicIndex + 1}/{dynamicSteps.length}</span>
         <h3>{currentDynamic.title}</h3>
-        <p class="instruction">先让目标颜色正对着你的眼睛，让目标轴沿“你 ↔ 魔方”的前后方向、垂直于屏幕。开始记录后，像转方向盘一样顺时针转动整颗魔方约 90°；不要左右翻滚，也不要拧任何单独一层。</p>
+        <p class="instruction">让目标颜色朝上，把魔方稳定放在桌面上。开始记录后，保持魔方贴住桌面，像转盘一样从正上方看{currentDynamic.motionDirection === "counterclockwise" ? "逆时针" : "顺时针"}转动整颗魔方 {currentDynamic.targetAngleDeg}°；不要抬起、翻滚或拧任何单独一层。</p>
         <CalibrationGuide3D
           mode="dynamic"
           physicalAxis={currentDynamic.physicalAxis}
@@ -630,13 +721,13 @@
             <span style={`width:${Math.min(100, detectedRotationDeg / 90 * 100)}%`}></span>
           </div>
           <small class="rotation-hint">
-            {detectedRotationDeg >= 20
-              ? "已经检测到整机旋转，可以继续转到约 90° 后确认"
-              : "请按动画转动整颗魔方，至少达到 20°"}
+            {detectedRotationDeg >= currentDynamic.targetAngleDeg * 0.8
+              ? `已经接近目标 ${currentDynamic.targetAngleDeg}°，可以确认`
+              : `请保持贴桌面转动整颗魔方，目标 ${currentDynamic.targetAngleDeg}°`}
           </small>
           {#if dynamicLayerMoves.length > 0 && detectedRotationDeg < 10}
             <div class="layer-move-warning">
-              检测到层转 {dynamicLayerMoves.join(" ")}，但没有检测到整颗魔方姿态变化。请不要拧红色层；保持红色中心对着你，双手转动整个魔方。
+              检测到层转 {dynamicLayerMoves.join(" ")}，但没有检测到整颗魔方姿态变化。请不要拧任何一层；保持目标颜色朝上，让整颗魔方在桌面上转动。
             </div>
           {:else if dynamicSampleCount >= 80 && detectedRotationDeg < 2}
             <div class="gyro-still-warning">
@@ -644,13 +735,51 @@
             </div>
           {/if}
           <div class="step-actions">
-            <button class="primary" disabled={detectedRotationDeg < 20} onclick={confirmDynamicCapture}><Check size={18} /> 完成并识别轴</button>
+            <button class="primary" disabled={detectedRotationDeg < currentDynamic.targetAngleDeg * 0.8} onclick={confirmDynamicCapture}><Check size={18} /> 完成并识别轴</button>
             <button class="secondary" onclick={skipDynamicAxis}>跳过此轴</button>
           </div>
         {:else}
           <div class="step-actions">
             <button class="primary" disabled={!orientation} onclick={startDynamicCapture}><Radio size={18} /> 开始记录</button>
             <button class="secondary" onclick={skipDynamicAxis}>跳过此轴</button>
+          </div>
+        {/if}
+      {:else if stage === "compound"}
+        <div class="instruction-icon"><Rotate3D size={34} /></div>
+        <span class="stage-label">Held-out validation</span>
+        <h3>空中全向组合旋转与回零检查</h3>
+        <p class="instruction">先把魔方放在桌面上，白色朝上、绿色朝前。开始后拿起整颗魔方，缓慢做上下俯仰、左右偏航和前后翻滚，覆盖所有方向；至少持续 6 秒。最后必须放回同一个白上绿前姿态并保持稳定。</p>
+        <CalibrationGuide3D mode="static" top="white" front="green" />
+        <div class="pose-recognition formula-grip" class:matched={formulaGripMatches} class:mismatch={formulaGripDistanceDeg !== null && !formulaGripMatches}>
+          {#if formulaGripDistanceDeg !== null}
+            {#if formulaGripMatches}<Check size={16} />{:else}<Radio size={16} />{/if}
+            <span>{formulaGripMatches ? "已回到桌面基准" : "尚未回到桌面基准"} · 偏差 {formulaGripDistanceDeg.toFixed(1)}°</span>
+          {:else}
+            <Radio size={16} /><span>等待白上绿前稳定姿态…</span>
+          {/if}
+        </div>
+        <div class="recording-card" class:recording={compoundRecording}>
+          <span></span>
+          <strong>{compoundRecording ? "正在采集全向轨迹" : "等待开始"}</strong>
+          <small>{compoundSampleCount} samples</small>
+        </div>
+        {#if compoundCapture}
+          <div class="summary-grid">
+            <article><strong>{compoundCapture.pathRotationDeg}°</strong><span>累计路径</span></article>
+            <article><strong>{Math.round(compoundCapture.axisCoverage.x * 100)}/{Math.round(compoundCapture.axisCoverage.y * 100)}/{Math.round(compoundCapture.axisCoverage.z * 100)}%</strong><span>XYZ 覆盖</span></article>
+            <article><strong>{compoundCapture.returnToReferenceErrorDeg}°</strong><span>回零误差</span></article>
+            <article><strong>{compoundCapture.passed ? "通过" : "重试"}</strong><span>组合验证</span></article>
+          </div>
+        {/if}
+        {#if compoundRecording}
+          <div class="step-actions">
+            <button class="primary" disabled={compoundSampleCount < 40 || !formulaGripMatches} onclick={confirmCompoundCapture}><Check size={18} /> 已回到基准，完成验证</button>
+            <button class="secondary" onclick={() => (compoundRecording = false)}>停止并重来</button>
+          </div>
+        {:else}
+          <div class="step-actions">
+            <button class="primary" disabled={!formulaGripMatches} onclick={startCompoundCapture}><Radio size={18} /> 开始空中全向记录</button>
+            <button class="secondary" onclick={skipCompoundCapture}>跳过此验证</button>
           </div>
         {/if}
       {:else if stage === "moves"}
@@ -709,24 +838,29 @@
         <h3>对照实体魔方确认完整渲染</h3>
         <p class="instruction">逐面转动并整体旋转魔方，确认贴纸位置、动作方向和空间姿态都一致。</p>
         {#if derivedGyroCalibration}
-          <div class="pose-recognition matched">
-            <Check size={16} />
-            <span>已从本次三轴采集实时求出姿态映射 · 置信度 {Math.round(derivedGyroCalibration.confidence * 100)}%</span>
+          <div class="pose-recognition" class:matched={derivedGyroCalibration.valid} class:mismatch={!derivedGyroCalibration.valid}>
+            {#if derivedGyroCalibration.valid}<Check size={16} />{:else}<X size={16} />{/if}
+            <span>
+              {derivedGyroCalibration.valid ? "刚体姿态模型可用" : "标定残差过大，禁止启用"}
+              · 平均 {derivedGyroCalibration.meanPoseErrorDeg.toFixed(1)}°
+              · 最大 {derivedGyroCalibration.maxPoseErrorDeg.toFixed(1)}°
+              · 置信度 {Math.round(derivedGyroCalibration.confidence * 100)}%
+            </span>
           </div>
         {/if}
-        <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} /></div>
+        <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} /></div>
         <div class="render-actions">
           <button class="secondary danger" onclick={() => confirmRender(false)}>仍然不一致</button>
-          <button class="primary" onclick={() => confirmRender(true)}><Check size={18} /> 完全一致</button>
+          <button class="primary" disabled={!derivedGyroCalibration?.valid} onclick={() => confirmRender(true)}><Check size={18} /> 完全一致</button>
         </div>
       {:else if stage === "complete"}
         <div class="instruction-icon success"><ShieldCheck size={38} /></div>
         <span class="stage-label">采集完成</span>
         <h3>标定档案已生成</h3>
-        <p class="instruction">已保存六个静态平均姿态、三轴映射、动作差异、字段候选位置和渲染确认。原始 BLE 帧与连续四元数没有写入 JSONL。</p>
+        <p class="instruction">已保存 24 个桌面静态姿态、双向/180°轴验证、全向组合摘要、动作差异、字段候选位置和渲染确认。原始 BLE 帧与连续四元数没有写入 JSONL。</p>
         <div class="summary-grid">
-          <article><strong>{staticCaptures.length}/6</strong><span>静态姿态</span></article>
-          <article><strong>{dynamicCaptures.length}/3</strong><span>动态轴</span></article>
+          <article><strong>{staticCaptures.length}/{staticSteps.length}</strong><span>静态姿态</span></article>
+          <article><strong>{dynamicCaptures.length}/{dynamicSteps.length}</strong><span>轴轨迹</span></article>
           <article><strong>{moveValidation.matched ? "一致" : "有差异"}</strong><span>动作映射</span></article>
           <article><strong>{renderConfirmed ? "通过" : "待修正"}</strong><span>渲染验证</span></article>
         </div>

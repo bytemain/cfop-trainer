@@ -31,6 +31,22 @@ async function usesNativeMacBleBackend(): Promise<boolean> {
 }
 
 export class TauriBlecTransport implements BleTransport {
+  async connectedDevice(): Promise<DiscoveredDevice | null> {
+    if (!(await usesNativeMacBleBackend())) return null;
+    const device = await invoke<NativeBleDevice | null>("native_ble_connected_device");
+    if (!device) return null;
+    safeLogger.info("ble", "retained-connection-found", {
+      name: device.name,
+      backend: "native-macos",
+    });
+    return {
+      id: device.id,
+      name: device.name,
+      rssi: device.rssi,
+      serviceUuids: device.serviceUuids,
+    };
+  }
+
   async isAvailable(): Promise<boolean> {
     if (await usesNativeMacBleBackend()) {
       const available = await invoke<boolean>("native_ble_adapter_available");

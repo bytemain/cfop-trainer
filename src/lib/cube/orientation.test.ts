@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  cubePoseToCssMatrix,
   DEFAULT_GYRO_CALIBRATION,
   gyroCssTransform,
+  gyroModelMatrix,
+  quaternionMatrix,
+  quaternionFromAxisAngle,
 } from "./orientation";
 
 function matrixValues(transform: string): number[] {
@@ -76,9 +80,8 @@ describe("GAN orientation mapping", () => {
     expect(Math.abs(values[2])).toBeLessThan(0.4);
   });
 
-  it("preserves the calibrated red-axis rotation direction instead of rendering its inverse", () => {
-    const values = matrixValues(
-      gyroCssTransform(
+  it("treats relative quaternion order as explicit calibration data", () => {
+    const currentReference = gyroModelMatrix(
         {
           x: 0,
           y: -Math.sin(Math.PI / 12),
@@ -89,13 +92,36 @@ describe("GAN orientation mapping", () => {
           ...DEFAULT_GYRO_CALIBRATION,
           zero: { x: 0, y: 0, z: 0, w: 1 },
           bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+          relativeOrder: "current-reference-inverse",
         },
-      ),
     );
-    // The profile says a negative protocol-Y delta is a positive physical
-    // red-axis turn. In the model, positive red is +X, whose matrix has
-    // m[2][1] > 0 and m[1][2] < 0.
-    expect(values[6]).toBeGreaterThan(0.49);
-    expect(values[9]).toBeLessThan(-0.49);
+    const referenceCurrent = gyroModelMatrix(
+        {
+          x: 0,
+          y: -Math.sin(Math.PI / 12),
+          z: 0,
+          w: Math.cos(Math.PI / 12),
+        },
+        {
+          ...DEFAULT_GYRO_CALIBRATION,
+          zero: { x: 0, y: 0, z: 0, w: 1 },
+          bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+          relativeOrder: "reference-current-inverse",
+        },
+    );
+    expect(currentReference?.[2][1]).toBeCloseTo(0.5, 6);
+    expect(currentReference?.[1][2]).toBeCloseTo(-0.5, 6);
+    expect(referenceCurrent?.[2][1]).toBeCloseTo(-0.5, 6);
+    expect(referenceCurrent?.[1][2]).toBeCloseTo(0.5, 6);
+  });
+
+  it("converts canonical cube Y-up rotations only at the CSS renderer boundary", () => {
+    const cubePitch = quaternionMatrix(quaternionFromAxisAngle("x", 30));
+    const cssPitch = cubePoseToCssMatrix(cubePitch);
+    expect(cssPitch[2][1]).toBeCloseTo(-0.5, 6);
+    expect(cssPitch[1][2]).toBeCloseTo(0.5, 6);
+
+    const cubeYaw = quaternionMatrix(quaternionFromAxisAngle("y", 30));
+    expect(cubePoseToCssMatrix(cubeYaw)).toEqual(cubeYaw);
   });
 });

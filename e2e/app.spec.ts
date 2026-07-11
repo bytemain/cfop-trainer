@@ -96,50 +96,33 @@ test("opens device selection in a modal dialog", async ({ page }) => {
 });
 
 test("switches to an interactive 3D cube", async ({ page }) => {
-  const viewControl = page.getByLabel("魔方视图");
-  await viewControl.getByRole("button", { name: "3D" }).click();
-
   const cube3d = page.getByRole("button", { name: /当前魔方 3D 视图/ });
   await expect(cube3d).toBeVisible();
-  await expect(viewControl.getByRole("button", { name: "3D" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  const overlayToggle = page.getByRole("button", { name: "切换 2D 辅助视图" });
+  await expect(overlayToggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("3D 视图的 2D 辅助图")).toBeVisible();
+  await overlayToggle.click();
+  await expect(page.getByLabel("3D 视图的 2D 辅助图")).not.toBeVisible();
+  await overlayToggle.click();
 
-  const cubeObject = cube3d.locator(".cube-object");
-  const initialView = await cubeObject.evaluate((element) =>
-    (element as HTMLElement).style.getPropertyValue("--view-transform"),
-  );
+  const initialView = await cube3d.getAttribute("data-view-quaternion");
+  expect(initialView).toBeTruthy();
   await cube3d.focus();
   await cube3d.press("ArrowRight");
   await expect
-    .poll(() =>
-      cubeObject.evaluate((element) =>
-        (element as HTMLElement).style.getPropertyValue("--view-transform"),
-      ),
-    )
+    .poll(() => cube3d.getAttribute("data-view-quaternion"))
     .not.toBe(initialView);
 
   for (let index = 0; index < 5; index += 1) await cube3d.press("ArrowDown");
-  const whiteFaceUpView = await cubeObject.evaluate((element) =>
-    (element as HTMLElement).style.getPropertyValue("--view-transform"),
-  );
+  const whiteFaceUpView = await cube3d.getAttribute("data-view-quaternion");
   await cube3d.press("ArrowRight");
   await expect
-    .poll(() =>
-      cubeObject.evaluate((element) =>
-        (element as HTMLElement).style.getPropertyValue("--view-transform"),
-      ),
-    )
+    .poll(() => cube3d.getAttribute("data-view-quaternion"))
     .not.toBe(whiteFaceUpView);
 
   await cube3d.dblclick();
   await expect
-    .poll(() =>
-      cubeObject.evaluate((element) =>
-        (element as HTMLElement).style.getPropertyValue("--view-transform"),
-      ),
-    )
+    .poll(() => cube3d.getAttribute("data-view-quaternion"))
     .toBe(initialView);
 });
 

@@ -1,5 +1,13 @@
 import type { CubeQuaternion, GanProtocolVersion } from "$lib/protocols/gan/types";
-import type { Matrix3 } from "$lib/cube/orientation";
+import {
+  applyMatrix3,
+  multiplyMatrix3,
+  quaternionMatrix,
+  rotationDistanceDeg,
+  transposeMatrix3,
+  type Matrix3,
+  type SensorRelativeOrder,
+} from "$lib/cube/orientation";
 
 export type CubeColor = "white" | "yellow" | "red" | "orange" | "green" | "blue";
 export type ProtocolAxis = "x" | "y" | "z";
@@ -43,6 +51,8 @@ export interface StaticPoseCapture {
 export interface DynamicAxisCapture {
   physicalAxis: "red-orange" | "blue-green" | "white-yellow";
   positiveFace: CubeColor;
+  motionDirection?: "clockwise" | "counterclockwise";
+  targetAngleDeg?: 90 | 180;
   protocolAxis: ProtocolAxis;
   sign: 1 | -1;
   sampleCount: number;
@@ -63,6 +73,14 @@ export interface RenderValidationCapture {
   confirmed: boolean;
 }
 
+export interface CompoundMotionValidationCapture {
+  sampleCount: number;
+  pathRotationDeg: number;
+  axisCoverage: { x: number; y: number; z: number };
+  returnToReferenceErrorDeg: number;
+  passed: boolean;
+}
+
 export interface SignalCalibrationProfile {
   schemaVersion: 1;
   profileKind: "smart-cube-signal-calibration";
@@ -73,6 +91,7 @@ export interface SignalCalibrationProfile {
   dynamicAxes: DynamicAxisCapture[];
   moveValidation: MoveValidationCapture;
   renderValidation: RenderValidationCapture;
+  compoundMotionValidation?: CompoundMotionValidationCapture;
   frameFieldEvidence: FrameFieldEvidence;
   overallConfidence: number;
   privacy: {
@@ -93,16 +112,98 @@ const MODEL_VECTOR_FOR_POSITIVE_FACE: Record<CubeColor, [number, number, number]
 };
 
 export interface DerivedGyroCalibration {
+  valid: boolean;
   zero: CubeQuaternion;
   bodyToModel: Matrix3;
+  relativeOrder: SensorRelativeOrder;
+  meanPoseErrorDeg: number;
+  maxPoseErrorDeg: number;
   confidence: number;
 }
 
+const SENSOR_RELATIVE_ORDERS: SensorRelativeOrder[] = [
+  "current-reference-inverse",
+  "reference-current-inverse",
+];
+
+function determinant3(matrix: Matrix3): number {
+  return matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1]) -
+    matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0]) +
+    matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]);
+}
+
+function permutations(values: number[]): number[][] {
+  if (values.length === 1) return [values];
+  return values.flatMap((value, index) =>
+    permutations(values.filter((_, candidate) => candidate !== index))
+      .map((rest) => [value, ...rest]),
+  );
+}
+
+function properAxisRotations(): Matrix3[] {
+  const result: Matrix3[] = [];
+  for (const permutation of permutations([0, 1, 2])) {
+    for (const xSign of [-1, 1]) for (const ySign of [-1, 1]) for (const zSign of [-1, 1]) {
+      const matrix: Matrix3 = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+      [xSign, ySign, zSign].forEach((sign, column) => {
+        matrix[permutation[column]][column] = sign;
+      });
+      if (determinant3(matrix) === 1) result.push(matrix);
+    }
+  }
+  return result;
+}
+
+function cross(
+  left: [number, number, number],
+  right: [number, number, number],
+): [number, number, number] {
+  return [
+    left[1] * right[2] - left[2] * right[1],
+    left[2] * right[0] - left[0] * right[2],
+    left[0] * right[1] - left[1] * right[0],
+  ];
+}
+
+/** Active cube-body -> canonical-world pose for a declared top/front pair. */
+export function expectedCubePoseMatrix(top: CubeColor, front: CubeColor): Matrix3 {
+  const topVector = MODEL_VECTOR_FOR_POSITIVE_FACE[top];
+  const frontVector = MODEL_VECTOR_FOR_POSITIVE_FACE[front];
+  const rightVector = cross(topVector, frontVector);
+  return [rightVector, topVector, frontVector];
+}
+
+function relativeSensorMatrix(
+  reference: Matrix3,
+  current: Matrix3,
+  order: SensorRelativeOrder,
+): Matrix3 {
+  return order === "current-reference-inverse"
+    ? multiplyMatrix3(current, transposeMatrix3(reference))
+    : multiplyMatrix3(reference, transposeMatrix3(current));
+}
+
+function protocolAxisVector(capture: DynamicAxisCapture): [number, number, number] {
+  const vector: [number, number, number] = [0, 0, 0];
+  vector[AXES.indexOf(capture.protocolAxis)] = capture.sign;
+  return vector;
+}
+
+function capturedRelativeOrder(capture: DynamicAxisCapture): SensorRelativeOrder | null {
+  if (capture.quaternionDeltaOrder === "current-previous-inverse") {
+    return "current-reference-inverse";
+  }
+  if (capture.quaternionDeltaOrder === "previous-inverse-current") {
+    return "reference-current-inverse";
+  }
+  return null;
+}
+
 /**
- * Solves protocol-body -> rendered-model axes from the user's three controlled
- * whole-cube rotations. A signed protocol sample represents the requested
- * positive physical face, so each observed axis directly supplies one matrix
- * column. The first white-up/green-front capture is the user's persisted zero.
+ * Jointly solves the only two unknowns allowed by the pose SSOT: the sensor
+ * delta direction and one proper signed-axis rotation into cube coordinates.
+ * Static poses score the full rigid orientation; controlled clockwise turns
+ * independently score axis direction. No renderer convention participates.
  */
 export function deriveGyroCalibrationFromSignalProfile(
   profile: Pick<SignalCalibrationProfile, "staticPoses" | "dynamicAxes">,
@@ -112,48 +213,69 @@ export function deriveGyroCalibrationFromSignalProfile(
   );
   if (!zeroCapture) return null;
 
-  const requiredPhysicalAxes: DynamicAxisCapture["physicalAxis"][] = [
-    "red-orange",
-    "blue-green",
-    "white-yellow",
-  ];
-  const captures = requiredPhysicalAxes.map((physicalAxis) =>
-    profile.dynamicAxes.find((capture) => capture.physicalAxis === physicalAxis),
-  );
-  if (captures.some((capture) => !capture)) return null;
-  const completeCaptures = captures as DynamicAxisCapture[];
-  if (new Set(completeCaptures.map((capture) => capture.protocolAxis)).size !== 3) return null;
-
-  const columns: Array<[number, number, number] | null> = [null, null, null];
-  for (const capture of completeCaptures) {
-    const physical = MODEL_VECTOR_FOR_POSITIVE_FACE[capture.positiveFace];
-    const column = physical.map((value) => value === 0 ? 0 : value * capture.sign) as [number, number, number];
-    columns[AXES.indexOf(capture.protocolAxis)] = column;
-  }
-  if (columns.some((column) => !column)) return null;
-  const [x, y, z] = columns as [
-    [number, number, number],
-    [number, number, number],
-    [number, number, number],
-  ];
-  const bodyToModel: Matrix3 = [
-    [x[0], y[0], z[0]],
-    [x[1], y[1], z[1]],
-    [x[2], y[2], z[2]],
-  ];
-  const determinant =
-    bodyToModel[0][0] * (bodyToModel[1][1] * bodyToModel[2][2] - bodyToModel[1][2] * bodyToModel[2][1]) -
-    bodyToModel[0][1] * (bodyToModel[1][0] * bodyToModel[2][2] - bodyToModel[1][2] * bodyToModel[2][0]) +
-    bodyToModel[0][2] * (bodyToModel[1][0] * bodyToModel[2][1] - bodyToModel[1][1] * bodyToModel[2][0]);
-  if (determinant !== 1) return null;
-
+  if (profile.staticPoses.length < 3 || profile.dynamicAxes.length < 3) return null;
+  const reference = quaternionMatrix(zeroCapture.average);
+  const candidates = properAxisRotations().flatMap((bodyToModel) =>
+    SENSOR_RELATIVE_ORDERS.map((relativeOrder) => {
+      const poseErrors = profile.staticPoses.map((capture) => {
+        const relative = relativeSensorMatrix(
+          reference,
+          quaternionMatrix(capture.average),
+          relativeOrder,
+        );
+        const predicted = multiplyMatrix3(
+          multiplyMatrix3(bodyToModel, relative),
+          transposeMatrix3(bodyToModel),
+        );
+        return rotationDistanceDeg(predicted, expectedCubePoseMatrix(capture.top, capture.front));
+      });
+      const directionErrors = profile.dynamicAxes
+        .filter((capture) => capture.targetAngleDeg !== 180)
+        .map((capture) => {
+        let sensorAxis = protocolAxisVector(capture);
+        const captureOrder = capturedRelativeOrder(capture);
+        if (captureOrder && captureOrder !== relativeOrder) {
+          sensorAxis = sensorAxis.map((value) => -value) as [number, number, number];
+        }
+        const mapped = applyMatrix3(bodyToModel, sensorAxis);
+        // The guide asks the user to look at the positive face and rotate the
+        // whole cube clockwise: right-hand angle is negative about that face.
+        const expectedSign = capture.motionDirection === "counterclockwise" ? 1 : -1;
+        const expected = MODEL_VECTOR_FOR_POSITIVE_FACE[capture.positiveFace]
+          .map((value) => value * expectedSign) as [number, number, number];
+        const dot = Math.max(-1, Math.min(1, mapped.reduce(
+          (sum, value, index) => sum + value * expected[index],
+          0,
+        )));
+        return (Math.acos(dot) * 180) / Math.PI;
+        });
+      const meanPoseErrorDeg = poseErrors.reduce((sum, value) => sum + value, 0) / poseErrors.length;
+      const meanDirectionErrorDeg = directionErrors.reduce((sum, value) => sum + value, 0) / directionErrors.length;
+      return {
+        bodyToModel,
+        relativeOrder,
+        meanPoseErrorDeg,
+        maxPoseErrorDeg: Math.max(...poseErrors),
+        meanDirectionErrorDeg,
+        score: meanPoseErrorDeg + meanDirectionErrorDeg * 2,
+      };
+    }),
+  ).sort((left, right) => left.score - right.score);
+  const best = candidates[0];
+  if (!best || best.meanDirectionErrorDeg > 1) return null;
+  const sampleConfidence = [
+    ...profile.staticPoses.map((capture) => capture.confidence),
+    ...profile.dynamicAxes.map((capture) => capture.confidence),
+  ].reduce((sum, value) => sum + value, 0) / (profile.staticPoses.length + profile.dynamicAxes.length);
+  const geometricConfidence = Math.max(0, 1 - best.meanPoseErrorDeg / 45);
   return {
+    valid: best.meanPoseErrorDeg <= 10 && best.maxPoseErrorDeg <= 20,
     zero: { ...zeroCapture.average },
-    bodyToModel,
-    confidence: Number((
-      (zeroCapture.confidence + completeCaptures.reduce((sum, capture) => sum + capture.confidence, 0)) /
-      (completeCaptures.length + 1)
-    ).toFixed(3)),
+    bodyToModel: best.bodyToModel,
+    relativeOrder: best.relativeOrder,
+    meanPoseErrorDeg: Number(best.meanPoseErrorDeg.toFixed(3)),
+    maxPoseErrorDeg: Number(best.maxPoseErrorDeg.toFixed(3)),
+    confidence: Number((sampleConfidence * 0.35 + geometricConfidence * 0.65).toFixed(3)),
   };
 }
 
@@ -210,6 +332,9 @@ export function summarizeStaticPose(
   const maxAngularDeviationDeg = Math.max(
     ...samples.map((sample) => quaternionAngularDistanceDeg(sample.quaternion, average)),
   );
+  if (maxAngularDeviationDeg > 4) {
+    throw new Error(`姿态窗口仍在移动（最大偏差 ${maxAngularDeviationDeg.toFixed(1)}°），请稳定后重新确认`);
+  }
   const stability = Math.max(0, Math.min(1, 1 - maxAngularDeviationDeg / 8));
   const coverage = Math.min(1, samples.length / 24);
   return {
@@ -227,6 +352,8 @@ export function summarizeDynamicAxis(
   positiveFace: CubeColor,
   samples: readonly TimedVelocitySample[],
   quaternionSamples: readonly TimedQuaternionSample[] = [],
+  motionDirection: NonNullable<DynamicAxisCapture["motionDirection"]> = "clockwise",
+  targetAngleDeg: NonNullable<DynamicAxisCapture["targetAngleDeg"]> = 90,
 ): DynamicAxisCapture {
   const velocityMagnitudes = samples.map(({ velocity }) =>
     Math.hypot(velocity.x, velocity.y, velocity.z),
@@ -243,6 +370,9 @@ export function summarizeDynamicAxis(
       activeVelocity.map((sample) => sample.velocity),
       samples.length,
       "angular-velocity",
+      undefined,
+      motionDirection,
+      targetAngleDeg,
     );
   }
 
@@ -258,6 +388,8 @@ export function summarizeDynamicAxis(
     quaternionSamples.length,
     "quaternion-delta",
     best.order,
+    motionDirection,
+    targetAngleDeg,
   );
 }
 
@@ -268,6 +400,8 @@ function summarizeAxisVectors(
   sampleCount: number,
   signalSource: DynamicAxisCapture["signalSource"],
   quaternionDeltaOrder?: DynamicAxisCapture["quaternionDeltaOrder"],
+  motionDirection: NonNullable<DynamicAxisCapture["motionDirection"]> = "clockwise",
+  targetAngleDeg: NonNullable<DynamicAxisCapture["targetAngleDeg"]> = 90,
 ): DynamicAxisCapture {
   const energy = { x: 0, y: 0, z: 0 };
   const signed = { x: 0, y: 0, z: 0 };
@@ -286,6 +420,8 @@ function summarizeAxisVectors(
   return {
     physicalAxis,
     positiveFace,
+    motionDirection,
+    targetAngleDeg,
     protocolAxis,
     sign: signed[protocolAxis] < 0 ? -1 : 1,
     sampleCount,
@@ -372,6 +508,44 @@ export function summarizeMoveValidation(
   };
 }
 
+export function summarizeCompoundMotionValidation(
+  samples: readonly TimedQuaternionSample[],
+  reference: CubeQuaternion,
+  returnedPose: CubeQuaternion,
+): CompoundMotionValidationCapture {
+  if (samples.length < 20) throw new Error("自由旋转样本不足，请至少持续旋转 6 秒");
+  const energy = { x: 0, y: 0, z: 0 };
+  let pathRotationDeg = 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = normalizeQuaternion(samples[index - 1].quaternion);
+    const current = alignedTo(previous, samples[index].quaternion);
+    const delta = multiplyRaw(current, conjugate(previous));
+    const angle = quaternionAngularDistanceDeg(previous, current);
+    if (angle < 0.05 || angle > 25) continue;
+    pathRotationDeg += angle;
+    energy.x += Math.abs(delta.x);
+    energy.y += Math.abs(delta.y);
+    energy.z += Math.abs(delta.z);
+  }
+  const totalEnergy = energy.x + energy.y + energy.z || 1;
+  const axisCoverage = {
+    x: Number((energy.x / totalEnergy).toFixed(3)),
+    y: Number((energy.y / totalEnergy).toFixed(3)),
+    z: Number((energy.z / totalEnergy).toFixed(3)),
+  };
+  const returnToReferenceErrorDeg = quaternionAngularDistanceDeg(reference, returnedPose);
+  return {
+    sampleCount: samples.length,
+    pathRotationDeg: Number(pathRotationDeg.toFixed(1)),
+    axisCoverage,
+    returnToReferenceErrorDeg: Number(returnToReferenceErrorDeg.toFixed(2)),
+    passed:
+      pathRotationDeg >= 240 &&
+      Math.min(axisCoverage.x, axisCoverage.y, axisCoverage.z) >= 0.12 &&
+      returnToReferenceErrorDeg <= 10,
+  };
+}
+
 function changingByteIndexes(frames: readonly InMemorySignalFrame[]): number[] {
   if (frames.length < 2) return [];
   const comparableLength = Math.min(...frames.map((frame) => frame.bytes.length));
@@ -439,6 +613,7 @@ export function createSignalCalibrationProfile(input: {
   dynamicAxes: DynamicAxisCapture[];
   moveValidation: MoveValidationCapture;
   renderValidation: RenderValidationCapture;
+  compoundMotionValidation?: CompoundMotionValidationCapture;
   frameFieldEvidence: FrameFieldEvidence;
   now?: Date;
 }): SignalCalibrationProfile {
@@ -461,6 +636,7 @@ export function createSignalCalibrationProfile(input: {
     dynamicAxes: input.dynamicAxes,
     moveValidation: input.moveValidation,
     renderValidation: input.renderValidation,
+    compoundMotionValidation: input.compoundMotionValidation,
     frameFieldEvidence: input.frameFieldEvidence,
     overallConfidence: Number(overallConfidence.toFixed(3)),
     privacy: {

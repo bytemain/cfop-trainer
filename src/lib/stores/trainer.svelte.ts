@@ -572,11 +572,14 @@ class TrainerStore {
     const derivedCalibration = profile.renderValidation.confirmed
       ? deriveGyroCalibrationFromSignalProfile(profile)
       : null;
-    if (derivedCalibration) {
+    if (derivedCalibration?.valid) {
       this.gyroCalibration = {
         ...this.gyroCalibration,
+        modelVersion: 2,
         zero: derivedCalibration.zero,
         bodyToModel: derivedCalibration.bodyToModel,
+        relativeOrder: derivedCalibration.relativeOrder,
+        meanPoseErrorDeg: derivedCalibration.meanPoseErrorDeg,
       };
       this.persistDevicePreferences();
     }
@@ -596,7 +599,7 @@ class TrainerStore {
       moveMappingMatched: profile.moveValidation.matched,
       renderConfirmed: profile.renderValidation.confirmed,
       confidence: profile.overallConfidence,
-      gyroMappingApplied: Boolean(derivedCalibration),
+      gyroMappingApplied: Boolean(derivedCalibration?.valid),
       gyroMappingConfidence: derivedCalibration?.confidence,
     });
   }
@@ -730,11 +733,14 @@ class TrainerStore {
         const derivedCalibration = profile.renderValidation.confirmed
           ? deriveGyroCalibrationFromSignalProfile(profile)
           : null;
-        if (derivedCalibration) {
+        if (derivedCalibration?.valid) {
           this.gyroCalibration = {
             ...this.gyroCalibration,
+            modelVersion: 2,
             zero: derivedCalibration.zero,
             bodyToModel: derivedCalibration.bodyToModel,
+            relativeOrder: derivedCalibration.relativeOrder,
+            meanPoseErrorDeg: derivedCalibration.meanPoseErrorDeg,
           };
         }
       }
@@ -760,7 +766,9 @@ class TrainerStore {
         this.stickerPalette = { ...BRIGHT_STICKER_PALETTE, ...profile.stickerPalette };
       }
       if (profile.gyroCalibration) {
-        this.gyroCalibration = { ...DEFAULT_GYRO_CALIBRATION, ...profile.gyroCalibration };
+        this.gyroCalibration = profile.gyroCalibration.modelVersion === 2
+          ? { ...DEFAULT_GYRO_CALIBRATION, ...profile.gyroCalibration }
+          : { ...DEFAULT_GYRO_CALIBRATION, enabled: profile.gyroCalibration.enabled ?? true };
       }
     } catch {
       // Invalid local calibration is ignored and can be recreated in Settings.
@@ -810,6 +818,21 @@ class TrainerStore {
       if (!(await transport.isAvailable())) {
         this.connection = "bluetooth-unavailable";
         this.connectionMessage = "已记住上次设备，但系统蓝牙当前未开启。";
+        return;
+      }
+
+      const retained = await transport.connectedDevice();
+      const retainedTarget = retained && (
+        retained.id === remembered.platform_device_id ||
+        retained.name === remembered.display_name
+      ) ? retained : null;
+      if (retainedTarget) {
+        this.devices = [retainedTarget];
+        safeLogger.info("trainer", "auto-reconnect-reusing-native-connection", {
+          name: retainedTarget.name,
+        });
+        this.connectionMessage = `正在恢复 ${retainedTarget.name} 的协议会话…`;
+        await this.connectRealDevice(retainedTarget);
         return;
       }
 
@@ -869,7 +892,7 @@ const trainerGlobal = globalThis as typeof globalThis & {
   __cfopTrainerStore?: TrainerStore;
   __cfopTrainerStoreSchema?: number;
 };
-const TRAINER_STORE_SCHEMA = 2;
+const TRAINER_STORE_SCHEMA = 3;
 
 // HMR normally keeps the BLE session alive by reusing the store. When a code
 // update adds reactive fields or subscriptions, however, an old instance

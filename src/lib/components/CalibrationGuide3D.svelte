@@ -47,12 +47,14 @@
     ]);
   }
 
-  const guideFront = $derived(mode === "dynamic" ? positiveFace ?? "red" : front);
+  const guideFront = $derived(
+    mode === "dynamic"
+      ? positiveFace === "white" || positiveFace === "yellow" ? "green" : "white"
+      : front,
+  );
   const guideTop = $derived(
     mode === "dynamic"
-      ? guideFront === "white" || guideFront === "yellow"
-        ? "green"
-        : "white"
+      ? positiveFace ?? "red"
       : top,
   );
   const guideRight = $derived(rightColor(guideTop, guideFront));
@@ -92,7 +94,7 @@
         <path class="arrow-track" d="M86 24 A78 78 0 1 1 59 34"></path>
         <path class="arrow-motion" marker-end="url(#guide-arrow-head)" d="M86 24 A78 78 0 1 1 59 34"></path>
       </svg>
-      <div class="turn-label"><strong>整颗魔方</strong><span>顺时针约 90°</span></div>
+      <div class="turn-label"><strong>整颗魔方贴桌面</strong><span>从正上方看，像转盘一样转</span></div>
     {/if}
   </div>
 
@@ -101,9 +103,9 @@
       <span><b class="swatch face-{guideTop}"></b>{colorLabels[guideTop]}色中心朝上</span>
       <span><b class="swatch face-{guideFront}"></b>{colorLabels[guideFront]}色中心朝向你</span>
     {:else}
-      <span><b class="swatch face-{guideFront}"></b>先让{colorLabels[guideFront]}色中心正对你</span>
-      <span class="axis-caption">{axisPair} 轴指向你（垂直屏幕），像转方向盘一样转整颗</span>
-      <strong class="layer-warning">✕ 不要只拧{colorLabels[guideFront]}色这一层</strong>
+      <span><b class="swatch face-{guideTop}"></b>让{colorLabels[guideTop]}色中心朝上</span>
+      <span class="axis-caption">{axisPair} 轴沿桌面法线竖直向上，整颗魔方保持贴桌面</span>
+      <strong class="layer-warning">✕ 不要抬起、翻滚或拧任何单独一层</strong>
     {/if}
   </div>
 </div>

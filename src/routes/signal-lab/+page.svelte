@@ -42,6 +42,7 @@
       signalFrame={trainer.lastSignalFrame}
       signalFrameSerial={trainer.signalFrameSerial}
       gyroCalibration={trainer.gyroCalibration}
+      stickerPalette={trainer.stickerPalette}
       onclose={() => void goto("/")}
       onsave={(profile) => trainer.saveSignalCalibrationProfile(profile)}
     />

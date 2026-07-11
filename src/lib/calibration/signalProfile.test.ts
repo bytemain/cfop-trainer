@@ -5,11 +5,13 @@ import {
   deriveGyroCalibrationFromSignalProfile,
   quaternionAngularDistanceDeg,
   serializeSignalCalibrationProfile,
+  summarizeCompoundMotionValidation,
   summarizeDynamicAxis,
   summarizeFrameFieldEvidence,
   summarizeMoveValidation,
   summarizeStaticPose,
 } from "./signalProfile";
+import { multiplyQuaternions, quaternionFromAxisAngle } from "$lib/cube/orientation";
 
 describe("signal calibration profile", () => {
   it("treats q and -q as the same pose when averaging", () => {
@@ -36,6 +38,38 @@ describe("signal calibration profile", () => {
     expect(capture.sampleCount).toBe(24);
     expect(capture.confidence).toBeGreaterThan(0.95);
     expect(capture).not.toHaveProperty("samples");
+  });
+
+  it("rejects a static window that still contains motion", () => {
+    expect(() => summarizeStaticPose(
+      "white",
+      "green",
+      Array.from({ length: 12 }, (_, index) => ({
+        at: index,
+        quaternion: quaternionFromAxisAngle("x", index * 2),
+      })),
+    )).toThrow(/仍在移动/);
+  });
+
+  it("validates a multi-axis free-air path separately from model fitting", () => {
+    const samples = [{ at: 0, quaternion: { x: 0, y: 0, z: 0, w: 1 } }];
+    let current = samples[0].quaternion;
+    let at = 0;
+    for (const axis of ["x", "y", "z"] as const) {
+      for (let index = 0; index < 30; index += 1) {
+        current = multiplyQuaternions(quaternionFromAxisAngle(axis, 3), current);
+        at += 10;
+        samples.push({ at, quaternion: current });
+      }
+    }
+    const summary = summarizeCompoundMotionValidation(
+      samples,
+      { x: 0, y: 0, z: 0, w: 1 },
+      { x: 0, y: 0, z: 0, w: 1 },
+    );
+    expect(summary.pathRotationDeg).toBeCloseTo(270, 1);
+    expect(Math.min(summary.axisCoverage.x, summary.axisCoverage.y, summary.axisCoverage.z)).toBeGreaterThan(0.3);
+    expect(summary.passed).toBe(true);
   });
 
   it("detects protocol axis and sign from angular velocity", () => {
@@ -95,18 +129,18 @@ describe("signal calibration profile", () => {
       z: 0.8457743100768033,
     };
     const derived = deriveGyroCalibrationFromSignalProfile({
-      staticPoses: [{
-        top: "white",
-        front: "green",
-        average: zero,
-        sampleCount: 20,
-        maxAngularDeviationDeg: 0.5,
-        confidence: 0.95,
-      }],
+      staticPoses: [
+        { top: "white", front: "green", average: zero, sampleCount: 20, maxAngularDeviationDeg: 0.5, confidence: 0.95 },
+        { top: "yellow", front: "blue", average: { w: -0.07250381914004346, x: 0.843315264867377, y: -0.5272494414657792, z: 0.07463636329429311 }, sampleCount: 20, maxAngularDeviationDeg: 0.5, confidence: 0.95 },
+        { top: "red", front: "white", average: { w: -0.6953897816214034, x: 0.6398199192203379, y: 0.25976319649196955, z: 0.1989638266964412 }, sampleCount: 20, maxAngularDeviationDeg: 0.5, confidence: 0.95 },
+        { top: "orange", front: "white", average: { w: 0.0225620855142379, x: 0.31072915910901133, y: -0.6441940235767591, z: 0.6985358988374476 }, sampleCount: 20, maxAngularDeviationDeg: 0.5, confidence: 0.95 },
+        { top: "green", front: "white", average: { w: 0.4460468366589519, x: -0.13408905378342317, y: -0.6818247156503607, z: 0.5640721605347256 }, sampleCount: 20, maxAngularDeviationDeg: 0.5, confidence: 0.95 },
+        { top: "blue", front: "white", average: { w: 0.4265719007035025, x: -0.6011145431200849, y: 0.22337354947622737, z: -0.6378102985795417 }, sampleCount: 20, maxAngularDeviationDeg: 0.5, confidence: 0.95 },
+      ],
       dynamicAxes: [
-        { physicalAxis: "red-orange", positiveFace: "red", protocolAxis: "y", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.736, confidence: 0.789, signalSource: "quaternion-delta" },
-        { physicalAxis: "blue-green", positiveFace: "blue", protocolAxis: "x", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.744, confidence: 0.795, signalSource: "quaternion-delta" },
-        { physicalAxis: "white-yellow", positiveFace: "white", protocolAxis: "z", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.682, confidence: 0.746, signalSource: "quaternion-delta" },
+        { physicalAxis: "red-orange", positiveFace: "red", protocolAxis: "y", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.736, confidence: 0.789, signalSource: "quaternion-delta", quaternionDeltaOrder: "current-previous-inverse" },
+        { physicalAxis: "blue-green", positiveFace: "blue", protocolAxis: "x", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.744, confidence: 0.795, signalSource: "quaternion-delta", quaternionDeltaOrder: "current-previous-inverse" },
+        { physicalAxis: "white-yellow", positiveFace: "white", protocolAxis: "z", sign: -1, sampleCount: 20, activeSampleCount: 10, dominance: 0.682, confidence: 0.746, signalSource: "quaternion-delta", quaternionDeltaOrder: "current-previous-inverse" },
       ],
     });
     expect(derived?.zero).toEqual(zero);
@@ -115,6 +149,9 @@ describe("signal calibration profile", () => {
       [0, 0, -1],
       [1, 0, 0],
     ]);
+    expect(derived?.relativeOrder).toBe("reference-current-inverse");
+    expect(derived?.meanPoseErrorDeg).toBeCloseTo(18.559, 3);
+    expect(derived?.valid).toBe(false);
   });
 
   it("refuses to persist an ambiguous axis solution", () => {

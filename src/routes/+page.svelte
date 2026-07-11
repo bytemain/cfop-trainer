@@ -44,7 +44,7 @@
   ];
 
   let activeSection = $state<Section>("train");
-  let cubeView = $state<"2d" | "3d">("2d");
+  let show2dOverlay = $state(true);
   let deviceDialogOpen = $state(false);
   let deviceDialogAutoScan = $state(false);
 
@@ -227,29 +227,28 @@
               <span class="eyebrow">实时魔方</span>
               <h1>{PHASE_LABELS[trainer.phase]} 阶段</h1>
             </div>
-            <div class="segmented-control" aria-label="魔方视图">
-              <button
-                class:selected={cubeView === "2d"}
-                aria-pressed={cubeView === "2d"}
-                onclick={() => (cubeView = "2d")}
-              >2D</button>
-              <button
-                class:selected={cubeView === "3d"}
-                aria-pressed={cubeView === "3d"}
-                onclick={() => (cubeView = "3d")}
-              >3D</button>
-            </div>
+            <button
+              class="secondary-button"
+              aria-label="切换 2D 辅助视图"
+              aria-pressed={show2dOverlay}
+              onclick={() => (show2dOverlay = !show2dOverlay)}
+            >2D 辅助</button>
           </div>
 
-          {#if cubeView === "2d"}
-            <CubeNet cube={trainer.cube} />
-          {:else}
+          <div class="cube-visual-stage">
             <Cube3D
               cube={trainer.cube}
               orientation={trainer.gyroQuaternion}
               gyroCalibration={trainer.gyroCalibration}
+              stickerPalette={trainer.stickerPalette}
             />
-          {/if}
+            {#if show2dOverlay}
+              <aside class="cube-net-overlay" aria-label="3D 视图的 2D 辅助图">
+                <span>2D</span>
+                <CubeNet cube={trainer.cube} mini />
+              </aside>
+            {/if}
+          </div>
 
           <div class="timer-panel">
             <TimerDisplay value={trainer.formatTime()} state={sessionLabel} />
@@ -757,6 +756,27 @@
   }
   .workspace-card { border-radius: 24px; }
   .cube-workspace { min-height: 650px; padding: 22px; }
+  .cube-visual-stage { position: relative; }
+  .cube-net-overlay {
+    position: absolute;
+    z-index: 3;
+    right: 8px;
+    bottom: 12px;
+    display: grid;
+    justify-items: end;
+    padding: 7px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+    box-shadow: 0 12px 30px rgb(0 0 0 / 0.16);
+    backdrop-filter: blur(12px);
+  }
+  .cube-net-overlay > span {
+    padding: 0 4px;
+    color: var(--color-text-muted);
+    font-size: 0.58rem;
+    font-weight: 850;
+  }
   .section-heading {
     display: flex;
     align-items: start;
@@ -775,21 +795,6 @@
     letter-spacing: 0.12em;
     text-transform: uppercase;
   }
-  .segmented-control {
-    display: flex;
-    padding: 3px;
-    border-radius: 11px;
-    background: var(--color-surface-high);
-  }
-  .segmented-control button {
-    min-width: 46px;
-    min-height: 33px;
-    border-radius: 8px;
-    color: var(--color-text-muted);
-    background: transparent;
-  }
-  .segmented-control button.selected { color: var(--color-text); background: var(--color-surface-highest); }
-  .segmented-control button:disabled { opacity: 0.38; }
 
   .timer-panel {
     display: grid;
@@ -1048,6 +1053,7 @@
     .training-layout { gap: 10px; }
     .workspace-card { border-radius: 20px; }
     .cube-workspace { padding: 14px 10px; }
+    .cube-net-overlay { right: 2px; bottom: 6px; transform: scale(0.82); transform-origin: right bottom; }
     .section-heading { padding-inline: 5px; }
     .section-heading h1 { font-size: 1.25rem; }
     .timer-panel { padding: 13px 4px; }

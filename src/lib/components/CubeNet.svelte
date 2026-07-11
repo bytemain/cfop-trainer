@@ -1,7 +1,11 @@
 <script lang="ts">
   import type { CubeState, Face } from "$lib/cube/cube";
 
-  let { cube, compact = false }: { cube: CubeState; compact?: boolean } = $props();
+  let {
+    cube,
+    compact = false,
+    mini = false,
+  }: { cube: CubeState; compact?: boolean; mini?: boolean } = $props();
 
   const layout: Array<{ face: Face; column: number; row: number }> = [
     { face: "U", column: 2, row: 1 },
@@ -13,7 +17,7 @@
   ];
 </script>
 
-<div class:compact class="cube-net" aria-label="当前魔方 2D 展开图">
+<div class:compact class:mini class="cube-net" aria-label="当前魔方 2D 展开图">
   {#each layout as item}
     <section
       class="cube-face"
@@ -50,6 +54,18 @@
     padding: 8px;
     gap: 6px;
   }
+
+  .cube-net.mini {
+    grid-template-columns: repeat(4, 34px);
+    grid-template-rows: repeat(3, 34px);
+    width: auto;
+    min-height: 0;
+    gap: 3px;
+    padding: 4px;
+  }
+
+  .cube-net.mini .cube-face { gap: 1px; padding: 2px; border-radius: 5px; box-shadow: none; }
+  .cube-net.mini .face-label { display: none; }
 
   .cube-face {
     position: relative;
@@ -97,4 +113,3 @@
     }
   }
 </style>
-
