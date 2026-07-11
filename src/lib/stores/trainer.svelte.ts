@@ -167,6 +167,7 @@ class TrainerStore {
   initialize(): Promise<void> {
     if (!this.preferencesInitialized) {
       this.loadPreferences(GLOBAL_CUBE_PROFILE_KEY);
+      this.loadSignalCalibrationProfile(GLOBAL_CUBE_PROFILE_KEY + ":signal-calibration");
       this.preferencesInitialized = true;
     }
     this.initializationPromise ??= this.autoReconnectRememberedDevice();
@@ -692,6 +693,28 @@ class TrainerStore {
 
   private loadDevicePreferences(deviceId: string): void {
     this.loadPreferences("cfop-trainer:cube-profile:" + deviceId);
+    this.loadSignalCalibrationProfile(
+      "cfop-trainer:cube-profile:" + deviceId + ":signal-calibration",
+    );
+  }
+
+  private loadSignalCalibrationProfile(storageKey: string): void {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return;
+      const profile = JSON.parse(raw) as SignalCalibrationProfile;
+      if (
+        profile.schemaVersion === 1 &&
+        profile.profileKind === "smart-cube-signal-calibration" &&
+        Array.isArray(profile.staticPoses) &&
+        Array.isArray(profile.dynamicAxes)
+      ) {
+        this.signalCalibrationProfile = profile;
+      }
+    } catch {
+      // Invalid or obsolete calibration profiles can be replaced by rerunning the lab.
+    }
   }
 
   private loadPreferences(storageKey: string): void {

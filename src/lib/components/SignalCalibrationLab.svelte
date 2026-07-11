@@ -2,6 +2,7 @@
   import {
     Check,
     ChevronLeft,
+    ClipboardCopy,
     Download,
     Radio,
     Rotate3D,
@@ -9,6 +10,7 @@
     X,
   } from "lucide-svelte";
   import Cube3D from "$lib/components/Cube3D.svelte";
+  import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
   import type { CubeState } from "$lib/cube/cube";
   import type { GyroCalibration } from "$lib/cube/orientation";
   import type {
@@ -278,6 +280,16 @@
     anchor.download = `cube-signal-profile-${protocol}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
+    message = "标定 JSON 已下载。把这个文件直接拖进与 Codex 的对话即可。";
+  }
+
+  async function copyProfile(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(serializeSignalCalibrationProfile(buildProfile(renderConfirmed)));
+      message = "标定 JSON 已复制。回到 Codex 对话直接粘贴即可。";
+    } catch (error) {
+      message = `复制失败：${error instanceof Error ? error.message : String(error)}。请使用文件导出。`;
+    }
   }
 
   function goBack(): void {
@@ -325,13 +337,7 @@
         <span class="stage-label">静态姿态 {staticIndex + 1}/6</span>
         <h3>{currentStatic.title}</h3>
         <p class="instruction">将魔方中心色严格按提示摆放，平放或稳定握持。必须同时对齐“朝上”和“朝前”，保持至少 1 秒。</p>
-        <div class="pose-diagram">
-          <span class="color-dot sticker-{currentStatic.top}"></span>
-          <strong>{currentStatic.top} ↑</strong>
-          <span class="direction-arrow">⌄</span>
-          <span class="color-dot sticker-{currentStatic.front}"></span>
-          <strong>{currentStatic.front} → 你</strong>
-        </div>
+        <CalibrationGuide3D mode="static" top={currentStatic.top} front={currentStatic.front} />
         <div class="live-samples"><span class:ready={recentQuaternionCount >= 8}></span>最近窗口 {recentQuaternionCount} 个姿态样本</div>
         <button class="primary" disabled={!orientation || recentQuaternionCount < 8} onclick={confirmStaticPose}>
           <Check size={18} /> 确认此姿态
@@ -340,7 +346,12 @@
         <div class="instruction-icon"><Rotate3D size={34} /></div>
         <span class="stage-label">动态轴 {dynamicIndex + 1}/3</span>
         <h3>{currentDynamic.title}</h3>
-        <p class="instruction">朝正面看 {currentDynamic.positiveFace} 色中心。开始记录后，将整颗魔方顺时针转约 90°；不要转动单独一层。</p>
+        <p class="instruction">先让目标颜色正对着你的眼睛。开始记录后，像转方向盘一样顺时针转动整颗魔方约 90°；不要拧任何单独一层。</p>
+        <CalibrationGuide3D
+          mode="dynamic"
+          physicalAxis={currentDynamic.physicalAxis}
+          positiveFace={currentDynamic.positiveFace}
+        />
         <div class="recording-card" class:recording={dynamicRecording}>
           <span></span>
           <strong>{dynamicRecording ? "正在采集角速度" : "等待开始"}</strong>
@@ -386,7 +397,18 @@
           <article><strong>{moveValidation.matched ? "一致" : "有差异"}</strong><span>动作映射</span></article>
           <article><strong>{renderConfirmed ? "通过" : "待修正"}</strong><span>渲染验证</span></article>
         </div>
-        <button class="primary" onclick={downloadProfile}><Download size={18} /> 导出标定 JSON</button>
+        <div class="delivery-panel">
+          <strong>怎么把结果给 Codex？</strong>
+          <ol>
+            <li>点击“导出并发给 Codex”，会下载一个 <code>cube-signal-profile-v4.json</code>。</li>
+            <li>回到当前对话，把这个 JSON 文件直接拖进输入框发送。</li>
+            <li>我会用里面的六面平均姿态、三轴方向和字段候选位置修协议并生成回归测试。</li>
+          </ol>
+        </div>
+        <div class="export-actions">
+          <button class="primary" onclick={downloadProfile}><Download size={18} /> 导出并发给 Codex</button>
+          <button class="secondary" onclick={() => void copyProfile()}><ClipboardCopy size={18} /> 复制标定 JSON</button>
+        </div>
         <button class="secondary" onclick={onclose}>完成</button>
       {/if}
 
@@ -428,9 +450,6 @@
   .stage-label, .eyebrow { color: var(--color-primary); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
   h3 { margin: 0; font-size: clamp(1.35rem, 4vw, 2rem); letter-spacing: -0.045em; }
   .instruction { max-width: 590px; margin: 0; color: var(--color-text-muted); font-size: 0.84rem; line-height: 1.7; }
-  .pose-diagram { display: flex; align-items: center; gap: 9px; margin: 9px 0; padding: 15px 18px; border-radius: 14px; background: var(--color-surface-highest); }
-  .color-dot { width: 18px; height: 18px; border: 2px solid rgb(255 255 255 / 0.28); border-radius: 5px; }
-  .direction-arrow { margin-inline: 6px; color: var(--color-text-muted); font-size: 1.4rem; }
   .live-samples { display: flex; align-items: center; gap: 8px; color: var(--color-text-muted); font-size: 0.75rem; }
   .live-samples span { width: 8px; height: 8px; border-radius: 50%; background: var(--color-warning); }
   .live-samples span.ready { background: #50d69c; box-shadow: 0 0 9px #50d69c; }
@@ -455,12 +474,14 @@
   .summary-grid article { display: grid; gap: 5px; padding: 16px 8px; border-radius: 13px; background: var(--color-surface-highest); }
   .summary-grid strong { color: var(--color-primary); font-size: 1.1rem; }
   .summary-grid span { color: var(--color-text-muted); font-size: 0.68rem; }
+  .delivery-panel { display: grid; width: 100%; gap: 8px; padding: 16px 18px; border: 1px solid var(--color-outline); border-radius: 14px; text-align: left; background: var(--color-surface-highest); }
+  .delivery-panel strong { color: var(--color-primary); }
+  .delivery-panel ol { display: grid; gap: 7px; margin: 0; padding-left: 20px; color: var(--color-text-muted); font-size: 0.74rem; line-height: 1.55; }
+  .delivery-panel code { color: var(--color-text); }
+  .export-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; }
   .message { min-height: 20px; margin: 3px 0 0; color: var(--color-text-muted); font-size: 0.72rem; }
   footer { padding: 0 24px 20px; }
   .back { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-muted); background: transparent; }
-  .sticker-white { background: var(--cube-white); } .sticker-yellow { background: var(--cube-yellow); }
-  .sticker-red { background: var(--cube-red); } .sticker-orange { background: var(--cube-orange); }
-  .sticker-green { background: var(--cube-green); } .sticker-blue { background: var(--cube-blue); }
   @keyframes pulse { 50% { opacity: 0.45; } }
   @media (max-width: 599px) {
     .lab-backdrop { align-items: end; padding: 0; }
@@ -470,6 +491,5 @@
     header { padding: 20px 20px 14px; }
     main { padding: 24px 18px; }
     .summary-grid { grid-template-columns: repeat(2, 1fr); }
-    .pose-diagram { flex-wrap: wrap; justify-content: center; }
   }
 </style>

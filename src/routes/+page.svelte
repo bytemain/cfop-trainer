@@ -10,6 +10,7 @@
     Check,
     ChevronRight,
     CircleAlert,
+    Download,
     History,
     LayoutDashboard,
     Pause,
@@ -33,6 +34,7 @@
   import TimerDisplay from "$lib/components/TimerDisplay.svelte";
   import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
+  import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
 
   type Section = "train" | "cases" | "history" | "settings";
   const colorOptions: Array<{ value: StickerColor; label: string }> = [
@@ -144,6 +146,18 @@
       : axis === "Y"
         ? trainer.gyroCalibration.offsetY
         : trainer.gyroCalibration.offsetZ;
+  }
+
+  function downloadSavedSignalProfile(): void {
+    const profile = trainer.signalCalibrationProfile;
+    if (!profile) return;
+    const blob = new Blob([serializeSignalCalibrationProfile(profile)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `cube-signal-profile-${profile.protocol}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   onMount(() => {
@@ -450,6 +464,22 @@
             开始采集
           </button>
         </div>
+        {#if trainer.signalCalibrationProfile}
+          <div class="saved-profile-panel">
+            <div>
+              <span class="eyebrow">Latest signal profile</span>
+              <strong>最近一次标定 · {trainer.signalCalibrationProfile.protocol.toUpperCase()}</strong>
+              <small>
+                置信度 {Math.round(trainer.signalCalibrationProfile.overallConfidence * 100)}%
+                · {trainer.signalCalibrationProfile.staticPoses.length}/6 姿态
+                · {trainer.signalCalibrationProfile.dynamicAxes.length}/3 轴
+              </small>
+            </div>
+            <button class="secondary-button" onclick={downloadSavedSignalProfile}>
+              <Download size={17} /> 重新导出 JSON
+            </button>
+          </div>
+        {/if}
 
         <div class="calibration-panel">
           <div class="calibration-heading">
@@ -1002,6 +1032,15 @@
   .state-sync-panel strong { color: var(--color-text); font-size: 0.86rem; }
   .state-sync-panel small { color: var(--color-text-muted); font-size: 0.7rem; line-height: 1.45; }
   .state-sync-panel .primary-button { flex: 0 0 auto; }
+  .saved-profile-panel {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%;
+    padding: 14px 15px; border: 1px solid rgb(135 232 188 / 0.24); border-radius: 16px;
+    background: color-mix(in srgb, var(--color-primary) 6%, var(--color-surface-high));
+  }
+  .saved-profile-panel > div { display: grid; gap: 4px; }
+  .saved-profile-panel strong { color: var(--color-text); font-size: 0.84rem; }
+  .saved-profile-panel small { color: var(--color-text-muted); font-size: 0.7rem; }
+  .saved-profile-panel .secondary-button { flex: 0 0 auto; }
   .calibration-panel { display: grid; width: 100%; gap: 16px; margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--color-outline-soft); }
   .calibration-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
   .calibration-heading h2 { margin: 4px 0 0; }
@@ -1230,6 +1269,7 @@
     .device-dialog-actions > button { flex: 1; }
     .calibration-heading { align-items: start; flex-direction: column; }
     .state-sync-panel { align-items: stretch; flex-direction: column; }
+    .saved-profile-panel { align-items: stretch; flex-direction: column; }
     .face-color-grid { grid-template-columns: repeat(3, 1fr); }
     .palette-heading { align-items: start; flex-direction: column; }
     .sticker-palette-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
