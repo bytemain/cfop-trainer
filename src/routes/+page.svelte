@@ -8,7 +8,6 @@
     BluetoothSearching,
     BookOpenCheck,
     Check,
-    ChevronRight,
     CircleAlert,
     Download,
     History,
@@ -31,6 +30,7 @@
   import StatusPill from "$lib/components/StatusPill.svelte";
   import TimerDisplay from "$lib/components/TimerDisplay.svelte";
   import CubeConnectionDialog from "$lib/components/CubeConnectionDialog.svelte";
+  import CaseLibrary from "$lib/components/CaseLibrary.svelte";
   import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
   import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
@@ -47,6 +47,8 @@
   let show2dOverlay = $state(true);
   let deviceDialogOpen = $state(false);
   let deviceDialogAutoScan = $state(false);
+  let replayIndex = $state(0);
+  const replayCube = $derived(trainer.reconstruction.replayStates[replayIndex] ?? trainer.cube);
 
   const deviceDialogBusy = $derived(
     ["scanning", "connecting", "authenticating", "synchronizing", "reconnecting"].includes(
@@ -370,23 +372,68 @@
         </aside>
       </div>
     {:else if activeSection === "cases"}
-      <section class="placeholder-page">
-        <BookOpenCheck size={42} />
-        <span class="eyebrow">Case Library</span>
-        <h1>OLL / PLL 定向训练</h1>
-        <p>这里将承载 canonical pattern、推荐算法、setup 引导和单 Case 成功率。当前骨架先保证 Case 与 Algorithm 是多对多关系。</p>
-        <div class="placeholder-list">
-          {#each ["OLL · Sune", "OLL · Anti-Sune", "PLL · T Perm", "PLL · U Perm"] as item}
-            <button>{item}<ChevronRight size={18} /></button>
-          {/each}
-        </div>
-      </section>
+      <CaseLibrary />
     {:else if activeSection === "history"}
-      <section class="placeholder-page">
+      <section class="placeholder-page reconstruction-page">
         <BarChart3 size={42} />
-        <span class="eyebrow">Local-first analytics</span>
-        <h1>历史与弱项</h1>
-        <p>数据库 migration 已包含设备、session、事件序列、desync 和识别版本字段。真实训练接入后可安全计算 PB、Ao5/Ao12 和阶段弱项。</p>
+        <span class="eyebrow">Solve Reconstruction SSOT</span>
+        <h1>本次复盘</h1>
+        {#if trainer.reconstruction.complete}
+          <p>所有阶段、TPS、停顿和回放都来自同一条设备时间轴；UI 不再各自推断阶段。</p>
+          <div class="reconstruction-summary">
+            <article><span>总计</span><strong>{trainer.formatTime(trainer.reconstruction.totalDurationMs ?? 0)}</strong><small>{trainer.reconstruction.moves.length} HTM · {trainer.reconstruction.totalTps ?? "—"} TPS</small></article>
+            <article><span>OLL Case</span><strong>{trainer.reconstruction.ollCase?.name ?? "—"}</strong><small>{trainer.reconstruction.ollCase?.id ?? "未识别"}</small></article>
+            <article><span>PLL Case</span><strong>{trainer.reconstruction.pllCase?.name ?? "—"}</strong><small>{trainer.reconstruction.pllCase?.id ?? "未识别"}</small></article>
+            <article><span>停顿</span><strong>{trainer.reconstruction.pauseCount}</strong><small>≥ 700 ms</small></article>
+          </div>
+          <div class="split-table">
+            {#each trainer.reconstruction.splits as split}
+              <article>
+                <strong>{split.phase.toUpperCase()}</strong>
+                <span>{split.moveCount} moves</span>
+                <span>{split.durationMs === null ? "时间缺失" : trainer.formatTime(split.durationMs)}</span>
+                <span>{split.tps ?? "—"} TPS</span>
+              </article>
+            {/each}
+          </div>
+          {#if trainer.reconstruction.f2lPairs.length > 0}
+            <div class="split-table">
+              {#each trainer.reconstruction.f2lPairs as pair, index}
+                <article><strong>Pair {index + 1}</strong><span>{pair.id}</span><span>move {pair.completedAtMove ?? "—"}</span><span>{pair.durationFromPreviousMs === null ? "—" : trainer.formatTime(pair.durationFromPreviousMs)}</span></article>
+              {/each}
+            </div>
+          {/if}
+          {#each trainer.reconstruction.algorithmComparisons as comparison}
+            <div class="formula-comparison">
+              <strong>{comparison.phase.toUpperCase()} 公式比较</strong>
+              <span>{comparison.equivalentIgnoringAufAndRotations ? "与推荐公式等价（已忽略 AUF / x y z）" : `核心多 ${comparison.extraCoreMoves} 步`}</span>
+              <code>{comparison.recommended.join(" ")}</code>
+            </div>
+          {/each}
+          <div class="move-replay-strip">
+            {#each trainer.reconstruction.moves as entry}<code class:recovered={entry.source === "history"}>{entry.move}</code>{/each}
+          </div>
+          <div class="replay-player">
+            <CubeNet cube={replayCube} />
+            <label>
+              <span>回放 {replayIndex}/{trainer.reconstruction.moves.length}</span>
+              <input type="range" min="0" max={trainer.reconstruction.moves.length} bind:value={replayIndex} />
+            </label>
+            <div>
+              <button class="secondary-button" disabled={replayIndex <= 0} onclick={() => (replayIndex -= 1)}><SkipBack size={17} /> 上一步</button>
+              <button class="secondary-button" disabled={replayIndex >= trainer.reconstruction.moves.length} onclick={() => (replayIndex += 1)}>下一步 <SkipForward size={17} /></button>
+            </div>
+          </div>
+          <div class="cross-suggestion">
+            <button class="secondary-button" onclick={() => trainer.computeCrossSuggestion()}>计算最短 Cross</button>
+            <code>{trainer.crossSuggestion === null ? "按需搜索，最多 8 HTM" : trainer.crossSuggestion.join(" ") || "Cross 在起始状态已完成"}</code>
+          </div>
+          <p>同面抵消后 {trainer.reconstruction.moveEfficiency.cancellationReducedHtm} HTM，检测到 {trainer.reconstruction.moveEfficiency.avoidableMoves} 个可直接抵消动作。历史补回动作以虚线标记。</p>
+        {:else if !trainer.reconstruction.continuous}
+          <p>本段包含 snapshot discontinuity，因此不会伪装成完整解法。重新完成一轮连续训练后才生成 CFOP 分段。</p>
+        {:else}
+          <p>完成一次连续的实体魔方还原后，这里会显示 Cross/F2L/OLL/PLL 分段、设备时间 TPS、停顿、Case 和逐步回放。</p>
+        {/if}
       </section>
     {:else}
       <section class="placeholder-page settings-page">
@@ -450,8 +497,8 @@
               <strong>最近一次标定 · {trainer.signalCalibrationProfile.protocol.toUpperCase()}</strong>
               <small>
                 置信度 {Math.round(trainer.signalCalibrationProfile.overallConfidence * 100)}%
-                · {trainer.signalCalibrationProfile.staticPoses.length}/6 姿态
-                · {trainer.signalCalibrationProfile.dynamicAxes.length}/3 轴
+                · {trainer.signalCalibrationProfile.staticPoses.length}/24 姿态
+                · {trainer.signalCalibrationProfile.dynamicAxes.length}/9 轴轨迹
               </small>
             </div>
             <button class="secondary-button" onclick={() => void downloadSavedSignalProfile()}>
@@ -563,6 +610,9 @@
             <article><span>Move counter</span><strong>{trainer.cubeSequence ?? "—"}</strong></article>
             <article><span>Quaternion</span><code>{trainer.gyroQuaternion ? `${trainer.gyroQuaternion.x.toFixed(3)}, ${trainer.gyroQuaternion.y.toFixed(3)}, ${trainer.gyroQuaternion.z.toFixed(3)}, ${trainer.gyroQuaternion.w.toFixed(3)}` : "等待 0xEC"}</code></article>
             <article><span>Angular velocity</span><code>{trainer.gyroVelocity ? `${trainer.gyroVelocity.x}, ${trainer.gyroVelocity.y}, ${trainer.gyroVelocity.z}` : "—"}</code></article>
+            <article><span>Pose health</span><strong>{trainer.poseHealth.status}</strong><code>{trainer.poseHealth.message}</code></article>
+            <article><span>Session anchor</span><strong>{trainer.sessionAnchor?.reason ?? "等待首帧"}</strong><code>{trainer.sessionAnchor ? new Date(trainer.sessionAnchor.establishedAt).toLocaleTimeString() : "—"}</code></article>
+            <article><span>Timeline</span><strong>{trainer.timelineContinuous ? "连续" : "已截断"}</strong><code>{trainer.timelineItems.length} events</code></article>
           </div>
         </div>
       </section>
@@ -897,18 +947,26 @@
   .placeholder-page > :global(svg) { margin-bottom: 22px; color: var(--color-primary); }
   .placeholder-page h1 { font-size: clamp(2rem, 5vw, 3.6rem); }
   .placeholder-page p { max-width: 620px; color: var(--color-text-muted); line-height: 1.75; }
-  .placeholder-list { display: grid; width: 100%; gap: 8px; margin-top: 22px; }
-  .placeholder-list button {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    min-height: 52px;
-    padding: 0 16px;
-    border-radius: 14px;
-    color: var(--color-text);
-    background: var(--color-surface-high);
-    cursor: pointer;
-  }
+  .reconstruction-page { max-width: 980px; }
+  .reconstruction-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; width: 100%; }
+  .reconstruction-summary article { display: grid; gap: 5px; padding: 14px; border: 1px solid var(--color-outline-soft); border-radius: 15px; background: var(--color-surface-high); }
+  .reconstruction-summary span, .reconstruction-summary small { color: var(--color-text-muted); font-size: 0.68rem; }
+  .reconstruction-summary strong { font-size: 1.15rem; }
+  .split-table { display: grid; gap: 7px; width: 100%; }
+  .split-table article { display: grid; grid-template-columns: 80px repeat(3, 1fr); gap: 12px; padding: 11px 14px; border-radius: 12px; background: var(--color-surface-high); font-size: 0.76rem; }
+  .split-table span { color: var(--color-text-muted); }
+  .move-replay-strip { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; padding: 13px; border-radius: 14px; background: var(--color-surface-high); }
+  .move-replay-strip code { padding: 5px 7px; border-radius: 7px; color: var(--color-text); background: var(--color-surface-highest); }
+  .move-replay-strip code.recovered { border-bottom: 1px dashed var(--color-warning); color: var(--color-warning); }
+  .replay-player { display: grid; grid-template-columns: 180px minmax(220px, 1fr); gap: 16px; align-items: center; width: 100%; padding: 14px; border: 1px solid var(--color-outline-soft); border-radius: 16px; }
+  .replay-player label { display: grid; gap: 9px; color: var(--color-text-muted); font-size: 0.74rem; }
+  .replay-player input { width: 100%; accent-color: var(--color-primary); }
+  .replay-player div { display: flex; gap: 8px; }
+  .cross-suggestion { display: flex; align-items: center; gap: 12px; width: 100%; }
+  .cross-suggestion code { color: var(--color-primary); }
+  .formula-comparison { display: grid; gap: 6px; width: 100%; padding: 13px 15px; border-left: 3px solid var(--color-primary); border-radius: 10px; background: var(--color-surface-high); }
+  .formula-comparison span { color: var(--color-text-muted); font-size: 0.74rem; }
+  .formula-comparison code { overflow-wrap: anywhere; color: var(--color-info); }
   .settings-page { gap: 14px; }
   .settings-page label { display: grid; width: 100%; max-width: 480px; gap: 8px; color: var(--color-text-muted); font-size: 0.78rem; }
   .settings-page select {
@@ -1081,5 +1139,9 @@
     .bottom-navigation button { gap: 3px; border-radius: 16px; font-size: 0.65rem; }
     .bottom-navigation button.active { color: var(--color-primary); background: rgb(135 232 188 / 0.08); }
     .placeholder-page { min-height: 420px; margin: 0; padding: 30px 22px; border-radius: 20px; }
+    .reconstruction-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .split-table article { grid-template-columns: 64px 1fr; }
+    .replay-player { grid-template-columns: 1fr; }
+    .cross-suggestion { align-items: stretch; flex-direction: column; }
   }
 </style>

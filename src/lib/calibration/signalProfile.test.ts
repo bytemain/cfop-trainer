@@ -3,6 +3,7 @@ import {
   averageQuaternions,
   createSignalCalibrationProfile,
   deriveGyroCalibrationFromSignalProfile,
+  expectedCubePoseMatrix,
   quaternionAngularDistanceDeg,
   serializeSignalCalibrationProfile,
   summarizeCompoundMotionValidation,
@@ -11,7 +12,26 @@ import {
   summarizeMoveValidation,
   summarizeStaticPose,
 } from "./signalProfile";
-import { multiplyQuaternions, quaternionFromAxisAngle } from "$lib/cube/orientation";
+import {
+  applyMatrix3,
+  multiplyMatrix3,
+  multiplyQuaternions,
+  quaternionFromAxisAngle,
+  quaternionMatrix,
+  transposeMatrix3,
+  type Matrix3,
+} from "$lib/cube/orientation";
+import { Euler, Matrix4, Quaternion } from "three";
+
+function quaternionFromMatrix(matrix: Matrix3) {
+  const value = new Quaternion().setFromRotationMatrix(new Matrix4().set(
+    matrix[0][0], matrix[0][1], matrix[0][2], 0,
+    matrix[1][0], matrix[1][1], matrix[1][2], 0,
+    matrix[2][0], matrix[2][1], matrix[2][2], 0,
+    0, 0, 0, 1,
+  )).normalize();
+  return { x: value.x, y: value.y, z: value.z, w: value.w };
+}
 
 describe("signal calibration profile", () => {
   it("treats q and -q as the same pose when averaging", () => {
@@ -185,6 +205,61 @@ describe("signal calibration profile", () => {
         { physicalAxis: "white-yellow", positiveFace: "white", protocolAxis: "z", sign: 1, sampleCount: 20, activeSampleCount: 10, dominance: 1, confidence: 1, signalSource: "quaternion-delta" },
       ],
     })).toBeNull();
+  });
+
+  it("solves a non-axis-aligned sensor mounting with weighted Wahba/Kabsch", () => {
+    const mountingQuaternion = new Quaternion().setFromEuler(new Euler(0.31, -0.22, 0.17, "XYZ"));
+    const mounting = quaternionMatrix({
+      x: mountingQuaternion.x,
+      y: mountingQuaternion.y,
+      z: mountingQuaternion.z,
+      w: mountingQuaternion.w,
+    });
+    const poses = [
+      ["white", "green"], ["white", "red"], ["yellow", "blue"],
+      ["red", "white"], ["orange", "green"], ["green", "yellow"],
+      ["blue", "red"], ["yellow", "orange"],
+    ] as const;
+    const staticPoses = poses.map(([top, front]) => {
+      const expected = expectedCubePoseMatrix(top, front);
+      const sensor = multiplyMatrix3(multiplyMatrix3(transposeMatrix3(mounting), expected), mounting);
+      return {
+        top,
+        front,
+        average: quaternionFromMatrix(sensor),
+        sampleCount: 20,
+        maxAngularDeviationDeg: 0.2,
+        confidence: 0.98,
+      };
+    });
+    const dynamicAxes = [
+      { physicalAxis: "red-orange", positiveFace: "red", expected: [-1, 0, 0] },
+      { physicalAxis: "blue-green", positiveFace: "blue", expected: [0, 0, 1] },
+      { physicalAxis: "white-yellow", positiveFace: "white", expected: [0, -1, 0] },
+    ].map(({ physicalAxis, positiveFace, expected }) => {
+      const sensor = applyMatrix3(transposeMatrix3(mounting), expected as [number, number, number]);
+      const dominant = sensor.map(Math.abs).indexOf(Math.max(...sensor.map(Math.abs)));
+      return {
+        physicalAxis: physicalAxis as "red-orange" | "blue-green" | "white-yellow",
+        positiveFace: positiveFace as "red" | "blue" | "white",
+        motionDirection: "clockwise" as const,
+        targetAngleDeg: 90 as const,
+        protocolAxis: (["x", "y", "z"] as const)[dominant],
+        sign: (sensor[dominant] < 0 ? -1 : 1) as 1 | -1,
+        axisVector: sensor,
+        sampleCount: 20,
+        activeSampleCount: 12,
+        dominance: Math.max(...sensor.map(Math.abs)),
+        confidence: 0.98,
+        signalSource: "quaternion-delta" as const,
+        quaternionDeltaOrder: "current-previous-inverse" as const,
+      };
+    });
+    const derived = deriveGyroCalibrationFromSignalProfile({ staticPoses, dynamicAxes });
+    expect(derived?.solver).toBe("wahba-kabsch");
+    expect(derived?.valid).toBe(true);
+    expect(derived?.meanPoseErrorDeg).toBeLessThan(0.1);
+    expect(derived?.maxPoseErrorDeg).toBeLessThan(0.2);
   });
 
   it("reduces in-memory frames to byte indexes instead of persisted bytes", () => {

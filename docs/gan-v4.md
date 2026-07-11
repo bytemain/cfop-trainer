@@ -57,14 +57,11 @@ GAN16 ui 当前固件的独立 4-bit angular velocity 在受控采样中可能�
 
 ## 可靠性策略
 
-应用以完整 snapshot 的 counter 建立基线。实时 move counter 必须连续；发现 gap 时：
+应用以完整 snapshot 的 counter 建立基线。实时 move 先进入按 16-bit counter 排序的 FIFO；发现 gap 时优先请求 `0xD1` 历史窗口，并把响应中的 8-bit counter 按当前 epoch 展开回 16-bit。补齐后按原顺序交付 Trainer，时间线保持连续。
 
-1. 当前训练标记为 desync，不计入可信成绩；
-2. 停止计时并进入 degraded；
-3. 主动请求新的完整 snapshot；
-4. cubie 校验通过后恢复实时镜像，但本次训练保持无效语义。
+连续三次历史请求仍无法补齐时才降级请求完整 snapshot。snapshot 会在 `MoveTimeline` 中写入显式 discontinuity；后续分析不得把两段状态拼成完整解法，也不会给历史动作伪造设备时间戳。
 
-历史动作请求和解析已保留为下一阶段能力；当前正式恢复路径以完整 snapshot 为准，避免在尚未完成高压丢包 fixture 前错误拼接历史动作。
+设备 `uint32` 时间戳由 `CubeClock` 展开并与 host receive time 建立低通 offset。动作间隔、最终成绩和阶段 TPS 优先使用设备时钟；本地时钟只负责显示插值、offset 观察和没有设备时间的降级路径。
 
 ## 已验证真机结果
 

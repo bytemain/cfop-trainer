@@ -8,12 +8,29 @@ export interface CubeMoveEvent {
   cubeTimestamp?: number;
   receivedAt: number;
   protocol: GanProtocolVersion;
+  source?: "live" | "history";
+}
+
+export interface CubeContinuityEvent {
+  type: "history-recovery-started" | "history-recovered" | "discontinuity";
+  previousSequence: number;
+  targetSequence: number;
+  recoveredMoves?: number;
+  reason?: string;
+  snapshot?: CubeSnapshot;
+  receivedAt: number;
 }
 
 export interface CubeSnapshot {
   facelets: string;
   sequence?: number;
   receivedAt: number;
+}
+
+export interface CubeHardwareInfo {
+  hardwareName?: string;
+  softwareVersion?: string;
+  hardwareVersion?: string;
 }
 
 export interface CubeQuaternion {
@@ -33,7 +50,7 @@ export interface CubeOrientationEvent {
 export interface CubeSignalFrameEvent {
   bytes: Uint8Array;
   layer: "decrypted" | "encrypted";
-  packetType: "gyro" | "move" | "snapshot" | "battery" | "hardware" | "unknown";
+  packetType: "gyro" | "move" | "move-history" | "snapshot" | "battery" | "hardware" | "unknown";
   receivedAt: number;
   protocol: GanProtocolVersion;
 }
@@ -49,10 +66,12 @@ export interface SmartCubeSession {
   readonly protocol: GanProtocolVersion;
   initialSnapshot(): Promise<CubeSnapshot>;
   moves(listener: (event: CubeMoveEvent) => void): Promise<() => Promise<void>>;
+  continuity(listener: (event: CubeContinuityEvent) => void): Promise<() => Promise<void>>;
   orientation(listener: (event: CubeOrientationEvent) => void): Promise<() => Promise<void>>;
   signals(listener: (event: CubeSignalFrameEvent) => void): Promise<() => Promise<void>>;
   requestSnapshot(): Promise<CubeSnapshot>;
   batteryLevel(): Promise<number | undefined>;
+  hardwareInfo(): Promise<CubeHardwareInfo | undefined>;
   disconnect(): Promise<void>;
 }
 

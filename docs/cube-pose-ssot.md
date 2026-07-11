@@ -50,7 +50,7 @@ GAN protocol parsing produces a normalized sensor quaternion in `(x,y,z,w)`
 storage order. The parser may reorder packet fields, but it must not apply UI
 or CSS conventions.
 
-The sensor quaternion alone is not a `CubePose`. Calibration owns exactly two
+The sensor quaternion alone is not a `CubePose`. Persistent device calibration owns exactly two
 unknowns:
 
 1. `relativeOrder`, one of:
@@ -70,6 +70,18 @@ Rdelta = relativeOrder(reference, current)
 Rcube  = bodyToModel · Rdelta · bodyToModelᵀ
 ```
 
+Runtime state is split into three independent records:
+
+- `DeviceCalibration`: persistent sensor-to-cube mapping, relative order and residuals;
+- `SessionAnchor`: in-memory sensor reference plus the canonical pose it represents;
+- `ViewPreference`: persistent camera offsets/inversion controls, never protocol evidence.
+
+`SessionAnchor` is recreated for a new physical sensor session and retained by
+the HMR-preserved store while the Rust BLE connection remains alive. A long
+background gap is checked before the next quaternion is accepted. If the
+sensor frame appears to have reset, the new sensor reference is anchored to
+the last accepted canonical pose so the renderer cannot jump arbitrarily.
+
 The multiplication order is data, not an implementation detail. ROS tf2 also
 defines a relative rotation that takes `q1` to `q2` as
 `q_relative = q2 × inverse(q1)` and explicitly warns that order matters.
@@ -79,10 +91,11 @@ defines a relative rotation that takes `q1` to `q2` as
 The solver must jointly choose `relativeOrder` and `bodyToModel`. It may not
 derive one in the protocol parser and silently compensate for it in the UI.
 
-For the current GAN calibration flow it evaluates:
+For the current GAN calibration flow it evaluates both:
 
 ```text
 2 relative orders × 24 proper signed-axis rotations
+2 relative orders × weighted Wahba/Kabsch continuous SO(3) fits
 ```
 
 Each candidate is scored against:
@@ -93,6 +106,11 @@ Each candidate is scored against:
 The three dynamic axes are validation evidence; they are not by themselves a
 complete pose model. A calibration persists its mean/max angular residual so a
 poor capture cannot masquerade as an exact mapping.
+
+Every static capture also receives an individual residual. Outliers can be
+recaptured without discarding the remaining profile. Dynamic trajectories
+retain their normalized three-component axis vector; reducing them to only a
+dominant signed axis is insufficient for a continuous mounting solution.
 
 ### Calibration protocol V2
 
@@ -141,6 +159,9 @@ pose. Compensation is deliberately split by responsibility:
 - **Long gaps**: freeze at the latest absolute orientation. Do not extrapolate
   indefinitely from estimated angular velocity; GAN16 currently reports zero
   angular velocity, and runaway prediction is worse than a short visual hold.
+- **Health gate**: reject non-finite/non-unit packets and implausible >105°
+  single-frame jumps at normal cadence. Quaternion sign flips `q ↔ -q` are
+  aligned before comparison and are never treated as motion.
 
 ## 5. Renderer boundary
 

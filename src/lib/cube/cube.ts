@@ -21,6 +21,18 @@ export interface PhaseFacts {
   cubeSolved: boolean;
 }
 
+export interface F2lSlotFact {
+  id: string;
+  colors: StickerColor[];
+  solved: boolean;
+}
+
+export interface CrossEdgeCoordinate {
+  id: string;
+  coordinate: string;
+  solved: boolean;
+}
+
 export type CfopPhase = "cross" | "f2l" | "oll" | "pll" | "done";
 
 type Vec3 = readonly [number, number, number];
@@ -238,6 +250,19 @@ export function applyMoves(state: CubeState, moves: readonly string[]): CubeStat
   return moves.reduce((current, move) => applyMove(current, move), cloneCube(state));
 }
 
+export function rotateCube(state: CubeState, notation: string): CubeState {
+  const match = /^([xyz])(2|')?$/.exec(notation.trim());
+  if (!match) throw new Error(`Unsupported cube rotation: ${notation}`);
+  const axis = ({ x: 0, y: 1, z: 2 } as const)[match[1] as "x" | "y" | "z"];
+  const amount = match[2] === "'" ? -1 : match[2] === "2" ? 2 : 1;
+  const turns = -amount;
+  return fromStickers(toStickers(state).map((sticker) => ({
+    ...sticker,
+    position: rotatePositiveAxis(sticker.position, axis, turns),
+    normal: rotatePositiveAxis(sticker.normal, axis, turns),
+  })));
+}
+
 export function isSolved(state: CubeState): boolean {
   return FACES.every((face) => state[face].every((color) => color === state[face][4]));
 }
@@ -299,6 +324,50 @@ function f2lSlotPositions(crossNormal: Vec3): Vec3[][] {
       edge[crossAxis] = 0;
       return [corner, edge];
     });
+}
+
+export function deriveF2lSlotFacts(
+  state: CubeState,
+  crossColor: StickerColor = "white",
+): F2lSlotFact[] {
+  const crossFace = crossFaceForColor(state, crossColor);
+  const crossNormal = stickerGeometry(crossFace, 4).normal;
+  const stickers = toStickers(state);
+  return f2lSlotPositions(crossNormal).map((positionsForSlot) => {
+    const corner = positionsForSlot[0];
+    const colors = stickers
+      .filter((sticker) => sticker.position.every((value, index) => value === corner[index]))
+      .map((sticker) => sticker.color);
+    const sideColors = colors.filter((color) => color !== crossColor).sort();
+    return {
+      id: sideColors.join("-"),
+      colors,
+      solved: cubiesAreSolved(state, positionsForSlot),
+    };
+  });
+}
+
+export function deriveCrossEdgeCoordinates(
+  state: CubeState,
+  crossColor: StickerColor = "white",
+): CrossEdgeCoordinate[] {
+  const crossFace = crossFaceForColor(state, crossColor);
+  const crossNormal = stickerGeometry(crossFace, 4).normal;
+  const stickers = toStickers(state);
+  return positions().filter((position) => position.filter((value) => value === 0).length === 1)
+    .flatMap((position) => {
+      const cubie = stickers.filter((sticker) => sticker.position.every((value, index) => value === position[index]));
+      const crossSticker = cubie.find((sticker) => sticker.color === crossColor);
+      if (!crossSticker) return [];
+      const partner = cubie.find((sticker) => sticker.color !== crossColor)!;
+      const partnerGoalFace = FACES.find((face) => state[face][4] === partner.color)!;
+      const partnerGoalNormal = stickerGeometry(partnerGoalFace, 4).normal;
+      return [{
+        id: partner.color,
+        coordinate: `${position.join("")}:${crossSticker.normal.join("")}`,
+        solved: sameVector(crossSticker.normal, crossNormal) && sameVector(partner.normal, partnerGoalNormal),
+      }];
+    }).sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function derivePhaseFacts(

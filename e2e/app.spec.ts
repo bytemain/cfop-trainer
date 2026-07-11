@@ -164,6 +164,32 @@ test("opens signal calibration as a dedicated page", async ({ page }, testInfo) 
   await expect(page.getByRole("dialog", { name: "选择蓝牙魔方" })).toBeVisible();
 });
 
+test("browses, filters and prepares an OLL or PLL case", async ({ page }, testInfo) => {
+  const isMobile = testInfo.project.name === "mobile-chromium";
+  const navigation = isMobile ? page.locator(".bottom-navigation") : page.locator(".navigation-rail");
+  await navigation.getByRole("button", { name: "Case" }).click();
+
+  await expect(page.getByRole("heading", { name: "OLL / PLL 定向训练" })).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "查看 OLL 27 Sune" }).click();
+  await expect(page.getByRole("heading", { name: "Sune" })).toBeVisible();
+  await expect(page.getByLabel("Sune 标准图案，黄色顶面朝上，绿色面朝前")).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "返回 Case 列表" }).click();
+
+  const search = page.getByPlaceholder("搜索名称、别名、识别特征或公式");
+  await search.fill("逆小鱼");
+  await expect(page.getByRole("button", { name: "查看 OLL 26 Anti-Sune" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看 OLL 27 Sune" })).toHaveCount(0);
+
+  await search.fill("");
+  await page.getByLabel("Case 分类").getByRole("button", { name: "PLL" }).click();
+  await page.getByRole("button", { name: "查看 PLL 4 T Perm" }).click();
+  await expect(page.getByRole("heading", { name: "T Perm" })).toBeVisible();
+  await page.getByRole("button", { name: "开始练习" }).click();
+  await expect(page.getByText("T Perm 练习准备中")).toBeVisible();
+  const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+  expect(hasOverflow).toBe(false);
+});
+
 test("uses the correct responsive navigation without horizontal overflow", async ({ page }, testInfo) => {
   const isMobile = testInfo.project.name === "mobile-chromium";
   await expect(page.locator(".navigation-rail")).toBeVisible({ visible: !isMobile });

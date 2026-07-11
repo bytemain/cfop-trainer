@@ -1,9 +1,11 @@
 import type { BleConnection, DiscoveredDevice } from "$lib/ble/types";
 import type {
   CubeMoveEvent,
+  CubeContinuityEvent,
   CubeOrientationEvent,
   CubeSignalFrameEvent,
   CubeSnapshot,
+  CubeHardwareInfo,
   GanProtocolAdapter,
   GanProtocolMatch,
   SmartCubeSession,
@@ -17,6 +19,7 @@ import {
 } from "./crypto";
 import {
   createGanV4Request,
+  createGanV4HistoryRequest,
   parseGanV4Packet,
   type GanV4Packet,
 } from "./parser";
@@ -34,6 +37,7 @@ interface PendingResponse<T> {
 class GanV4Session implements SmartCubeSession {
   readonly protocol = "v4" as const;
   private listeners = new Set<(event: CubeMoveEvent) => void>();
+  private continuityListeners = new Set<(event: CubeContinuityEvent) => void>();
   private orientationListeners = new Set<(event: CubeOrientationEvent) => void>();
   private signalListeners = new Set<(event: CubeSignalFrameEvent) => void>();
   private pendingSnapshots: PendingResponse<CubeSnapshot>[] = [];
@@ -44,6 +48,13 @@ class GanV4Session implements SmartCubeSession {
   private parseFailures = 0;
   private cipher: GanV2Cipher | null = null;
   private calibrationPackets: Uint8Array[] = [];
+  private moveBuffer = new Map<number, CubeMoveEvent>();
+  private lastEmittedSequence: number | null = null;
+  private historyTimer: ReturnType<typeof setTimeout> | null = null;
+  private historyAttempts = 0;
+  private historyTarget: number | null = null;
+  private recoveryInFlight = false;
+  private hardware: CubeHardwareInfo = {};
 
   constructor(
     readonly device: DiscoveredDevice,
@@ -74,6 +85,13 @@ class GanV4Session implements SmartCubeSession {
     this.listeners.add(listener);
     return Promise.resolve(async () => {
       this.listeners.delete(listener);
+    });
+  }
+
+  continuity(listener: (event: CubeContinuityEvent) => void): Promise<() => Promise<void>> {
+    this.continuityListeners.add(listener);
+    return Promise.resolve(async () => {
+      this.continuityListeners.delete(listener);
     });
   }
 
@@ -109,12 +127,19 @@ class GanV4Session implements SmartCubeSession {
     );
   }
 
+  async hardwareInfo(): Promise<CubeHardwareInfo | undefined> {
+    await this.send(createGanV4Request("hardware"));
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    return Object.keys(this.hardware).length > 0 ? { ...this.hardware } : undefined;
+  }
+
   async disconnect(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     safeLogger.info("gan-v4", "session-disconnect", { name: this.device.name });
     await this.unsubscribe?.().catch(() => undefined);
     this.rejectPending(new Error("GAN cube disconnected"));
+    if (this.historyTimer) clearTimeout(this.historyTimer);
     await this.connection.disconnect();
   }
 
@@ -199,7 +224,7 @@ class GanV4Session implements SmartCubeSession {
       if (!this.cipher) return;
       const decoded = this.cipher.decode(encrypted);
       const packet = parseGanV4Packet(decoded);
-      const packetType = packet.type === "move-history" ? "unknown" : packet.type;
+      const packetType = packet.type === "move-history" ? "move-history" : packet.type;
       const signal: CubeSignalFrameEvent = {
         bytes: decoded.slice(),
         layer: "decrypted",
@@ -239,6 +264,7 @@ class GanV4Session implements SmartCubeSession {
         sequence: packet.sequence,
         receivedAt: Date.now(),
       };
+      this.establishMoveBaseline(snapshot.sequence ?? null);
       this.resolveNext(this.pendingSnapshots, snapshot);
       return;
     }
@@ -260,6 +286,18 @@ class GanV4Session implements SmartCubeSession {
       return;
     }
 
+    if (packet.type === "hardware") {
+      if (packet.mode === 0xfc && packet.value) this.hardware.hardwareName = packet.value;
+      if (packet.mode === 0xfd && packet.value) this.hardware.softwareVersion = packet.value;
+      if (packet.mode === 0xfe && packet.value) this.hardware.hardwareVersion = packet.value;
+      return;
+    }
+
+    if (packet.type === "move-history") {
+      this.handleMoveHistory(packet);
+      return;
+    }
+
     if (packet.type !== "move") return;
 
     safeLogger.debug("gan-v4", "move-received", {
@@ -273,8 +311,192 @@ class GanV4Session implements SmartCubeSession {
       cubeTimestamp: packet.cubeTimestamp,
       receivedAt: Date.now(),
       protocol: "v4",
+      source: "live",
     };
-    for (const listener of this.listeners) listener(event);
+    this.enqueueMove(event);
+  }
+
+  private establishMoveBaseline(sequence: number | null): void {
+    if (sequence === null) return;
+    this.lastEmittedSequence = sequence;
+    for (const bufferedSequence of this.moveBuffer.keys()) {
+      const distance = (bufferedSequence - sequence) & 0xffff;
+      if (distance === 0 || distance >= 0x8000) this.moveBuffer.delete(bufferedSequence);
+    }
+    this.drainMoveBuffer();
+  }
+
+  private enqueueMove(event: CubeMoveEvent): void {
+    if (this.lastEmittedSequence !== null) {
+      const distance = (event.sequence - this.lastEmittedSequence) & 0xffff;
+      if (distance === 0 || distance >= 0x8000) return;
+    }
+    if (!this.moveBuffer.has(event.sequence)) this.moveBuffer.set(event.sequence, event);
+    this.drainMoveBuffer();
+  }
+
+  private drainMoveBuffer(): void {
+    if (this.lastEmittedSequence === null) return;
+    let cursor = this.lastEmittedSequence;
+    let emitted = 0;
+    while (true) {
+      const nextSequence: number = (cursor + 1) & 0xffff;
+      const next = this.moveBuffer.get(nextSequence);
+      if (!next) break;
+      this.moveBuffer.delete(nextSequence);
+      cursor = nextSequence;
+      this.lastEmittedSequence = cursor;
+      emitted += 1;
+      for (const listener of this.listeners) listener(next);
+    }
+
+    if (emitted > 0 && this.recoveryInFlight && this.historyTarget !== null) {
+      const remaining = (this.historyTarget - cursor) & 0xffff;
+      if (remaining === 0 || remaining >= 0x8000) {
+        this.finishHistoryRecovery(emitted);
+      }
+    }
+
+    const head = this.nearestBufferedSequence();
+    if (head !== null && ((head - cursor) & 0xffff) > 1) {
+      void this.requestMissingMoves(head);
+    }
+  }
+
+  private nearestBufferedSequence(): number | null {
+    if (this.lastEmittedSequence === null || this.moveBuffer.size === 0) return null;
+    return [...this.moveBuffer.keys()].sort((left, right) =>
+      ((left - this.lastEmittedSequence!) & 0xffff) -
+      ((right - this.lastEmittedSequence!) & 0xffff)
+    )[0] ?? null;
+  }
+
+  private async requestMissingMoves(targetSequence: number): Promise<void> {
+    if (this.closed || this.lastEmittedSequence === null) return;
+    if (this.recoveryInFlight && this.historyTarget === targetSequence) return;
+    if (this.recoveryInFlight) return;
+
+    this.recoveryInFlight = true;
+    this.historyTarget = targetSequence;
+    this.historyAttempts = 0;
+    this.emitContinuity({
+      type: "history-recovery-started",
+      previousSequence: this.lastEmittedSequence,
+      targetSequence,
+      receivedAt: Date.now(),
+    });
+    await this.sendHistoryAttempt();
+  }
+
+  private async sendHistoryAttempt(): Promise<void> {
+    if (this.lastEmittedSequence === null || this.historyTarget === null || this.closed) return;
+    this.historyAttempts += 1;
+    const missingWindow = (this.historyTarget - this.lastEmittedSequence) & 0xffff;
+    try {
+      await this.send(createGanV4HistoryRequest(this.historyTarget & 0xff, missingWindow));
+    } catch (error) {
+      safeLogger.warn("gan-v4", "history-request-write-failed", {
+        attempt: this.historyAttempts,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (this.historyTimer) clearTimeout(this.historyTimer);
+    this.historyTimer = setTimeout(() => void this.onHistoryTimeout(), 900);
+  }
+
+  private async onHistoryTimeout(): Promise<void> {
+    this.historyTimer = null;
+    if (!this.recoveryInFlight || this.historyTarget === null || this.lastEmittedSequence === null) return;
+    if (this.historyAttempts < 3) {
+      await this.sendHistoryAttempt();
+      return;
+    }
+
+    const previousSequence = this.lastEmittedSequence;
+    const targetSequence = this.historyTarget;
+    safeLogger.warn("gan-v4", "history-recovery-fallback", {
+      previousSequence,
+      targetSequence,
+      attempts: this.historyAttempts,
+    });
+    this.resetHistoryRecovery();
+    try {
+      const snapshot = await this.requestSnapshot();
+      this.moveBuffer.clear();
+      this.establishMoveBaseline(snapshot.sequence ?? targetSequence);
+      this.emitContinuity({
+        type: "discontinuity",
+        previousSequence,
+        targetSequence,
+        reason: "move-history-timeout",
+        snapshot,
+        receivedAt: Date.now(),
+      });
+    } catch (error) {
+      this.emitContinuity({
+        type: "discontinuity",
+        previousSequence,
+        targetSequence,
+        reason: `move-history-and-snapshot-failed: ${error instanceof Error ? error.message : String(error)}`,
+        receivedAt: Date.now(),
+      });
+    }
+  }
+
+  private handleMoveHistory(packet: Extract<GanV4Packet, { type: "move-history" }>): void {
+    if (!this.recoveryInFlight || this.historyTarget === null) return;
+    if (this.historyTimer) {
+      clearTimeout(this.historyTimer);
+      this.historyTimer = null;
+    }
+    for (const recovered of packet.moves) {
+      const sequence = this.expandHistorySequence(recovered.sequence, this.historyTarget);
+      if (this.moveBuffer.has(sequence)) continue;
+      this.moveBuffer.set(sequence, {
+        move: recovered.move,
+        sequence,
+        receivedAt: Date.now(),
+        protocol: "v4",
+        source: "history",
+      });
+    }
+    this.drainMoveBuffer();
+    if (this.recoveryInFlight) void this.sendHistoryAttempt();
+  }
+
+  private expandHistorySequence(lowByte: number, reference: number): number {
+    const base = reference & 0xff00;
+    const candidates = [base | lowByte, ((base - 0x100) | lowByte) & 0xffff, ((base + 0x100) | lowByte) & 0xffff];
+    return candidates.sort((left, right) => {
+      const leftDistance = Math.min((left - reference) & 0xffff, (reference - left) & 0xffff);
+      const rightDistance = Math.min((right - reference) & 0xffff, (reference - right) & 0xffff);
+      return leftDistance - rightDistance;
+    })[0];
+  }
+
+  private finishHistoryRecovery(recoveredMoves: number): void {
+    if (this.lastEmittedSequence === null || this.historyTarget === null) return;
+    const targetSequence = this.historyTarget;
+    this.emitContinuity({
+      type: "history-recovered",
+      previousSequence: this.lastEmittedSequence,
+      targetSequence,
+      recoveredMoves,
+      receivedAt: Date.now(),
+    });
+    this.resetHistoryRecovery();
+  }
+
+  private resetHistoryRecovery(): void {
+    if (this.historyTimer) clearTimeout(this.historyTimer);
+    this.historyTimer = null;
+    this.recoveryInFlight = false;
+    this.historyTarget = null;
+    this.historyAttempts = 0;
+  }
+
+  private emitContinuity(event: CubeContinuityEvent): void {
+    for (const listener of this.continuityListeners) listener(event);
   }
 
   private resolveNext<T>(queue: PendingResponse<T>[], value: T): void {

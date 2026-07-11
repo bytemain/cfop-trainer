@@ -4,10 +4,12 @@ import { TauriBlecTransport } from "$lib/ble/tauriBlecTransport";
 import {
   applyMove,
   applyMoves,
+  cloneCube,
   createSolvedCube,
   cubeStateFromFacelets,
   derivePhase,
   derivePhaseFacts,
+  deriveF2lSlotFacts,
   invertAlgorithm,
   isSolved,
   normalizeMove,
@@ -22,12 +24,21 @@ import {
 import { ganProtocolAdapterFor, registerBuiltInGanProtocols } from "$lib/protocols/gan";
 import type {
   CubeMoveEvent,
+  CubeContinuityEvent,
   CubeOrientationEvent,
   CubeQuaternion,
   CubeSignalFrameEvent,
   SmartCubeSession,
 } from "$lib/protocols/gan/types";
-import { DEFAULT_GYRO_CALIBRATION, type GyroCalibration } from "$lib/cube/orientation";
+import {
+  DEFAULT_DEVICE_CALIBRATION,
+  DEFAULT_VIEW_PREFERENCE,
+  composeGyroCalibration,
+  type DeviceCalibration,
+  type GyroCalibration,
+  type SessionAnchor,
+  type ViewPreference,
+} from "$lib/cube/orientation";
 import { trainingMachine, type TrainingMachineEvent } from "$lib/sessions/trainingMachine";
 import { safeLogger } from "$lib/logging/safeLogger";
 import {
@@ -39,6 +50,11 @@ import {
   deriveGyroCalibrationFromSignalProfile,
   type SignalCalibrationProfile,
 } from "$lib/calibration/signalProfile";
+import { CubeClock, type CubeClockSample } from "$lib/timeline/cubeClock";
+import { MoveTimeline, type MoveTimelineItem } from "$lib/timeline/moveTimeline";
+import { PoseSession, type PoseHealth } from "$lib/pose/poseSession";
+import { reconstructSolve } from "$lib/analysis/solveReconstruction";
+import { solveCrossOptimal } from "$lib/analysis/crossSolver";
 
 const SCRAMBLE_FACES = ["U", "R", "F", "D", "L", "B"] as const;
 const SCRAMBLE_SUFFIXES = ["", "'", "2"] as const;
@@ -118,10 +134,22 @@ class TrainerStore {
   crossColor = $state<StickerColor>("white");
   connectedDeviceName = $state<string | null>(null);
   battery = $state<number | null>(null);
+  firmwareVersion = $state("unknown");
+  hardwareVersion = $state("unknown");
   demoPlaying = $state(false);
   faceColors = $state({ ...SOLVED_COLORS });
   stickerPalette = $state<StickerPalette>({ ...BRIGHT_STICKER_PALETTE });
-  gyroCalibration = $state<GyroCalibration>({ ...DEFAULT_GYRO_CALIBRATION });
+  deviceCalibration = $state<DeviceCalibration>({ ...DEFAULT_DEVICE_CALIBRATION });
+  sessionAnchor = $state<SessionAnchor | null>(null);
+  viewPreference = $state<ViewPreference>({ ...DEFAULT_VIEW_PREFERENCE });
+  poseHealth = $state<PoseHealth>({
+    status: "initializing",
+    message: "等待第一帧姿态",
+    lastAcceptedAt: null,
+    rejectedFrames: 0,
+    reanchorCount: 0,
+    lastStepDeg: null,
+  });
   gyroQuaternion = $state<CubeQuaternion | null>(null);
   gyroVelocity = $state<{ x: number; y: number; z: number } | null>(null);
   cubeSequence = $state<number | null>(null);
@@ -132,6 +160,9 @@ class TrainerStore {
   signalFrameSerial = $state(0);
   lastSignalFrame = $state<CubeSignalFrameEvent | null>(null);
   signalCalibrationProfile = $state<SignalCalibrationProfile | null>(null);
+  timelineItems = $state<readonly MoveTimelineItem[]>([]);
+  timelineContinuous = $state(true);
+  crossSuggestion = $state<string[] | null>(null);
 
   phase = $derived(derivePhase(this.cube, this.crossColor));
   facts = $derived(derivePhaseFacts(this.cube, this.crossColor));
@@ -143,6 +174,12 @@ class TrainerStore {
   whiteYellowSwapped = $derived(
     this.faceColors.U === "yellow" && this.faceColors.D === "white",
   );
+  reconstruction = $derived(reconstructSolve(this.timelineItems, this.crossColor));
+  f2lSlots = $derived(deriveF2lSlotFacts(this.cube, this.crossColor));
+
+  get gyroCalibration(): GyroCalibration {
+    return composeGyroCalibration(this.deviceCalibration, this.sessionAnchor, this.viewPreference);
+  }
 
   private actor = createActor(trainingMachine);
   private startedAt: number | null = null;
@@ -151,12 +188,21 @@ class TrainerStore {
   private demoPlaybackHandle: ReturnType<typeof setInterval> | null = null;
   private session: SmartCubeSession | null = null;
   private unsubscribeMoves: (() => Promise<void>) | null = null;
+  private unsubscribeContinuity: (() => Promise<void>) | null = null;
   private unsubscribeOrientation: (() => Promise<void>) | null = null;
   private unsubscribeSignals: (() => Promise<void>) | null = null;
   private lastCubeSequence: number | undefined;
   private connectedDeviceId: string | null = null;
   private initializationPromise: Promise<void> | null = null;
   private preferencesInitialized = false;
+  private initialSynchronizing = false;
+  private initialMoveQueue: CubeMoveEvent[] = [];
+  private cubeClock = new CubeClock();
+  private moveTimeline = new MoveTimeline();
+  private solveStartedCubeTime: number | null = null;
+  private solveStartedEstimatedHostTime: number | null = null;
+  private latestCubeClockSample: CubeClockSample | null = null;
+  private poseSession = new PoseSession(this.deviceCalibration, this.viewPreference);
 
   constructor() {
     registerBuiltInGanProtocols();
@@ -263,13 +309,21 @@ class TrainerStore {
 
       this.connection = "synchronizing";
       this.connectionMessage = "正在读取完整 54 格状态和 move counter…";
+      this.initialSynchronizing = true;
+      this.initialMoveQueue = [];
+      this.unsubscribeMoves = await this.session.moves((event) => this.handleRealMove(event));
+      this.unsubscribeContinuity = await this.session.continuity((event) => this.handleContinuity(event));
+      this.unsubscribeOrientation = await this.session.orientation((event) => this.handleOrientation(event));
+      this.unsubscribeSignals = await this.session.signals((event) => this.handleSignalFrame(event));
       const snapshot = await this.session.initialSnapshot();
       this.cube = cubeStateFromFacelets(snapshot.facelets, this.faceColors);
       this.lastCubeSequence = snapshot.sequence;
       this.cubeSequence = snapshot.sequence ?? null;
-      this.unsubscribeMoves = await this.session.moves((event) => this.handleRealMove(event));
-      this.unsubscribeOrientation = await this.session.orientation((event) => this.handleOrientation(event));
-      this.unsubscribeSignals = await this.session.signals((event) => this.handleSignalFrame(event));
+      this.resetSolveTimeline();
+      this.initialSynchronizing = false;
+      const queuedMoves = this.initialMoveQueue;
+      this.initialMoveQueue = [];
+      for (const queuedMove of queuedMoves) this.handleRealMove(queuedMove);
       this.connectedDeviceName = device.name;
       this.connection = "ready";
       this.connectionMessage = `${device.name} 已连接。`;
@@ -298,6 +352,10 @@ class TrainerStore {
       void this.session.batteryLevel().then((level) => {
         this.battery = level ?? null;
       }).catch(() => undefined);
+      void this.session.hardwareInfo().then((info) => {
+        this.firmwareVersion = info?.softwareVersion ?? "unknown";
+        this.hardwareVersion = info?.hardwareVersion ?? "unknown";
+      }).catch(() => undefined);
     } catch (error) {
       safeLogger.error("trainer", "device-connect-failed", {
         name: device.name,
@@ -323,6 +381,7 @@ class TrainerStore {
     this.lastMove = null;
     this.eventCount = 0;
     this.hadDesync = false;
+    this.resetSolveTimeline();
     this.send({ type: "RESET" });
     this.send({ type: "PREPARE" });
   }
@@ -419,6 +478,7 @@ class TrainerStore {
     if (this.session) {
       try {
         const snapshot = await this.session.requestSnapshot();
+        this.markTimelineDiscontinuity("manual-or-protocol-resync", snapshot.sequence ?? null);
         this.cube = cubeStateFromFacelets(snapshot.facelets, this.faceColors);
         this.lastCubeSequence = snapshot.sequence;
         this.cubeSequence = snapshot.sequence ?? null;
@@ -475,6 +535,7 @@ class TrainerStore {
       this.lastMove = null;
       this.eventCount = 0;
       this.hadDesync = false;
+      this.resetSolveTimeline();
       this.send({ type: "RESET" });
       this.connection = "ready";
       this.connectionMessage = `${this.connectedDeviceName} 的状态已重新同步。`;
@@ -504,6 +565,7 @@ class TrainerStore {
     this.lastMove = null;
     this.eventCount = 0;
     this.hadDesync = false;
+    this.resetSolveTimeline();
     this.send({ type: "RESET" });
   }
 
@@ -542,28 +604,38 @@ class TrainerStore {
   }
 
   setGyroEnabled(enabled: boolean): void {
-    this.gyroCalibration = { ...this.gyroCalibration, enabled };
+    this.deviceCalibration = { ...this.deviceCalibration, enabled };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+    this.poseHealth = this.poseSession.currentHealth();
     this.persistDevicePreferences();
   }
 
   zeroGyro(): void {
     if (!this.gyroQuaternion) return;
-    this.gyroCalibration = { ...this.gyroCalibration, zero: { ...this.gyroQuaternion } };
-    this.persistDevicePreferences();
+    this.poseSession.manuallyAnchor(this.gyroQuaternion);
+    this.sessionAnchor = this.poseSession.currentAnchor();
+    this.poseHealth = this.poseSession.currentHealth();
   }
 
   resetGyroCalibration(): void {
-    this.gyroCalibration = { ...DEFAULT_GYRO_CALIBRATION };
+    this.deviceCalibration = { ...DEFAULT_DEVICE_CALIBRATION };
+    this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+    this.poseSession.resetPhysicalSession();
+    this.sessionAnchor = null;
+    this.poseHealth = this.poseSession.currentHealth();
     this.persistDevicePreferences();
   }
 
   setGyroOffset(axis: "X" | "Y" | "Z", value: number): void {
-    this.gyroCalibration = { ...this.gyroCalibration, [`offset${axis}`]: value };
+    this.viewPreference = { ...this.viewPreference, [`offset${axis}`]: value };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
     this.persistDevicePreferences();
   }
 
   setGyroInverted(axis: "X" | "Y" | "Z", value: boolean): void {
-    this.gyroCalibration = { ...this.gyroCalibration, [`invert${axis}`]: value };
+    this.viewPreference = { ...this.viewPreference, [`invert${axis}`]: value };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
     this.persistDevicePreferences();
   }
 
@@ -573,14 +645,17 @@ class TrainerStore {
       ? deriveGyroCalibrationFromSignalProfile(profile)
       : null;
     if (derivedCalibration?.valid) {
-      this.gyroCalibration = {
-        ...this.gyroCalibration,
-        modelVersion: 2,
-        zero: derivedCalibration.zero,
+      this.deviceCalibration = {
+        schemaVersion: 3,
+        enabled: this.deviceCalibration.enabled,
         bodyToModel: derivedCalibration.bodyToModel,
         relativeOrder: derivedCalibration.relativeOrder,
         meanPoseErrorDeg: derivedCalibration.meanPoseErrorDeg,
+        maxPoseErrorDeg: derivedCalibration.maxPoseErrorDeg,
       };
+      this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+      this.poseSession.bootstrap(derivedCalibration.zero);
+      this.sessionAnchor = this.poseSession.currentAnchor();
       this.persistDevicePreferences();
     }
     if (typeof localStorage !== "undefined") {
@@ -614,6 +689,11 @@ class TrainerStore {
       .padStart(2, "0")}.${millis.toString().padStart(3, "0")}`;
   }
 
+  computeCrossSuggestion(): void {
+    const startState = this.reconstruction.replayStates[0];
+    this.crossSuggestion = startState ? solveCrossOptimal(startState, this.crossColor, 8) : null;
+  }
+
   private applyDomainMove(move: string): void {
     this.cube = applyMove(this.cube, move);
     this.lastMove = move;
@@ -621,6 +701,10 @@ class TrainerStore {
   }
 
   private handleRealMove(event: CubeMoveEvent): void {
+    if (this.initialSynchronizing) {
+      this.initialMoveQueue.push(event);
+      return;
+    }
     if (this.lastCubeSequence !== undefined) {
       const gap = (event.sequence - this.lastCubeSequence) & 0xffff;
       if (gap === 0) return;
@@ -646,15 +730,38 @@ class TrainerStore {
     this.lastCubeSequence = event.sequence;
     this.cubeSequence = event.sequence;
     const move = normalizeMove(event.move);
+    const clockSample = event.cubeTimestamp === undefined
+      ? null
+      : this.cubeClock.observe(event.cubeTimestamp, event.receivedAt);
+    if (clockSample?.reset) {
+      this.markTimelineDiscontinuity("device-clock-reset", event.sequence);
+      this.hadDesync = true;
+    }
+    if (clockSample) this.latestCubeClockSample = clockSample;
     this.lastProtocolMove = move;
     this.protocolMoveSerial += 1;
+    const stateBefore = cloneCube(this.cube);
     this.applyDomainMove(move);
+    this.moveTimeline.appendMove({
+      sequence: event.sequence,
+      move,
+      source: event.source ?? "live",
+      cubeTime: clockSample?.cubeTime ?? null,
+      hostReceivedAt: event.receivedAt,
+      estimatedHostTime: clockSample?.estimatedHostTime ?? null,
+      stateBefore,
+      stateAfter: cloneCube(this.cube),
+    });
+    this.publishTimeline();
 
     if (this.sessionState === "scrambling" && this.currentScrambleMove === move) {
       this.scrambleIndex += 1;
       if (this.scrambleIndex === this.scramble.length) {
         this.solveMoves = invertAlgorithm(this.scramble);
         this.solveIndex = 0;
+        // Scramble telemetry is not part of the solve reconstruction. The
+        // next move records this exact scrambled cube as stateBefore.
+        this.resetSolveTimeline();
         this.send({ type: "SCRAMBLE_COMPLETE" });
       }
       return;
@@ -662,12 +769,16 @@ class TrainerStore {
 
     if (this.sessionState === "ready") {
       this.startedAt = performance.now();
+      this.solveStartedCubeTime = clockSample?.cubeTime ?? null;
+      this.solveStartedEstimatedHostTime = clockSample?.estimatedHostTime ?? null;
       this.startTimer();
       this.send({ type: "FIRST_MOVE" });
     }
 
     if (this.sessionState === "running" && isSolved(this.cube)) {
-      this.completedMs = this.startedAt === null ? 0 : performance.now() - this.startedAt;
+      this.completedMs = this.solveStartedCubeTime !== null && clockSample
+        ? Math.max(0, clockSample.cubeTime - this.solveStartedCubeTime)
+        : this.startedAt === null ? 0 : performance.now() - this.startedAt;
       this.elapsedMs = this.completedMs;
       this.stopTimer();
       this.send({ type: "SOLVED" });
@@ -677,6 +788,8 @@ class TrainerStore {
   private async closeRealSession(): Promise<void> {
     await this.unsubscribeMoves?.().catch(() => undefined);
     this.unsubscribeMoves = null;
+    await this.unsubscribeContinuity?.().catch(() => undefined);
+    this.unsubscribeContinuity = null;
     await this.unsubscribeOrientation?.().catch(() => undefined);
     this.unsubscribeOrientation = null;
     await this.unsubscribeSignals?.().catch(() => undefined);
@@ -685,6 +798,8 @@ class TrainerStore {
     this.session = null;
     this.connectedDeviceName = null;
     this.battery = null;
+    this.firmwareVersion = "unknown";
+    this.hardwareVersion = "unknown";
     this.lastCubeSequence = undefined;
     this.cubeSequence = null;
     this.gyroQuaternion = null;
@@ -692,10 +807,85 @@ class TrainerStore {
     this.connectedProtocol = null;
     this.lastSignalFrame = null;
     this.connectedDeviceId = null;
+    this.initialSynchronizing = false;
+    this.initialMoveQueue = [];
+    this.cubeClock.reset();
+    this.latestCubeClockSample = null;
+    this.poseSession.resetPhysicalSession();
+    this.sessionAnchor = null;
+    this.poseHealth = this.poseSession.currentHealth();
+  }
+
+  private handleContinuity(event: CubeContinuityEvent): void {
+    if (event.type === "history-recovery-started") {
+      this.connection = "degraded";
+      this.connectionMessage = `检测到动作缺口，正在从魔方历史记录恢复 ${event.previousSequence + 1}–${event.targetSequence}。`;
+      return;
+    }
+    if (event.type === "history-recovered") {
+      this.connection = "ready";
+      this.connectionMessage = `${this.connectedDeviceName ?? "魔方"} 已补回丢失动作，时间线保持连续。`;
+      return;
+    }
+
+    this.hadDesync = true;
+    this.markTimelineDiscontinuity(
+      event.reason ?? "protocol-discontinuity",
+      event.snapshot?.sequence ?? event.targetSequence,
+    );
+    if (event.snapshot) {
+      this.cube = cubeStateFromFacelets(event.snapshot.facelets, this.faceColors);
+      this.lastCubeSequence = event.snapshot.sequence;
+      this.cubeSequence = event.snapshot.sequence ?? null;
+    }
+    this.stopTimer();
+    if (["scrambling", "ready", "running"].includes(this.sessionState)) {
+      this.send({ type: "DESYNC" });
+    }
+    this.connection = event.snapshot ? "ready" : "degraded";
+    this.connectionMessage = event.snapshot
+      ? "历史动作恢复失败，已用完整状态继续；本段时间线已明确截断，不计入完整复盘。"
+      : "动作历史和完整状态均恢复失败，请重新同步魔方状态。";
+  }
+
+  private markTimelineDiscontinuity(reason: string, snapshotSequence: number | null): void {
+    this.moveTimeline.markDiscontinuity(
+      reason,
+      this.lastCubeSequence ?? null,
+      snapshotSequence,
+    );
+    this.timelineContinuous = false;
+    this.publishTimeline();
+  }
+
+  private resetSolveTimeline(): void {
+    this.moveTimeline.reset();
+    this.timelineContinuous = true;
+    this.timelineItems = [];
+    this.cubeClock.reset();
+    this.latestCubeClockSample = null;
+    this.solveStartedCubeTime = null;
+    this.solveStartedEstimatedHostTime = null;
+    this.crossSuggestion = null;
+  }
+
+  private publishTimeline(): void {
+    this.timelineItems = [...this.moveTimeline.snapshot()];
   }
 
   private handleOrientation(event: CubeOrientationEvent): void {
-    this.gyroQuaternion = event.quaternion;
+    const observation = this.poseSession.observe(event.quaternion, event.receivedAt);
+    this.poseHealth = observation.health;
+    this.sessionAnchor = observation.anchor;
+    if (!observation.accepted || !observation.quaternion) {
+      safeLogger.warn("pose", "orientation-rejected", {
+        status: observation.health.status,
+        rejectedFrames: observation.health.rejectedFrames,
+        message: observation.health.message,
+      });
+      return;
+    }
+    this.gyroQuaternion = observation.quaternion;
     this.gyroVelocity = event.velocity ?? null;
     this.gyroEventSerial += 1;
   }
@@ -711,6 +901,13 @@ class TrainerStore {
   }
 
   private loadDevicePreferences(deviceId: string): void {
+    // Color/view defaults may be global, but a sensor mounting solution must
+    // never leak from one physical cube profile into another.
+    this.deviceCalibration = { ...DEFAULT_DEVICE_CALIBRATION };
+    this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+    this.poseSession.resetPhysicalSession();
+    this.sessionAnchor = null;
     this.loadPreferences("cfop-trainer:cube-profile:" + deviceId);
     this.loadSignalCalibrationProfile(
       "cfop-trainer:cube-profile:" + deviceId + ":signal-calibration",
@@ -722,26 +919,30 @@ class TrainerStore {
     try {
       const raw = localStorage.getItem(storageKey);
       if (!raw) return;
-      const profile = JSON.parse(raw) as SignalCalibrationProfile;
+      const decoded = JSON.parse(raw) as { schemaVersion?: number; profileKind?: string; staticPoses?: unknown; dynamicAxes?: unknown };
       if (
-        profile.schemaVersion === 1 &&
-        profile.profileKind === "smart-cube-signal-calibration" &&
-        Array.isArray(profile.staticPoses) &&
-        Array.isArray(profile.dynamicAxes)
+        (decoded.schemaVersion === 1 || decoded.schemaVersion === 2) &&
+        decoded.profileKind === "smart-cube-signal-calibration" &&
+        Array.isArray(decoded.staticPoses) &&
+        Array.isArray(decoded.dynamicAxes)
       ) {
+        const profile = decoded as unknown as SignalCalibrationProfile;
         this.signalCalibrationProfile = profile;
         const derivedCalibration = profile.renderValidation.confirmed
           ? deriveGyroCalibrationFromSignalProfile(profile)
           : null;
         if (derivedCalibration?.valid) {
-          this.gyroCalibration = {
-            ...this.gyroCalibration,
-            modelVersion: 2,
-            zero: derivedCalibration.zero,
+          this.deviceCalibration = {
+            schemaVersion: 3,
+            enabled: this.deviceCalibration.enabled,
             bodyToModel: derivedCalibration.bodyToModel,
             relativeOrder: derivedCalibration.relativeOrder,
             meanPoseErrorDeg: derivedCalibration.meanPoseErrorDeg,
+            maxPoseErrorDeg: derivedCalibration.maxPoseErrorDeg,
           };
+          this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+          // Device mapping persists; the absolute sensor reference does not.
+          // The first accepted packet creates a fresh SessionAnchor.
         }
       }
     } catch {
@@ -759,17 +960,41 @@ class TrainerStore {
         crossColor?: StickerColor;
         stickerPalette?: Partial<StickerPalette>;
         gyroCalibration?: GyroCalibration;
+        deviceCalibration?: DeviceCalibration;
+        viewPreference?: ViewPreference;
       };
       if (profile.faceColors) this.faceColors = { ...SOLVED_COLORS, ...profile.faceColors };
       if (profile.crossColor) this.crossColor = profile.crossColor;
       if (profile.stickerPalette) {
         this.stickerPalette = { ...BRIGHT_STICKER_PALETTE, ...profile.stickerPalette };
       }
-      if (profile.gyroCalibration) {
-        this.gyroCalibration = profile.gyroCalibration.modelVersion === 2
-          ? { ...DEFAULT_GYRO_CALIBRATION, ...profile.gyroCalibration }
-          : { ...DEFAULT_GYRO_CALIBRATION, enabled: profile.gyroCalibration.enabled ?? true };
+      if (profile.deviceCalibration?.schemaVersion === 3) {
+        this.deviceCalibration = { ...DEFAULT_DEVICE_CALIBRATION, ...profile.deviceCalibration };
+      } else if (profile.gyroCalibration) {
+        this.deviceCalibration = {
+          ...DEFAULT_DEVICE_CALIBRATION,
+          enabled: profile.gyroCalibration.enabled ?? true,
+          bodyToModel: profile.gyroCalibration.bodyToModel ?? null,
+          relativeOrder: profile.gyroCalibration.relativeOrder ?? "reference-current-inverse",
+          meanPoseErrorDeg: profile.gyroCalibration.meanPoseErrorDeg ?? null,
+          maxPoseErrorDeg: profile.gyroCalibration.maxPoseErrorDeg ?? null,
+        };
       }
+      this.viewPreference = profile.viewPreference
+        ? { ...DEFAULT_VIEW_PREFERENCE, ...profile.viewPreference }
+        : profile.gyroCalibration
+          ? {
+              offsetX: profile.gyroCalibration.offsetX ?? 0,
+              offsetY: profile.gyroCalibration.offsetY ?? 0,
+              offsetZ: profile.gyroCalibration.offsetZ ?? 0,
+              invertX: profile.gyroCalibration.invertX ?? false,
+              invertY: profile.gyroCalibration.invertY ?? false,
+              invertZ: profile.gyroCalibration.invertZ ?? false,
+            }
+          : { ...DEFAULT_VIEW_PREFERENCE };
+      this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+      this.sessionAnchor = this.poseSession.currentAnchor();
+      this.poseHealth = this.poseSession.currentHealth();
     } catch {
       // Invalid local calibration is ignored and can be recreated in Settings.
     }
@@ -781,7 +1006,8 @@ class TrainerStore {
       faceColors: this.faceColors,
       crossColor: this.crossColor,
       stickerPalette: this.stickerPalette,
-      gyroCalibration: this.gyroCalibration,
+      deviceCalibration: this.deviceCalibration,
+      viewPreference: this.viewPreference,
     });
     localStorage.setItem(GLOBAL_CUBE_PROFILE_KEY, value);
     if (this.connectedDeviceId) {
@@ -871,7 +1097,11 @@ class TrainerStore {
   private startTimer(): void {
     if (this.timerHandle !== null) clearInterval(this.timerHandle);
     this.timerHandle = setInterval(() => {
-      if (this.startedAt !== null) this.elapsedMs = performance.now() - this.startedAt;
+      if (this.solveStartedEstimatedHostTime !== null) {
+        this.elapsedMs = Math.max(0, Date.now() - this.solveStartedEstimatedHostTime);
+      } else if (this.startedAt !== null) {
+        this.elapsedMs = performance.now() - this.startedAt;
+      }
     }, 16);
   }
 
@@ -879,6 +1109,8 @@ class TrainerStore {
     if (this.timerHandle !== null) clearInterval(this.timerHandle);
     this.timerHandle = null;
     this.startedAt = null;
+    this.solveStartedCubeTime = null;
+    this.solveStartedEstimatedHostTime = null;
   }
 
   private stopDemoPlayback(): void {
@@ -892,7 +1124,7 @@ const trainerGlobal = globalThis as typeof globalThis & {
   __cfopTrainerStore?: TrainerStore;
   __cfopTrainerStoreSchema?: number;
 };
-const TRAINER_STORE_SCHEMA = 3;
+const TRAINER_STORE_SCHEMA = 4;
 
 // HMR normally keeps the BLE session alive by reusing the store. When a code
 // update adds reactive fields or subscriptions, however, an old instance

@@ -33,6 +33,8 @@
       standalone
       deviceModel={trainer.connectedDeviceName}
       protocol={trainer.connectedProtocol}
+      firmwareVersion={trainer.firmwareVersion}
+      hardwareVersion={trainer.hardwareVersion}
       cube={trainer.cube}
       orientation={trainer.gyroQuaternion}
       velocity={trainer.gyroVelocity}

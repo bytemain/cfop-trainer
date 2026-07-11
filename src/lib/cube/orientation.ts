@@ -13,6 +13,33 @@ export interface GyroCalibration {
   bodyToModel: Matrix3 | null;
   relativeOrder: SensorRelativeOrder;
   meanPoseErrorDeg: number | null;
+  maxPoseErrorDeg?: number | null;
+  referencePose?: Matrix3 | null;
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+  invertX: boolean;
+  invertY: boolean;
+  invertZ: boolean;
+}
+
+export interface DeviceCalibration {
+  schemaVersion: 3;
+  enabled: boolean;
+  bodyToModel: Matrix3 | null;
+  relativeOrder: SensorRelativeOrder;
+  meanPoseErrorDeg: number | null;
+  maxPoseErrorDeg: number | null;
+}
+
+export interface SessionAnchor {
+  sensorReference: CubeQuaternion;
+  cubeReference: Matrix3;
+  establishedAt: number;
+  reason: "calibration" | "manual" | "session-start" | "sensor-reset";
+}
+
+export interface ViewPreference {
   offsetX: number;
   offsetY: number;
   offsetZ: number;
@@ -45,6 +72,42 @@ export const DEFAULT_GYRO_CALIBRATION: GyroCalibration = {
   invertY: false,
   invertZ: false,
 };
+
+export const DEFAULT_DEVICE_CALIBRATION: DeviceCalibration = {
+  schemaVersion: 3,
+  enabled: true,
+  bodyToModel: null,
+  relativeOrder: "reference-current-inverse",
+  meanPoseErrorDeg: null,
+  maxPoseErrorDeg: null,
+};
+
+export const DEFAULT_VIEW_PREFERENCE: ViewPreference = {
+  offsetX: 0,
+  offsetY: 0,
+  offsetZ: 0,
+  invertX: false,
+  invertY: false,
+  invertZ: false,
+};
+
+export function composeGyroCalibration(
+  device: DeviceCalibration,
+  anchor: SessionAnchor | null,
+  view: ViewPreference,
+): GyroCalibration {
+  return {
+    modelVersion: 2,
+    enabled: device.enabled,
+    zero: anchor?.sensorReference ?? null,
+    referencePose: anchor?.cubeReference ?? null,
+    bodyToModel: device.bodyToModel,
+    relativeOrder: device.relativeOrder,
+    meanPoseErrorDeg: device.meanPoseErrorDeg,
+    maxPoseErrorDeg: device.maxPoseErrorDeg,
+    ...view,
+  };
+}
 
 export function normalizeQuaternion(value: CubeQuaternion): CubeQuaternion {
   const quaternion = new Quaternion(value.x, value.y, value.z, value.w).normalize();
@@ -176,10 +239,13 @@ export function gyroModelMatrix(
     const relative = calibration.relativeOrder === "current-reference-inverse"
       ? multiplyMatrix3(current, transposeMatrix3(reference))
       : multiplyMatrix3(reference, transposeMatrix3(current));
-    model = multiplyMatrix3(
+    const relativePose = multiplyMatrix3(
       multiplyMatrix3(bodyToModel as Matrix3, relative),
       transposeMatrix3(bodyToModel as Matrix3),
     );
+    model = calibration.referencePose
+      ? multiplyMatrix3(calibration.referencePose, relativePose)
+      : relativePose;
   } else {
     // UI model body -> GAN body -> GAN world -> UI world.
     model = multiplyMatrix3(

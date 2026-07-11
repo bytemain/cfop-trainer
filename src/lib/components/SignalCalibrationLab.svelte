@@ -43,6 +43,8 @@
   let {
     deviceModel,
     protocol,
+    firmwareVersion = "unknown",
+    hardwareVersion = "unknown",
     cube,
     orientation,
     velocity,
@@ -59,6 +61,8 @@
   }: {
     deviceModel: string;
     protocol: GanProtocolVersion;
+    firmwareVersion?: string;
+    hardwareVersion?: string;
     cube: CubeState;
     orientation: CubeQuaternion | null;
     velocity: { x: number; y: number; z: number } | null;
@@ -517,6 +521,22 @@
     message = "动作方向一致。最后请对照实体魔方，检查六面颜色、层转动和整体姿态。";
   }
 
+  function recaptureStaticPose(top: StaticPoseCapture["top"], front: StaticPoseCapture["front"]): void {
+    const stepIndex = staticSteps.findIndex((step) => step.top === top && step.front === front);
+    const captureIndex = staticCaptures.findIndex((capture) => capture.top === top && capture.front === front);
+    if (stepIndex < 0) return;
+    if (captureIndex >= 0) {
+      staticCaptures = staticCaptures.filter((_, index) => index !== captureIndex);
+      staticSignalGroups = staticSignalGroups.filter((_, index) => index !== captureIndex);
+    }
+    staticIndex = stepIndex;
+    stage = "static";
+    recentQuaternions = [];
+    recentSignalFrames = [];
+    recentQuaternionCount = 0;
+    message = `只重采 ${colorLabels[top]}色朝上、${colorLabels[front]}色朝前；其他已通过姿态会保留。`;
+  }
+
   function continueWithMoveMismatch(): void {
     moveRecording = false;
     stage = "render";
@@ -527,6 +547,8 @@
     return createSignalCalibrationProfile({
       deviceModel,
       protocol,
+      firmwareVersion,
+      hardwareVersion,
       staticPoses: staticCaptures,
       dynamicAxes: dynamicCaptures,
       moveValidation,
@@ -845,8 +867,19 @@
               · 平均 {derivedGyroCalibration.meanPoseErrorDeg.toFixed(1)}°
               · 最大 {derivedGyroCalibration.maxPoseErrorDeg.toFixed(1)}°
               · 置信度 {Math.round(derivedGyroCalibration.confidence * 100)}%
+              · {derivedGyroCalibration.solver === "wahba-kabsch" ? "连续 SO(3)" : "24 轴离散"}
             </span>
           </div>
+          {#if derivedGyroCalibration.rejectedPoseKeys.length > 0}
+            <div class="bad-pose-list">
+              <strong>建议只重采这些异常姿态</strong>
+              {#each derivedGyroCalibration.poseResiduals.filter((item) => derivedGyroCalibration?.rejectedPoseKeys.includes(`${item.top}/${item.front}`)) as residual}
+                <button class="secondary" onclick={() => recaptureStaticPose(residual.top, residual.front)}>
+                  {colorLabels[residual.top]}上 / {colorLabels[residual.front]}前 · {residual.errorDeg.toFixed(1)}°
+                </button>
+              {/each}
+            </div>
+          {/if}
         {/if}
         <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} /></div>
         <div class="render-actions">
