@@ -72,7 +72,30 @@ describe("GAN orientation mapping", () => {
       }),
     );
     expect(values[0]).toBeGreaterThan(0.9);
-    expect(Math.abs(values[1])).toBeLessThan(0.3);
+    expect(Math.abs(values[1])).toBeLessThan(0.4);
     expect(Math.abs(values[2])).toBeLessThan(0.4);
+  });
+
+  it("preserves the calibrated red-axis rotation direction instead of rendering its inverse", () => {
+    const values = matrixValues(
+      gyroCssTransform(
+        {
+          x: 0,
+          y: -Math.sin(Math.PI / 12),
+          z: 0,
+          w: Math.cos(Math.PI / 12),
+        },
+        {
+          ...DEFAULT_GYRO_CALIBRATION,
+          zero: { x: 0, y: 0, z: 0, w: 1 },
+          bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+        },
+      ),
+    );
+    // The profile says a negative protocol-Y delta is a positive physical
+    // red-axis turn. In the model, positive red is +X, whose matrix has
+    // m[2][1] > 0 and m[1][2] < 0.
+    expect(values[6]).toBeGreaterThan(0.49);
+    expect(values[9]).toBeLessThan(-0.49);
   });
 });

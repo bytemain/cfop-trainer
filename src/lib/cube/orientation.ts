@@ -116,10 +116,13 @@ export function gyroModelMatrix(
   const ganWorldToUiWorld = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
   let model: number[][];
   if (calibration.zero) {
-    // Current body -> calibrated body. At the calibration pose this is identity.
+    // The signal lab records current * previous^-1 and derives bodyToModel from
+    // that signed delta. Preserve the same forward direction here: baseline
+    // body -> current body. Using its inverse makes every whole-cube turn look
+    // correct around the chosen axis but move in the opposite direction.
     const relative = matrixMultiply(
-      quaternionMatrix(calibration.zero),
-      transpose(current),
+      current,
+      transpose(quaternionMatrix(calibration.zero)),
     );
     model = matrixMultiply(
       matrixMultiply(bodyToModel, relative),
