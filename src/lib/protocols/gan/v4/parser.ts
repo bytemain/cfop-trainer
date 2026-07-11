@@ -138,8 +138,12 @@ export function parseGanV4Packet(data: Uint8Array): GanV4Packet {
     return {
       type: "gyro",
       quaternion: {
-        x: decodeSignedMagnitude(qx, 0x7fff, 15),
-        y: decodeSignedMagnitude(qy, 0x7fff, 15),
+        // CubeStation's Android bridge establishes the semantic quaternion as
+        // x <- protocol qy, y <- protocol qx, z <- protocol qz, w <- protocol qw.
+        // GAN16 live captures also show a physical red-orange body-axis turn
+        // becoming X-dominant only after this component reorder.
+        x: decodeSignedMagnitude(qy, 0x7fff, 15),
+        y: decodeSignedMagnitude(qx, 0x7fff, 15),
         z: decodeSignedMagnitude(qz, 0x7fff, 15),
         w: decodeSignedMagnitude(qw, 0x7fff, 15),
       },

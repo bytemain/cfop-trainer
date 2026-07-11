@@ -87,8 +87,8 @@ describe("GAN V4 packet parser", () => {
     expect(packet.type).toBe("gyro");
     if (packet.type !== "gyro") return;
     expect(packet.quaternion.w).toBeCloseTo(1, 4);
-    expect(packet.quaternion.x).toBeCloseTo(0.5, 3);
-    expect(packet.quaternion.y).toBeCloseTo(-0.5, 3);
+    expect(packet.quaternion.x).toBeCloseTo(-0.5, 3);
+    expect(packet.quaternion.y).toBeCloseTo(0.5, 3);
     expect(packet.velocity).toEqual({ x: 3, y: -2, z: 0 });
   });
 

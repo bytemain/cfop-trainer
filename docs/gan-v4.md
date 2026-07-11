@@ -34,6 +34,27 @@
 
 `01` 是实时 move，包含设备时间戳、16-bit move counter、转轴和方向。`ed` 用 corner/edge permutation + orientation 表示完整状态；解析后先做 cubie 合法性校验，再转换成 54 字符 `URFDLB` facelet 串。
 
+## 姿态分量与坐标方向
+
+`ec` gyro packet 的协议字段顺序为 `qw, qx, qy, qz`，但不能把字段名直接作为应用语义分量。CubeStation Android bridge 和 GAN16 ui 受控整机旋转采样共同确认，应用四元数必须重排为：
+
+```text
+app.x = protocol qy
+app.y = protocol qx
+app.z = protocol qz
+app.w = protocol qw
+```
+
+重排后的四元数按 `cube body -> GAN world` 使用。相对机体旋转为：
+
+```text
+inverse(previous) * current
+```
+
+一组红色中心持续朝向用户、整颗魔方绕红—橙轴旋转的脱敏真机 fixture 得到 X 主导相对轴，已固化在 `orientation.test.ts`。如果省略 X/Y 重排，同一动作会错误显示为 Y 主导，这也是早期 3D 视图轴错位的根因。
+
+GAN16 ui 当前固件的独立 4-bit angular velocity 在受控采样中可能持续为零，因此动态轴识别不得只依赖 velocity；实现会回退到连续四元数差分。原始四元数时间序列只在信号实验室内存窗口中使用，不写入 JSONL。
+
 ## 可靠性策略
 
 应用以完整 snapshot 的 counter 建立基线。实时 move counter 必须连续；发现 gap 时：

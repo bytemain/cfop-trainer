@@ -101,17 +101,17 @@ export function gyroModelMatrix(
 ): number[][] | null {
   if (!quaternion || !calibration.enabled) return null;
   const current = quaternionMatrix(quaternion);
-  // GAN reports world -> cube-body orientation. The cube body uses +X red,
+  // CubeStation's reordered GAN quaternion is cube-body -> GAN-world. The cube body uses +X red,
   // +Y blue and +Z white, while the UI model uses +X red, +Y white and
   // +Z green. GAN's gravity-aligned world frame has -X pointing up.
   const bodyToModel = [[1, 0, 0], [0, 0, 1], [0, -1, 0]];
-  const ganWorldToUiWorld = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
+  const ganWorldToUiWorld = [[-1, 0, 0], [0, -1, 0], [0, 0, 1]];
   let model: number[][];
   if (calibration.zero) {
-    // Current body -> calibrated body. At the calibration pose this is identity.
+    // Calibrated body -> current body. At the calibration pose this is identity.
     const relative = matrixMultiply(
-      quaternionMatrix(calibration.zero),
-      transpose(current),
+      transpose(quaternionMatrix(calibration.zero)),
+      current,
     );
     model = matrixMultiply(
       matrixMultiply(bodyToModel, relative),
@@ -120,7 +120,7 @@ export function gyroModelMatrix(
   } else {
     // UI model body -> GAN body -> GAN world -> UI world.
     model = matrixMultiply(
-      matrixMultiply(ganWorldToUiWorld, transpose(current)),
+      matrixMultiply(ganWorldToUiWorld, current),
       transpose(bodyToModel),
     );
   }
