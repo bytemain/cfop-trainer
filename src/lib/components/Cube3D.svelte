@@ -1,6 +1,12 @@
 <script lang="ts">
   import { FACES, type CubeState, type Face } from "$lib/cube/cube";
-  import { gyroCssTransform, type GyroCalibration } from "$lib/cube/orientation";
+  import {
+    gyroCssTransform,
+    multiplyQuaternions,
+    quaternionCssTransform,
+    quaternionFromAxisAngle,
+    type GyroCalibration,
+  } from "$lib/cube/orientation";
   import type { CubeQuaternion } from "$lib/protocols/gan/types";
 
   let {
@@ -10,17 +16,28 @@
   }: { cube: CubeState; orientation?: CubeQuaternion | null; gyroCalibration: GyroCalibration } = $props();
   const gyroTransform = $derived(gyroCssTransform(orientation, gyroCalibration) || "rotateX(0deg)");
 
-  let rotationX = $state(-24);
-  let rotationY = $state(34);
+  function defaultViewQuaternion(): CubeQuaternion {
+    return multiplyQuaternions(
+      quaternionFromAxisAngle("x", -24),
+      quaternionFromAxisAngle("y", 34),
+    );
+  }
+
+  let viewQuaternion = $state<CubeQuaternion>(defaultViewQuaternion());
+  const viewTransform = $derived(quaternionCssTransform(viewQuaternion));
   let dragging = $state(false);
-  let dragStartX = 0;
-  let dragStartY = 0;
-  let dragStartRotationX = 0;
-  let dragStartRotationY = 0;
+  let dragLastX = 0;
+  let dragLastY = 0;
 
   function resetView(): void {
-    rotationX = -24;
-    rotationY = 34;
+    viewQuaternion = defaultViewQuaternion();
+  }
+
+  function rotateView(axis: "x" | "y", degrees: number): void {
+    viewQuaternion = multiplyQuaternions(
+      quaternionFromAxisAngle(axis, degrees),
+      viewQuaternion,
+    );
   }
 
   const faceTransforms: Record<Face, string> = {
@@ -34,17 +51,20 @@
 
   function startDrag(event: PointerEvent): void {
     dragging = true;
-    dragStartX = event.clientX;
-    dragStartY = event.clientY;
-    dragStartRotationX = rotationX;
-    dragStartRotationY = rotationY;
+    dragLastX = event.clientX;
+    dragLastY = event.clientY;
     event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function moveDrag(event: PointerEvent): void {
     if (!dragging) return;
-    rotationY = dragStartRotationY + (event.clientX - dragStartX) * 0.52;
-    rotationX = dragStartRotationX - (event.clientY - dragStartY) * 0.52;
+    const deltaX = event.clientX - dragLastX;
+    const deltaY = event.clientY - dragLastY;
+    dragLastX = event.clientX;
+    dragLastY = event.clientY;
+    if (deltaX !== 0) rotateView("y", deltaX * 0.52);
+    if (deltaY !== 0) rotateView("x", -deltaY * 0.52);
+    event.preventDefault();
   }
 
   function stopDrag(event: PointerEvent): void {
@@ -56,10 +76,10 @@
 
   function rotateWithKeyboard(event: KeyboardEvent): void {
     const step = event.shiftKey ? 30 : 12;
-    if (event.key === "ArrowLeft") rotationY -= step;
-    else if (event.key === "ArrowRight") rotationY += step;
-    else if (event.key === "ArrowUp") rotationX += step;
-    else if (event.key === "ArrowDown") rotationX -= step;
+    if (event.key === "ArrowLeft") rotateView("y", -step);
+    else if (event.key === "ArrowRight") rotateView("y", step);
+    else if (event.key === "ArrowUp") rotateView("x", step);
+    else if (event.key === "ArrowDown") rotateView("x", -step);
     else if (event.key === "Home") resetView();
     else return;
     event.preventDefault();
@@ -84,7 +104,7 @@
     <span
       class="cube-object"
       class:no-transition={dragging}
-      style={`--rotation-x:${rotationX}deg; --rotation-y:${rotationY}deg; --gyro-transform:${gyroTransform}`}
+      style={`--view-transform:${viewTransform}; --gyro-transform:${gyroTransform}`}
     >
       {#each FACES as face}
         <span class="cube-3d-face face-{face}" style={`--face-transform:${faceTransforms[face]}`}>
@@ -142,7 +162,7 @@
     display: block;
     width: var(--cube-size);
     height: var(--cube-size);
-    transform: rotateX(var(--rotation-x)) rotateY(var(--rotation-y)) var(--gyro-transform);
+    transform: var(--view-transform) var(--gyro-transform);
     transform-style: preserve-3d;
     transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
     will-change: transform;

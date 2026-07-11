@@ -408,9 +408,14 @@
         </label>
         <label>
           <span>默认 Cross 颜色</span>
-          <select>
-            <option>白色</option>
-            <option>黄色</option>
+          <select
+            value={trainer.crossColor}
+            onchange={(event) =>
+              trainer.setCrossColor(event.currentTarget.value as StickerColor)}
+          >
+            {#each colorOptions as option}
+              <option value={option.value}>{option.label}色</option>
+            {/each}
           </select>
         </label>
         <div class="platform-note"><Smartphone size={18} /> 手机训练时保持前台和屏幕常亮。</div>

@@ -242,81 +242,103 @@ export function isSolved(state: CubeState): boolean {
   return FACES.every((face) => state[face].every((color) => color === state[face][4]));
 }
 
-function geometryKey(position: Vec3, normal: Vec3): string {
-  return `${position.join(",")}|${normal.join(",")}`;
-}
-
-function stickerColorMap(state: CubeState): Map<string, StickerColor> {
-  return new Map(
-    toStickers(state).map((sticker) => [
-      geometryKey(sticker.position, sticker.normal),
-      sticker.color,
-    ]),
-  );
-}
-
 function cubiesAreSolved(state: CubeState, positions: readonly Vec3[]): boolean {
-  const current = stickerColorMap(state);
-  const solved = stickerColorMap(createSolvedCube());
+  const stickers = toStickers(state);
 
   return positions.every((position) => {
-    const stickers = toStickers(state).filter(
+    const cubieStickers = stickers.filter(
       (sticker) => sticker.position.every((value, index) => value === position[index]),
     );
 
-    return stickers.every(
-      (sticker) =>
-        current.get(geometryKey(sticker.position, sticker.normal)) ===
-        solved.get(geometryKey(sticker.position, sticker.normal)),
+    return cubieStickers.every(
+      (sticker) => {
+        const { face } = faceIndexFromGeometry(sticker.normal, [0, 0, 0]);
+        return sticker.color === state[face][4];
+      },
     );
   });
 }
 
-const CROSS_EDGE_POSITIONS: Vec3[] = [
-  [0, -1, 1],
-  [1, -1, 0],
-  [0, -1, -1],
-  [-1, -1, 0],
-];
+function positions(): Vec3[] {
+  const values = [-1, 0, 1] as const;
+  return values.flatMap((x) =>
+    values.flatMap((y) => values.map((z) => [x, y, z] as Vec3)),
+  );
+}
 
-const F2L_SLOT_POSITIONS: Vec3[][] = [
-  [
-    [1, -1, 1],
-    [1, 0, 1],
-  ],
-  [
-    [-1, -1, 1],
-    [-1, 0, 1],
-  ],
-  [
-    [1, -1, -1],
-    [1, 0, -1],
-  ],
-  [
-    [-1, -1, -1],
-    [-1, 0, -1],
-  ],
-];
+function sameVector(left: Vec3, right: Vec3): boolean {
+  return left.every((value, index) => value === right[index]);
+}
 
-export function derivePhaseFacts(state: CubeState): PhaseFacts {
-  const crossSolved = cubiesAreSolved(state, CROSS_EDGE_POSITIONS);
-  const solvedF2lSlots = F2L_SLOT_POSITIONS.filter((positions) =>
-    cubiesAreSolved(state, positions),
+function faceForNormal(normal: Vec3): Face {
+  return faceIndexFromGeometry(normal, [0, 0, 0]).face;
+}
+
+function crossFaceForColor(state: CubeState, crossColor: StickerColor): Face {
+  return FACES.find((face) => state[face][4] === crossColor) ?? "D";
+}
+
+function crossEdgePositions(crossNormal: Vec3): Vec3[] {
+  return positions().filter(
+    (position) =>
+      dot(position, crossNormal) === 1 &&
+      position.filter((value) => value === 0).length === 1,
+  );
+}
+
+function f2lSlotPositions(crossNormal: Vec3): Vec3[][] {
+  const crossAxis = crossNormal.findIndex((value) => value !== 0);
+  return positions()
+    .filter(
+      (position) =>
+        dot(position, crossNormal) === 1 &&
+        position.every((value) => Math.abs(value) === 1),
+    )
+    .map((corner) => {
+      const edge = [...corner] as [number, number, number];
+      edge[crossAxis] = 0;
+      return [corner, edge];
+    });
+}
+
+export function derivePhaseFacts(
+  state: CubeState,
+  crossColor: StickerColor = "white",
+): PhaseFacts {
+  const crossFace = crossFaceForColor(state, crossColor);
+  const crossNormal = stickerGeometry(crossFace, 4).normal;
+  const lastLayerNormal: Vec3 = [-crossNormal[0], -crossNormal[1], -crossNormal[2]];
+  const lastLayerFace = faceForNormal(lastLayerNormal);
+  const crossSolved = cubiesAreSolved(state, crossEdgePositions(crossNormal));
+  const solvedF2lSlots = f2lSlotPositions(crossNormal).filter((slotPositions) =>
+    cubiesAreSolved(state, slotPositions),
   ).length;
+  const stickers = toStickers(state);
   const f2lSolved = crossSolved && solvedF2lSlots === 4;
-  const ollSolved = state.U.every((color) => color === state.U[4]);
+  const ollSolved = state[lastLayerFace].every(
+    (color) => color === state[lastLayerFace][4],
+  );
   const pllSolved =
     ollSolved &&
-    (["R", "F", "L", "B"] as Face[]).every((face) =>
-      state[face].slice(0, 3).every((color) => color === state[face][0]),
-    );
+    FACES.filter((face) => face !== crossFace && face !== lastLayerFace).every((face) => {
+      const normal = stickerGeometry(face, 4).normal;
+      const row = stickers.filter(
+        (sticker) =>
+          sameVector(sticker.normal, normal) &&
+          dot(sticker.position, lastLayerNormal) === 1,
+      );
+      return row.length === 3 && row.every((sticker) => sticker.color === row[0].color);
+    });
   const cubeSolved = isSolved(state);
 
   return { crossSolved, solvedF2lSlots, f2lSolved, ollSolved, pllSolved, cubeSolved };
 }
 
-export function derivePhase(state: CubeState): CfopPhase {
-  const facts = derivePhaseFacts(state);
+export function derivePhase(
+  state: CubeState,
+  crossColor: StickerColor = "white",
+): CfopPhase {
+  const facts = derivePhaseFacts(state, crossColor);
   if (facts.cubeSolved) return "done";
   if (facts.f2lSolved && facts.ollSolved) return "pll";
   if (facts.f2lSolved) return "oll";

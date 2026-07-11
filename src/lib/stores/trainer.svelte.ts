@@ -94,6 +94,7 @@ class TrainerStore {
   eventCount = $state(0);
   hadDesync = $state(false);
   selectedMode = $state("full_cfop");
+  crossColor = $state<StickerColor>("white");
   connectedDeviceName = $state<string | null>(null);
   battery = $state<number | null>(null);
   demoPlaying = $state(false);
@@ -104,8 +105,8 @@ class TrainerStore {
   gyroVelocity = $state<{ x: number; y: number; z: number } | null>(null);
   cubeSequence = $state<number | null>(null);
 
-  phase = $derived(derivePhase(this.cube));
-  facts = $derived(derivePhaseFacts(this.cube));
+  phase = $derived(derivePhase(this.cube, this.crossColor));
+  facts = $derived(derivePhaseFacts(this.cube, this.crossColor));
   currentScrambleMove = $derived(this.scramble[this.scrambleIndex] ?? null);
   currentSolveMove = $derived(this.solveMoves[this.solveIndex] ?? null);
   scrambleProgress = $derived(
@@ -443,6 +444,11 @@ class TrainerStore {
     this.persistDevicePreferences();
   }
 
+  setCrossColor(color: StickerColor): void {
+    this.crossColor = color;
+    this.persistDevicePreferences();
+  }
+
   setStickerPaletteColor(color: StickerColor, value: string): void {
     if (!/^#[0-9a-f]{6}$/i.test(value)) return;
     this.stickerPalette = { ...this.stickerPalette, [color]: value.toLowerCase() };
@@ -580,10 +586,12 @@ class TrainerStore {
       if (!raw) return;
       const profile = JSON.parse(raw) as {
         faceColors?: Record<Face, StickerColor>;
+        crossColor?: StickerColor;
         stickerPalette?: Partial<StickerPalette>;
         gyroCalibration?: GyroCalibration;
       };
       if (profile.faceColors) this.faceColors = { ...SOLVED_COLORS, ...profile.faceColors };
+      if (profile.crossColor) this.crossColor = profile.crossColor;
       if (profile.stickerPalette) {
         this.stickerPalette = { ...BRIGHT_STICKER_PALETTE, ...profile.stickerPalette };
       }
@@ -599,6 +607,7 @@ class TrainerStore {
     if (typeof localStorage === "undefined") return;
     const value = JSON.stringify({
       faceColors: this.faceColors,
+      crossColor: this.crossColor,
       stickerPalette: this.stickerPalette,
       gyroCalibration: this.gyroCalibration,
     });

@@ -27,7 +27,10 @@ export function normalizeQuaternion(value: CubeQuaternion): CubeQuaternion {
   return { x: value.x / length, y: value.y / length, z: value.z / length, w: value.w / length };
 }
 
-function multiply(left: CubeQuaternion, right: CubeQuaternion): CubeQuaternion {
+export function multiplyQuaternions(
+  left: CubeQuaternion,
+  right: CubeQuaternion,
+): CubeQuaternion {
   return normalizeQuaternion({
     w: left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z,
     x: left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y,
@@ -36,11 +39,28 @@ function multiply(left: CubeQuaternion, right: CubeQuaternion): CubeQuaternion {
   });
 }
 
+export function quaternionFromAxisAngle(
+  axis: "x" | "y" | "z",
+  degrees: number,
+): CubeQuaternion {
+  const halfAngle = degrees * Math.PI / 360;
+  const sine = Math.sin(halfAngle);
+  return normalizeQuaternion({
+    x: axis === "x" ? sine : 0,
+    y: axis === "y" ? sine : 0,
+    z: axis === "z" ? sine : 0,
+    w: Math.cos(halfAngle),
+  });
+}
+
 function relativeQuaternion(current: CubeQuaternion, zero: CubeQuaternion | null): CubeQuaternion {
   const value = normalizeQuaternion(current);
   if (!zero) return value;
   const origin = normalizeQuaternion(zero);
-  return multiply({ x: -origin.x, y: -origin.y, z: -origin.z, w: origin.w }, value);
+  return multiplyQuaternions(
+    { x: -origin.x, y: -origin.y, z: -origin.z, w: origin.w },
+    value,
+  );
 }
 
 function quaternionMatrix(q: CubeQuaternion): number[][] {
@@ -62,6 +82,20 @@ function matrixMultiply(left: number[][], right: number[][]): number[][] {
   );
 }
 
+function matrixCssTransform(model: number[][]): string {
+  const values = [
+    model[0][0], model[1][0], model[2][0], 0,
+    model[0][1], model[1][1], model[2][1], 0,
+    model[0][2], model[1][2], model[2][2], 0,
+    0, 0, 0, 1,
+  ].map((value) => Math.abs(value) < 1e-8 ? 0 : Number(value.toFixed(7)));
+  return `matrix3d(${values.join(",")})`;
+}
+
+export function quaternionCssTransform(quaternion: CubeQuaternion): string {
+  return matrixCssTransform(quaternionMatrix(quaternion));
+}
+
 export function gyroCssTransform(
   quaternion: CubeQuaternion | null,
   calibration: GyroCalibration,
@@ -75,11 +109,5 @@ export function gyroCssTransform(
   const signs = [calibration.invertX ? -1 : 1, calibration.invertY ? -1 : 1, calibration.invertZ ? -1 : 1];
   const inversion = [[signs[0], 0, 0], [0, signs[1], 0], [0, 0, signs[2]]];
   model = matrixMultiply(matrixMultiply(inversion, model), inversion);
-  const values = [
-    model[0][0], model[1][0], model[2][0], 0,
-    model[0][1], model[1][1], model[2][1], 0,
-    model[0][2], model[1][2], model[2][2], 0,
-    0, 0, 0, 1,
-  ].map((value) => Math.abs(value) < 1e-8 ? 0 : Number(value.toFixed(7)));
-  return `matrix3d(${values.join(",")}) rotateX(${calibration.offsetX}deg) rotateY(${calibration.offsetY}deg) rotateZ(${calibration.offsetZ}deg)`;
+  return `${matrixCssTransform(model)} rotateX(${calibration.offsetX}deg) rotateY(${calibration.offsetY}deg) rotateZ(${calibration.offsetZ}deg)`;
 }
