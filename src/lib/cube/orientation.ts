@@ -53,16 +53,6 @@ export function quaternionFromAxisAngle(
   });
 }
 
-function relativeQuaternion(current: CubeQuaternion, zero: CubeQuaternion | null): CubeQuaternion {
-  const value = normalizeQuaternion(current);
-  if (!zero) return value;
-  const origin = normalizeQuaternion(zero);
-  return multiplyQuaternions(
-    { x: -origin.x, y: -origin.y, z: -origin.z, w: origin.w },
-    value,
-  );
-}
-
 function quaternionMatrix(q: CubeQuaternion): number[][] {
   const { x, y, z, w } = normalizeQuaternion(q);
   return [
@@ -101,11 +91,30 @@ export function gyroCssTransform(
   calibration: GyroCalibration,
 ): string {
   if (!quaternion || !calibration.enabled) return "";
-  const protocol = quaternionMatrix(relativeQuaternion(quaternion, calibration.zero));
-  // GAN right-handed axes: +X red, +Y blue, +Z white.
-  // UI cube axes: +X red, +Y white, +Z green, hence model = (x, z, -y).
-  const coordinates = [[1, 0, 0], [0, 0, 1], [0, -1, 0]];
-  let model = matrixMultiply(matrixMultiply(coordinates, protocol), transpose(coordinates));
+  const current = quaternionMatrix(quaternion);
+  // GAN reports world -> cube-body orientation. The cube body uses +X red,
+  // +Y blue and +Z white, while the UI model uses +X red, +Y white and
+  // +Z green. GAN's gravity-aligned world frame has -X pointing up.
+  const bodyToModel = [[1, 0, 0], [0, 0, 1], [0, -1, 0]];
+  const ganWorldToUiWorld = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
+  let model: number[][];
+  if (calibration.zero) {
+    // Current body -> calibrated body. At the calibration pose this is identity.
+    const relative = matrixMultiply(
+      quaternionMatrix(calibration.zero),
+      transpose(current),
+    );
+    model = matrixMultiply(
+      matrixMultiply(bodyToModel, relative),
+      transpose(bodyToModel),
+    );
+  } else {
+    // UI model body -> GAN body -> GAN world -> UI world.
+    model = matrixMultiply(
+      matrixMultiply(ganWorldToUiWorld, transpose(current)),
+      transpose(bodyToModel),
+    );
+  }
   const signs = [calibration.invertX ? -1 : 1, calibration.invertY ? -1 : 1, calibration.invertZ ? -1 : 1];
   const inversion = [[signs[0], 0, 0], [0, signs[1], 0], [0, 0, signs[2]]];
   model = matrixMultiply(matrixMultiply(inversion, model), inversion);

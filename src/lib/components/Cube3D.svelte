@@ -13,7 +13,11 @@
     cube,
     orientation = null,
     gyroCalibration,
-  }: { cube: CubeState; orientation?: CubeQuaternion | null; gyroCalibration: GyroCalibration } = $props();
+  }: {
+    cube: CubeState;
+    orientation?: CubeQuaternion | null;
+    gyroCalibration: GyroCalibration;
+  } = $props();
   const gyroTransform = $derived(gyroCssTransform(orientation, gyroCalibration) || "rotateX(0deg)");
 
   function defaultViewQuaternion(): CubeQuaternion {

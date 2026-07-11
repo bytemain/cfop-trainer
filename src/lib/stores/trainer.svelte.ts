@@ -55,6 +55,22 @@ function generateScramble(length = 20): string[] {
   return moves;
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const handle = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(handle);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(handle);
+        reject(error);
+      },
+    );
+  });
+}
+
 export const CONNECTION_LABELS: Record<CubeConnectionState, string> = {
   "bluetooth-unavailable": "蓝牙不可用",
   "permission-required": "需要蓝牙权限",
@@ -411,6 +427,55 @@ class TrainerStore {
       : "演示状态已复位。";
   }
 
+  async resetAndSyncCubeState(): Promise<void> {
+    if (!this.session || !this.connectedDeviceName) {
+      this.connectionMessage = "请先连接实体魔方，再重置并同步状态。";
+      return;
+    }
+
+    this.stopTimer();
+    this.stopDemoPlayback();
+    this.connection = "synchronizing";
+    this.connectionMessage = "正在读取实体魔方的完整状态…";
+    safeLogger.info("trainer", "manual-state-sync-start", {
+      name: this.connectedDeviceName,
+    });
+
+    try {
+      const snapshot = await withTimeout(
+        this.session.requestSnapshot(),
+        12_000,
+        "读取完整魔方状态超时",
+      );
+      this.cube = cubeStateFromFacelets(snapshot.facelets, this.faceColors);
+      this.lastCubeSequence = snapshot.sequence;
+      this.cubeSequence = snapshot.sequence ?? null;
+      this.scramble = [];
+      this.scrambleIndex = 0;
+      this.solveMoves = [];
+      this.solveIndex = 0;
+      this.elapsedMs = 0;
+      this.completedMs = 0;
+      this.lastMove = null;
+      this.eventCount = 0;
+      this.hadDesync = false;
+      this.send({ type: "RESET" });
+      this.connection = "ready";
+      this.connectionMessage = `${this.connectedDeviceName} 的状态已重新同步。`;
+      safeLogger.info("trainer", "manual-state-sync-complete", {
+        name: this.connectedDeviceName,
+        sequence: snapshot.sequence ?? null,
+      });
+    } catch (error) {
+      this.connection = "degraded";
+      this.connectionMessage = `状态同步失败：${error instanceof Error ? error.message : String(error)}`;
+      safeLogger.warn("trainer", "manual-state-sync-failed", {
+        name: this.connectedDeviceName,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   reset(): void {
     this.stopTimer();
     this.stopDemoPlayback();
@@ -649,7 +714,11 @@ class TrainerStore {
         return;
       }
 
-      const candidates = await transport.scan({ timeoutMs: 10_000, namePrefixes: ["GAN"] });
+      const candidates = await withTimeout(
+        transport.scan({ timeoutMs: 10_000, namePrefixes: ["GAN"] }),
+        15_000,
+        "自动重连扫描超时",
+      );
       this.devices = candidates;
       const target =
         candidates.find((device) => device.id === remembered.platform_device_id) ??
@@ -697,4 +766,11 @@ class TrainerStore {
   }
 }
 
-export const trainer = new TrainerStore();
+const trainerGlobal = globalThis as typeof globalThis & {
+  __cfopTrainerStore?: TrainerStore;
+};
+
+if (trainerGlobal.__cfopTrainerStore) {
+  Object.setPrototypeOf(trainerGlobal.__cfopTrainerStore, TrainerStore.prototype);
+}
+export const trainer = trainerGlobal.__cfopTrainerStore ??= new TrainerStore();

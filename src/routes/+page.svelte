@@ -420,6 +420,21 @@
         </label>
         <div class="platform-note"><Smartphone size={18} /> 手机训练时保持前台和屏幕常亮。</div>
 
+        <div class="state-sync-panel">
+          <div>
+            <strong>重置魔方状态</strong>
+            <small>实体魔方还原后，读取完整状态并清空当前训练进度。</small>
+          </div>
+          <button
+            class="primary-button"
+            disabled={!trainer.connectedDeviceName || trainer.connection === "synchronizing"}
+            onclick={() => void trainer.resetAndSyncCubeState()}
+          >
+            <RefreshCcw size={17} />
+            {trainer.connection === "synchronizing" ? "正在同步" : "重置并同步状态"}
+          </button>
+        </div>
+
         <div class="calibration-panel">
           <div class="calibration-heading">
             <div><span class="eyebrow">Device calibration</span><h2>颜色与陀螺仪</h2></div>
@@ -489,7 +504,7 @@
 
           <div class="gyro-actions">
             <button class="primary-button" disabled={!trainer.gyroQuaternion} onclick={() => trainer.zeroGyro()}>
-              当前姿态设为正面
+              按当前手持姿态校准
             </button>
             {#each ["X", "Y", "Z"] as axis}
               <label class="axis-toggle">
@@ -954,6 +969,22 @@
     background: var(--color-surface-high);
   }
   .platform-note { display: flex; gap: 8px; margin-top: 12px; color: var(--color-warning); font-size: 0.8rem; }
+  .state-sync-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    width: 100%;
+    margin-top: 10px;
+    padding: 15px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 16px;
+    background: var(--color-surface-high);
+  }
+  .state-sync-panel > div { display: grid; gap: 4px; }
+  .state-sync-panel strong { color: var(--color-text); font-size: 0.86rem; }
+  .state-sync-panel small { color: var(--color-text-muted); font-size: 0.7rem; line-height: 1.45; }
+  .state-sync-panel .primary-button { flex: 0 0 auto; }
   .calibration-panel { display: grid; width: 100%; gap: 16px; margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--color-outline-soft); }
   .calibration-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
   .calibration-heading h2 { margin: 4px 0 0; }
@@ -1181,6 +1212,7 @@
     }
     .device-dialog-actions > button { flex: 1; }
     .calibration-heading { align-items: start; flex-direction: column; }
+    .state-sync-panel { align-items: stretch; flex-direction: column; }
     .face-color-grid { grid-template-columns: repeat(3, 1fr); }
     .palette-heading { align-items: start; flex-direction: column; }
     .sticker-palette-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -55,6 +55,8 @@ struct NativeBleInner {
 struct NativeBleState {
     #[cfg(target_os = "macos")]
     inner: AsyncMutex<NativeBleInner>,
+    #[cfg(target_os = "macos")]
+    operation: AsyncMutex<()>,
 }
 
 #[cfg(target_os = "macos")]
@@ -338,6 +340,7 @@ async fn native_ble_scan<R: Runtime>(
     timeout_ms: u64,
     prefixes: Vec<String>,
 ) -> Result<Vec<NativeBleDevice>, String> {
+    let _operation = state.operation.lock().await;
     let stale_connection = {
         let mut inner = state.inner.lock().await;
         if let Some(task) = inner.notification_task.take() {
@@ -346,7 +349,12 @@ async fn native_ble_scan<R: Runtime>(
         inner.connected.take()
     };
     if let Some(peripheral) = stale_connection {
-        if peripheral.is_connected().await.unwrap_or(false) {
+        let connected = timeout(Duration::from_secs(3), peripheral.is_connected())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false);
+        if connected {
             let _ = timeout(Duration::from_secs(5), peripheral.disconnect()).await;
             write_native_jsonl(
                 &app,
@@ -472,18 +480,23 @@ async fn native_ble_connect<R: Runtime>(
     id: String,
     name: String,
 ) -> Result<(), String> {
-    let mut inner = state.inner.lock().await;
-    if let Some(task) = inner.notification_task.take() {
-        task.abort();
+    let _operation = state.operation.lock().await;
+    let (previous, peripheral) = {
+        let mut inner = state.inner.lock().await;
+        if let Some(task) = inner.notification_task.take() {
+            task.abort();
+        }
+        let previous = inner.connected.take();
+        let peripheral = inner
+            .peripherals
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| "设备已不在本轮扫描结果中，请唤醒魔方后重新扫描。".to_owned())?;
+        (previous, peripheral)
+    };
+    if let Some(previous) = previous {
+        let _ = timeout(Duration::from_secs(5), previous.disconnect()).await;
     }
-    if let Some(previous) = inner.connected.take() {
-        let _ = previous.disconnect().await;
-    }
-    let peripheral = inner
-        .peripherals
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| "设备已不在本轮扫描结果中，请唤醒魔方后重新扫描。".to_owned())?;
 
     write_native_jsonl(
         &app,
@@ -492,14 +505,19 @@ async fn native_ble_connect<R: Runtime>(
         "connect-start",
         serde_json::json!({ "name": name }),
     );
-    if peripheral.is_connected().await.unwrap_or(false) {
-        let _ = peripheral.disconnect().await;
+    let already_connected = timeout(Duration::from_secs(3), peripheral.is_connected())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false);
+    if already_connected {
+        let _ = timeout(Duration::from_secs(5), peripheral.disconnect()).await;
     }
     if let Err(error) = peripheral
         .connect_with_timeout(Duration::from_secs(12))
         .await
     {
-        let _ = peripheral.disconnect().await;
+        let _ = timeout(Duration::from_secs(5), peripheral.disconnect()).await;
         write_native_jsonl(
             &app,
             "error",
@@ -515,9 +533,10 @@ async fn native_ble_connect<R: Runtime>(
         .discover_services_with_timeout(Duration::from_secs(8))
         .await
     {
-        let _ = peripheral.disconnect().await;
+        let _ = timeout(Duration::from_secs(5), peripheral.disconnect()).await;
         return Err(format!("连接成功，但 GATT 服务发现失败：{error}"));
     }
+    let mut inner = state.inner.lock().await;
     inner.connected = Some(peripheral);
     write_native_jsonl(
         &app,
@@ -704,12 +723,21 @@ async fn native_ble_unsubscribe(_service: String, _characteristic: String) -> Re
 #[cfg(target_os = "macos")]
 #[tauri::command]
 async fn native_ble_disconnect(state: tauri::State<'_, NativeBleState>) -> Result<(), String> {
-    let mut inner = state.inner.lock().await;
-    if let Some(task) = inner.notification_task.take() {
-        task.abort();
-    }
-    if let Some(peripheral) = inner.connected.take() {
-        if peripheral.is_connected().await.unwrap_or(false) {
+    let _operation = state.operation.lock().await;
+    let peripheral = {
+        let mut inner = state.inner.lock().await;
+        if let Some(task) = inner.notification_task.take() {
+            task.abort();
+        }
+        inner.connected.take()
+    };
+    if let Some(peripheral) = peripheral {
+        let connected = timeout(Duration::from_secs(3), peripheral.is_connected())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false);
+        if connected {
             timeout(Duration::from_secs(5), peripheral.disconnect())
                 .await
                 .map_err(|_| "Timeout during native BLE disconnect".to_owned())?
