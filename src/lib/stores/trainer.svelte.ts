@@ -818,9 +818,26 @@ class TrainerStore {
 
 const trainerGlobal = globalThis as typeof globalThis & {
   __cfopTrainerStore?: TrainerStore;
+  __cfopTrainerStoreSchema?: number;
 };
+const TRAINER_STORE_SCHEMA = 2;
+
+// HMR normally keeps the BLE session alive by reusing the store. When a code
+// update adds reactive fields or subscriptions, however, an old instance
+// cannot be upgraded safely in place. Reload once for that schema change so
+// the native connection is closed cleanly and auto-reconnect builds the full
+// current event pipeline.
+if (
+  trainerGlobal.__cfopTrainerStore &&
+  trainerGlobal.__cfopTrainerStoreSchema !== TRAINER_STORE_SCHEMA &&
+  typeof window !== "undefined"
+) {
+  trainerGlobal.__cfopTrainerStoreSchema = TRAINER_STORE_SCHEMA;
+  window.setTimeout(() => window.location.reload(), 0);
+}
 
 if (trainerGlobal.__cfopTrainerStore) {
   Object.setPrototypeOf(trainerGlobal.__cfopTrainerStore, TrainerStore.prototype);
 }
+trainerGlobal.__cfopTrainerStoreSchema = TRAINER_STORE_SCHEMA;
 export const trainer = trainerGlobal.__cfopTrainerStore ??= new TrainerStore();

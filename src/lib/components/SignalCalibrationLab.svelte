@@ -46,6 +46,7 @@
     gyroCalibration,
     onclose,
     onsave,
+    standalone = false,
   }: {
     deviceModel: string;
     protocol: GanProtocolVersion;
@@ -60,6 +61,7 @@
     gyroCalibration: GyroCalibration;
     onclose: () => void;
     onsave: (profile: SignalCalibrationProfile) => void;
+    standalone?: boolean;
   } = $props();
 
   type Stage = "static" | "dynamic" | "moves" | "render" | "complete";
@@ -304,7 +306,7 @@
   }
 </script>
 
-<div class="lab-backdrop" role="presentation">
+<div class="lab-backdrop" class:standalone role="presentation">
   <div class="signal-lab" role="dialog" aria-modal="true" aria-labelledby="signal-lab-title">
     <header>
       <div>
@@ -402,11 +404,18 @@
     position: fixed; z-index: 80; inset: 0; display: grid; place-items: center;
     padding: 20px; background: rgb(5 8 8 / 0.78); backdrop-filter: blur(12px);
   }
+  .lab-backdrop.standalone {
+    position: relative; z-index: 0; min-height: 100vh; padding: clamp(12px, 3vw, 34px);
+    background:
+      radial-gradient(circle at 15% 10%, rgb(49 189 132 / 0.12), transparent 34%),
+      var(--color-background);
+  }
   .signal-lab {
     display: grid; width: min(760px, 100%); max-height: min(900px, calc(100vh - 40px));
     overflow: auto; border: 1px solid var(--color-outline); border-radius: 24px;
     color: var(--color-text); background: var(--color-surface); box-shadow: 0 30px 90px rgb(0 0 0 / 0.5);
   }
+  .standalone .signal-lab { max-height: none; min-height: min(880px, calc(100vh - 68px)); }
   header { display: flex; align-items: start; justify-content: space-between; gap: 20px; padding: 24px 26px 18px; }
   header h2 { margin: 4px 0; font-size: 1.5rem; letter-spacing: -0.04em; }
   header p { margin: 0; color: var(--color-text-muted); font-size: 0.75rem; }
@@ -455,7 +464,9 @@
   @keyframes pulse { 50% { opacity: 0.45; } }
   @media (max-width: 599px) {
     .lab-backdrop { align-items: end; padding: 0; }
+    .lab-backdrop.standalone { min-height: 100vh; padding: 0; }
     .signal-lab { max-height: 94vh; border-radius: 24px 24px 0 0; }
+    .standalone .signal-lab { min-height: 100vh; max-height: none; border-radius: 0; }
     header { padding: 20px 20px 14px; }
     main { padding: 24px 18px; }
     .summary-grid { grid-template-columns: repeat(2, 1fr); }

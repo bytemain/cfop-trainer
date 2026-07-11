@@ -167,6 +167,19 @@ test("uses and customizes the full-bright sticker palette", async ({ page }, tes
   await expect(white).toHaveValue("#ffffff");
 });
 
+test("opens signal calibration as a dedicated page", async ({ page }, testInfo) => {
+  const isMobile = testInfo.project.name === "mobile-chromium";
+  const navigation = isMobile
+    ? page.locator(".bottom-navigation")
+    : page.locator(".navigation-rail");
+  await navigation.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: "开始采集" }).click();
+
+  await expect(page).toHaveURL(/\/signal-lab$/);
+  await expect(page.getByRole("heading", { name: "先连接蓝牙魔方" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "返回并连接魔方" })).toBeVisible();
+});
+
 test("uses the correct responsive navigation without horizontal overflow", async ({ page }, testInfo) => {
   const isMobile = testInfo.project.name === "mobile-chromium";
   await expect(page.locator(".navigation-rail")).toBeVisible({ visible: !isMobile });

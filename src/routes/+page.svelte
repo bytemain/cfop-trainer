@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import {
     Activity,
     BarChart3,
@@ -30,7 +31,6 @@
   import CubeNet from "$lib/components/CubeNet.svelte";
   import StatusPill from "$lib/components/StatusPill.svelte";
   import TimerDisplay from "$lib/components/TimerDisplay.svelte";
-  import SignalCalibrationLab from "$lib/components/SignalCalibrationLab.svelte";
   import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
 
@@ -44,7 +44,6 @@
   let activeSection = $state<Section>("train");
   let cubeView = $state<"2d" | "3d">("2d");
   let deviceDialogOpen = $state(false);
-  let signalLabOpen = $state(false);
 
   const deviceDialogBusy = $derived(
     ["scanning", "connecting", "authenticating", "synchronizing", "reconnecting"].includes(
@@ -159,7 +158,6 @@
 
       if (event.key.toLowerCase() === "r") trainer.reset();
       if (event.key === "Escape" && deviceDialogOpen) closeDeviceDialog();
-      else if (event.key === "Escape" && signalLabOpen) signalLabOpen = false;
     };
 
     window.addEventListener("keydown", handleKeydown);
@@ -446,8 +444,7 @@
           </div>
           <button
             class="primary-button"
-            disabled={!trainer.connectedDeviceName || !trainer.connectedProtocol || !trainer.gyroQuaternion}
-            onclick={() => (signalLabOpen = true)}
+            onclick={() => void goto("/signal-lab")}
           >
             <ScanSearch size={17} />
             开始采集
@@ -663,23 +660,6 @@
     </div>
   {/if}
 
-  {#if signalLabOpen && trainer.connectedDeviceName && trainer.connectedProtocol}
-    <SignalCalibrationLab
-      deviceModel={trainer.connectedDeviceName}
-      protocol={trainer.connectedProtocol}
-      cube={trainer.cube}
-      orientation={trainer.gyroQuaternion}
-      velocity={trainer.gyroVelocity}
-      orientationSerial={trainer.gyroEventSerial}
-      moveSerial={trainer.protocolMoveSerial}
-      lastMove={trainer.lastProtocolMove}
-      signalFrame={trainer.lastSignalFrame}
-      signalFrameSerial={trainer.signalFrameSerial}
-      gyroCalibration={trainer.gyroCalibration}
-      onclose={() => (signalLabOpen = false)}
-      onsave={(profile) => trainer.saveSignalCalibrationProfile(profile)}
-    />
-  {/if}
 </div>
 
 <style>
