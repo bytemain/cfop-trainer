@@ -112,6 +112,18 @@ test("switches to an interactive 3D cube", async ({ page }) => {
     "style",
     /--rotation-y:\s*46deg/,
   );
+
+  for (let index = 0; index < 5; index += 1) await cube3d.press("ArrowDown");
+  await expect(cube3d.locator(".cube-object")).toHaveAttribute(
+    "style",
+    /--rotation-x:\s*-84deg/,
+  );
+
+  await cube3d.dblclick();
+  await expect(cube3d.locator(".cube-object")).toHaveAttribute(
+    "style",
+    /--rotation-x:\s*-24deg; --rotation-y:\s*34deg/,
+  );
 });
 
 test("uses and customizes the full-bright sticker palette", async ({ page }, testInfo) => {

@@ -18,6 +18,11 @@
   let dragStartRotationX = 0;
   let dragStartRotationY = 0;
 
+  function resetView(): void {
+    rotationX = -24;
+    rotationY = 34;
+  }
+
   const faceTransforms: Record<Face, string> = {
     F: "rotateY(0deg) translateZ(var(--cube-half))",
     B: "rotateY(180deg) translateZ(var(--cube-half))",
@@ -38,11 +43,8 @@
 
   function moveDrag(event: PointerEvent): void {
     if (!dragging) return;
-    rotationY = dragStartRotationY + (event.clientX - dragStartX) * 0.42;
-    rotationX = Math.max(
-      -78,
-      Math.min(78, dragStartRotationX - (event.clientY - dragStartY) * 0.42),
-    );
+    rotationY = dragStartRotationY + (event.clientX - dragStartX) * 0.52;
+    rotationX = dragStartRotationX - (event.clientY - dragStartY) * 0.52;
   }
 
   function stopDrag(event: PointerEvent): void {
@@ -56,12 +58,10 @@
     const step = event.shiftKey ? 30 : 12;
     if (event.key === "ArrowLeft") rotationY -= step;
     else if (event.key === "ArrowRight") rotationY += step;
-    else if (event.key === "ArrowUp") rotationX = Math.min(78, rotationX + step);
-    else if (event.key === "ArrowDown") rotationX = Math.max(-78, rotationX - step);
-    else if (event.key === "Home") {
-      rotationX = -24;
-      rotationY = 34;
-    } else return;
+    else if (event.key === "ArrowUp") rotationX += step;
+    else if (event.key === "ArrowDown") rotationX -= step;
+    else if (event.key === "Home") resetView();
+    else return;
     event.preventDefault();
     event.stopPropagation();
   }
@@ -72,12 +72,13 @@
     type="button"
     class:dragging
     class="cube-stage"
-    aria-label="当前魔方 3D 视图。拖动旋转，方向键调整视角，Home 恢复默认视角。"
+    aria-label="当前魔方 3D 视图。可向任意方向连续拖动翻转，双击或按 Home 恢复默认视角。"
     onpointerdown={startDrag}
     onpointermove={moveDrag}
     onpointerup={stopDrag}
     onpointercancel={stopDrag}
     onkeydown={rotateWithKeyboard}
+    ondblclick={resetView}
   >
     <span class="floor-shadow" aria-hidden="true"></span>
     <span
@@ -98,7 +99,7 @@
       {/each}
     </span>
   </button>
-  <p>拖动旋转视角 · 方向键微调 · Home 复位</p>
+  <p>任意方向连续拖动翻转 · 双击 / Home 复位</p>
 </div>
 
 <style>
