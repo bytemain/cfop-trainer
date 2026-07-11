@@ -73,6 +73,11 @@
   } = $props();
 
   type Stage = "static" | "dynamic" | "moves" | "render" | "complete";
+  type LiveOrientationRow = {
+    at: number;
+    q: CubeQuaternion;
+    v: { x: number; y: number; z: number } | null;
+  };
 
   const staticSteps: Array<{ top: CubeColor; front: CubeColor; title: string }> = [
     { top: "white", front: "green", title: "白色朝上 · 绿色朝前" },
@@ -109,6 +114,10 @@
   let recentQuaternionCount = $state(0);
   let dynamicSampleCount = $state(0);
   let detectedRotationDeg = $state(0);
+  let dynamicLayerMoves = $state<string[]>([]);
+  let dynamicStartedAt = $state<number | null>(null);
+  let liveOrientationRows = $state<LiveOrientationRow[]>([]);
+  let lastLivePanelAt = 0;
   let lastOrientationSerial = -1;
   let lastMoveSerial = -1;
   let lastSignalFrameSerial = -1;
@@ -155,6 +164,38 @@
       recognizedStaticPose.frontColor === currentStatic.front,
     ),
   );
+  const quaternionRanges = $derived.by(() => {
+    orientationSerial;
+    const samples = dynamicRecording ? dynamicQuaternions : recentQuaternions;
+    if (samples.length === 0) return null;
+    const axes = ["x", "y", "z", "w"] as const;
+    return Object.fromEntries(axes.map((axis) => {
+      const values = samples.map((sample) => sample.quaternion[axis]);
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      return [axis, { min, max, span: max - min }];
+    })) as Record<"x" | "y" | "z" | "w", { min: number; max: number; span: number }>;
+  });
+  const changedByteIndexes = $derived.by(() => {
+    signalFrameSerial;
+    const frames = dynamicRecording ? dynamicSignalFrames : recentSignalFrames;
+    if (frames.length < 2) return [] as number[];
+    const first = frames[0].bytes;
+    const length = Math.min(...frames.map((frame) => frame.bytes.length));
+    const indexes: number[] = [];
+    for (let index = 0; index < length; index += 1) {
+      if (frames.some((frame) => frame.bytes[index] !== first[index])) indexes.push(index);
+    }
+    return indexes;
+  });
+  const orientationRate = $derived.by(() => {
+    orientationSerial;
+    if (dynamicRecording && dynamicStartedAt) {
+      const seconds = Math.max(0.1, (Date.now() - dynamicStartedAt) / 1_000);
+      return dynamicSampleCount / seconds;
+    }
+    return recentQuaternionCount / 1.4;
+  });
 
   $effect(() => {
     const serial = orientationSerial;
@@ -164,6 +205,13 @@
     recentQuaternions.push({ at: now, quaternion: { ...orientation } });
     recentQuaternions = recentQuaternions.filter((sample) => now - sample.at <= 1_400);
     recentQuaternionCount = recentQuaternions.length;
+    if (now - lastLivePanelAt >= 80) {
+      lastLivePanelAt = now;
+      liveOrientationRows = [
+        { at: now, q: { ...orientation }, v: velocity ? { ...velocity } : null },
+        ...liveOrientationRows,
+      ].slice(0, 10);
+    }
     if (dynamicRecording) {
       dynamicQuaternions.push({ at: now, quaternion: { ...orientation } });
       if (velocity) dynamicVelocities.push({ at: now, velocity: { ...velocity } });
@@ -198,6 +246,7 @@
     const serial = moveSerial;
     if (serial === lastMoveSerial) return;
     lastMoveSerial = serial;
+    if (dynamicRecording && lastMove) dynamicLayerMoves = [...dynamicLayerMoves, lastMove];
     if (moveRecording && lastMove) observedMoves = [...observedMoves, lastMove];
   });
 
@@ -233,6 +282,8 @@
     dynamicSignalFrames = [];
     dynamicSampleCount = 0;
     detectedRotationDeg = 0;
+    dynamicLayerMoves = [];
+    dynamicStartedAt = Date.now();
     dynamicRecording = true;
     message = "正在记录：朝正面看目标颜色，将整颗魔方顺时针转约 90°，然后点击确认。";
   }
@@ -367,6 +418,35 @@
     }
   }
 
+  async function copyDiagnosticSnapshot(): Promise<void> {
+    const snapshot = {
+      schemaVersion: 1,
+      kind: "signal-lab-live-diagnostic",
+      protocol,
+      stage,
+      dynamicAxis: currentDynamic?.physicalAxis ?? null,
+      orientationSerial,
+      signalFrameSerial,
+      orientationRate: Number(orientationRate.toFixed(2)),
+      quaternion: orientation,
+      quaternionRanges,
+      velocity,
+      detectedRotationDeg: Number(detectedRotationDeg.toFixed(3)),
+      dynamicSampleCount,
+      packetType: signalFrame?.packetType ?? null,
+      packetLayer: signalFrame?.layer ?? null,
+      packetLength: signalFrame?.bytes.length ?? 0,
+      changedByteIndexes,
+      observedLayerMoves: dynamicLayerMoves,
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
+      message = "实时诊断快照已复制，可以直接粘贴到 Codex 对话。";
+    } catch (error) {
+      message = `复制诊断快照失败：${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
   function goBack(): void {
     if (stage === "dynamic") {
       dynamicRecording = false;
@@ -406,6 +486,7 @@
 
     <div class="progress"><span style={`width:${(progress / 11) * 100}%`}></span></div>
 
+    <div class="lab-body">
     <main>
       {#if stage === "static" && currentStatic}
         <div class="instruction-icon"><Radio size={34} /></div>
@@ -458,6 +539,15 @@
               ? "已经检测到整机旋转，可以继续转到约 90° 后确认"
               : "请按动画转动整颗魔方，至少达到 20°"}
           </small>
+          {#if dynamicLayerMoves.length > 0 && detectedRotationDeg < 10}
+            <div class="layer-move-warning">
+              检测到层转 {dynamicLayerMoves.join(" ")}，但没有检测到整颗魔方姿态变化。请不要拧红色层；保持红色中心对着你，双手转动整个魔方。
+            </div>
+          {:else if dynamicSampleCount >= 80 && detectedRotationDeg < 2}
+            <div class="gyro-still-warning">
+              已收到 {dynamicSampleCount} 个姿态样本，但四元数角度几乎没有变化。如果你确认转动的是整颗魔方，这说明当前 GAN gyro 解码仍有问题，请保留这个页面状态。
+            </div>
+          {/if}
           <div class="step-actions">
             <button class="primary" disabled={detectedRotationDeg < 20} onclick={confirmDynamicCapture}><Check size={18} /> 完成并识别轴</button>
             <button class="secondary" onclick={skipDynamicAxis}>跳过此轴</button>
@@ -527,6 +617,68 @@
       <p class="message">{message}</p>
     </main>
 
+    <aside class="signal-stream" aria-label="实时协议数据流">
+      <div class="stream-heading">
+        <div>
+          <span class="eyebrow">In-memory diagnostics</span>
+          <h3>实时协议流</h3>
+        </div>
+        <span class="live-indicator"><i></i> LIVE</span>
+      </div>
+
+      <div class="stream-metrics">
+        <article><span>Orientation</span><strong>#{orientationSerial}</strong><small>{orientationRate.toFixed(1)} samples/s</small></article>
+        <article><span>Signal frame</span><strong>#{signalFrameSerial}</strong><small>{signalFrame?.packetType ?? "—"} · {signalFrame?.bytes.length ?? 0} bytes</small></article>
+        <article><span>最大角位移</span><strong>{detectedRotationDeg.toFixed(2)}°</strong><small>{dynamicRecording ? "本轮记录" : "等待开始"}</small></article>
+        <article><span>最后层转</span><strong>{lastMove ?? "—"}</strong><small>{dynamicLayerMoves.length} moves in axis capture</small></article>
+      </div>
+
+      <section class="stream-block">
+        <div class="stream-block-title"><strong>Quaternion range</strong><span>当前采样窗口</span></div>
+        <div class="range-table">
+          {#each ["x", "y", "z", "w"] as axis}
+            <div>
+              <b>{axis}</b>
+              <code>{quaternionRanges ? quaternionRanges[axis as "x" | "y" | "z" | "w"].min.toFixed(4) : "—"}</code>
+              <code>{quaternionRanges ? quaternionRanges[axis as "x" | "y" | "z" | "w"].max.toFixed(4) : "—"}</code>
+              <strong>{quaternionRanges ? `Δ${quaternionRanges[axis as "x" | "y" | "z" | "w"].span.toFixed(4)}` : "—"}</strong>
+            </div>
+          {/each}
+        </div>
+      </section>
+
+      <section class="stream-block">
+        <div class="stream-block-title"><strong>解密帧变化</strong><span>{signalFrame?.layer ?? "—"}</span></div>
+        <code class="byte-indexes">
+          {changedByteIndexes.length > 0
+            ? `changed indexes: ${changedByteIndexes.slice(0, 36).join(", ")}${changedByteIndexes.length > 36 ? "…" : ""}`
+            : "尚未观察到字节变化"}
+        </code>
+      </section>
+
+      <section class="stream-block live-table-block">
+        <div class="stream-block-title"><strong>最近姿态帧</strong><span>约 12 FPS 展示</span></div>
+        <div class="live-table" role="table" aria-label="最近姿态帧">
+          <div class="live-table-head" role="row"><span>q.x</span><span>q.y</span><span>q.z</span><span>q.w</span><span>v.x/y/z</span></div>
+          {#each liveOrientationRows as row}
+            <div role="row">
+              <code>{row.q.x.toFixed(3)}</code>
+              <code>{row.q.y.toFixed(3)}</code>
+              <code>{row.q.z.toFixed(3)}</code>
+              <code>{row.q.w.toFixed(3)}</code>
+              <code>{row.v ? `${row.v.x.toFixed(1)}/${row.v.y.toFixed(1)}/${row.v.z.toFixed(1)}` : "—"}</code>
+            </div>
+          {/each}
+        </div>
+      </section>
+
+      <button class="copy-diagnostic" onclick={() => void copyDiagnosticSnapshot()}>
+        <ClipboardCopy size={15} /> 复制诊断快照给 Codex
+      </button>
+      <p class="stream-privacy">仅当前页面内存展示 · 不写 JSONL · 不保存原始 packet</p>
+    </aside>
+    </div>
+
     {#if stage === "dynamic" || stage === "moves" || stage === "render"}
       <footer><button class="back" onclick={goBack}><ChevronLeft size={17} /> 返回上一步</button></footer>
     {/if}
@@ -545,7 +697,7 @@
       var(--color-background);
   }
   .signal-lab {
-    display: grid; width: min(760px, 100%); max-height: min(900px, calc(100vh - 40px));
+    display: grid; width: min(1180px, 100%); max-height: min(920px, calc(100vh - 40px));
     overflow: auto; border: 1px solid var(--color-outline); border-radius: 24px;
     color: var(--color-text); background: var(--color-surface); box-shadow: 0 30px 90px rgb(0 0 0 / 0.5);
   }
@@ -556,7 +708,8 @@
   .close { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 50%; color: inherit; background: var(--color-surface-highest); }
   .progress { height: 4px; background: var(--color-surface-highest); }
   .progress span { display: block; height: 100%; border-radius: 4px; background: var(--color-primary); transition: width 220ms ease; }
-  main { display: grid; justify-items: center; gap: 14px; padding: 30px clamp(22px, 6vw, 58px); text-align: center; }
+  .lab-body { display: grid; grid-template-columns: minmax(0, 1fr) 360px; align-items: start; min-width: 0; }
+  main { display: grid; min-width: 0; justify-items: center; gap: 14px; padding: 30px clamp(22px, 4vw, 52px); text-align: center; }
   .instruction-icon { display: grid; width: 68px; height: 68px; place-items: center; border-radius: 22px; color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 13%, transparent); }
   .instruction-icon.success { color: #50d69c; }
   .stage-label, .eyebrow { color: var(--color-primary); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
@@ -586,6 +739,8 @@
   .rotation-meter span { display: block; height: 100%; border-radius: inherit; background: var(--color-warning); transition: width 120ms linear; }
   .rotation-meter.ready span { background: var(--color-primary); }
   .rotation-hint { color: var(--color-text-muted); font-size: 0.7rem; }
+  .layer-move-warning { width: min(520px, 100%); padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--color-error) 42%, transparent); border-radius: 12px; color: var(--color-error); background: color-mix(in srgb, var(--color-error) 8%, var(--color-surface-highest)); font-size: 0.72rem; line-height: 1.55; }
+  .gyro-still-warning { width: min(520px, 100%); padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent); border-radius: 12px; color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface-highest)); font-size: 0.72rem; line-height: 1.55; }
   .algorithm { display: flex; gap: 9px; padding: 15px 18px; border-radius: 14px; background: var(--color-surface-highest); }
   .algorithm strong { display: grid; min-width: 38px; height: 38px; place-items: center; border-radius: 9px; color: var(--color-primary); background: var(--color-surface); }
   .observed { display: grid; grid-template-columns: auto 1fr; gap: 12px; width: min(500px, 100%); padding: 12px 15px; border-radius: 12px; color: var(--color-text-muted); background: var(--color-surface-highest); text-align: left; }
@@ -603,9 +758,40 @@
   .delivery-panel code { color: var(--color-text); }
   .export-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; }
   .message { min-height: 20px; margin: 3px 0 0; color: var(--color-text-muted); font-size: 0.72rem; }
+  .signal-stream { position: sticky; top: 0; display: grid; max-height: calc(100vh - 72px); gap: 12px; overflow: auto; padding: 22px 18px; border-left: 1px solid var(--color-outline-soft); background: color-mix(in srgb, var(--color-surface-high) 82%, transparent); text-align: left; }
+  .stream-heading { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+  .stream-heading h3 { margin: 4px 0 0; font-size: 1.05rem; letter-spacing: -0.025em; }
+  .live-indicator { display: inline-flex; align-items: center; gap: 6px; color: var(--color-success); font: 800 0.62rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .live-indicator i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; animation: pulse 1s infinite; }
+  .stream-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .stream-metrics article { display: grid; min-width: 0; gap: 3px; padding: 10px; border: 1px solid var(--color-outline-soft); border-radius: 11px; background: var(--color-surface); }
+  .stream-metrics span, .stream-metrics small { overflow: hidden; color: var(--color-text-muted); font-size: 0.61rem; text-overflow: ellipsis; white-space: nowrap; }
+  .stream-metrics strong { overflow: hidden; font: 750 0.86rem ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+  .stream-block { display: grid; gap: 8px; min-width: 0; padding: 11px; border: 1px solid var(--color-outline-soft); border-radius: 12px; background: var(--color-surface); }
+  .stream-block-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .stream-block-title strong { font-size: 0.72rem; }
+  .stream-block-title span { color: var(--color-text-muted); font-size: 0.61rem; }
+  .range-table { display: grid; gap: 4px; }
+  .range-table > div { display: grid; grid-template-columns: 18px 1fr 1fr 62px; gap: 5px; align-items: center; }
+  .range-table b { color: var(--color-primary); font: 800 0.7rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .range-table code { color: var(--color-text-muted); font-size: 0.63rem; }
+  .range-table strong { color: var(--color-info); font: 700 0.63rem ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; }
+  .byte-indexes { display: block; overflow-wrap: anywhere; color: var(--color-info); font-size: 0.63rem; line-height: 1.55; }
+  .live-table-block { overflow: hidden; }
+  .live-table { display: grid; min-width: 0; gap: 2px; overflow: auto; }
+  .live-table > div { display: grid; grid-template-columns: repeat(4, minmax(44px, 1fr)) minmax(88px, 1.5fr); gap: 4px; min-width: 295px; }
+  .live-table span { color: var(--color-text-muted); font-size: 0.56rem; }
+  .live-table code { color: var(--color-text); font-size: 0.59rem; font-variant-numeric: tabular-nums; }
+  .live-table > div:not(.live-table-head):first-of-type code { color: var(--color-primary); }
+  .stream-privacy { margin: 0; color: var(--color-text-muted); font-size: 0.58rem; line-height: 1.5; text-align: center; }
+  .copy-diagnostic { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 7px; padding: 0 10px; border: 1px solid var(--color-outline); border-radius: 10px; color: var(--color-primary); background: var(--color-surface-highest); font-size: 0.68rem; font-weight: 750; }
   footer { padding: 0 24px 20px; }
   .back { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-muted); background: transparent; }
   @keyframes pulse { 50% { opacity: 0.45; } }
+  @media (max-width: 980px) {
+    .lab-body { grid-template-columns: 1fr; }
+    .signal-stream { position: relative; max-height: none; border-top: 1px solid var(--color-outline-soft); border-left: 0; }
+  }
   @media (max-width: 599px) {
     .lab-backdrop { align-items: end; padding: 0; }
     .lab-backdrop.standalone { min-height: 100vh; padding: 0; }
@@ -613,6 +799,7 @@
     .standalone .signal-lab { min-height: 100vh; max-height: none; border-radius: 0; }
     header { padding: 20px 20px 14px; }
     main { padding: 24px 18px; }
+    .signal-stream { padding: 18px 12px 24px; }
     .summary-grid { grid-template-columns: repeat(2, 1fr); }
   }
 </style>

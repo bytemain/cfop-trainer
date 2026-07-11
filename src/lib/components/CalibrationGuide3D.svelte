@@ -103,6 +103,7 @@
     {:else}
       <span><b class="swatch face-{guideFront}"></b>先让{colorLabels[guideFront]}色中心正对你</span>
       <span class="axis-caption">沿 {axisPair} 中心轴，像转方向盘一样转整颗</span>
+      <strong class="layer-warning">✕ 不要只拧{colorLabels[guideFront]}色这一层</strong>
     {/if}
   </div>
 </div>
@@ -122,6 +123,7 @@
     transform: translate(-50%, -50%) rotateX(-23deg) rotateY(36deg);
     transform-style: preserve-3d;
   }
+  .dynamic .guide-cube { animation: whole-cube-turn 2.8s cubic-bezier(0.35, 0, 0.2, 1) infinite; }
   .guide-face {
     position: absolute; inset: 0; display: grid; grid-template-columns: repeat(3, 1fr);
     grid-template-rows: repeat(3, 1fr); gap: 3px; padding: 5px; border: 2px solid #060808;
@@ -169,11 +171,17 @@
   .guide-caption { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 14px; color: var(--color-text-muted); font-size: 0.72rem; }
   .guide-caption span { display: inline-flex; align-items: center; gap: 6px; }
   .guide-caption .axis-caption { flex-basis: 100%; justify-content: center; color: var(--color-text); }
+  .layer-warning { flex-basis: 100%; color: var(--color-error); font-size: 0.72rem; }
   .swatch { display: inline-block; width: 11px; height: 11px; border: 1px solid rgb(255 255 255 / 0.3); border-radius: 3px; }
   @keyframes circle-motion { to { stroke-dashoffset: -492; } }
+  @keyframes whole-cube-turn {
+    0%, 14% { transform: translate(-50%, -50%) rotateZ(0deg) rotateX(-23deg) rotateY(36deg); }
+    68%, 86% { transform: translate(-50%, -50%) rotateZ(88deg) rotateX(-23deg) rotateY(36deg); }
+    100% { transform: translate(-50%, -50%) rotateZ(0deg) rotateX(-23deg) rotateY(36deg); }
+  }
   @media (max-width: 599px) {
     .guide-card-3d { padding-inline: 8px; }
     .guide-scene { width: 270px; height: 220px; transform: scale(0.94); }
   }
-  @media (prefers-reduced-motion: reduce) { .arrow-motion { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .arrow-motion, .dynamic .guide-cube { animation: none; } }
 </style>
