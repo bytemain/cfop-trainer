@@ -21,6 +21,8 @@ use btleplug::{
 #[cfg(target_os = "macos")]
 use futures_util::StreamExt;
 use serde_json::Value;
+#[cfg(desktop)]
+use tauri::menu::{Menu, MenuItem, HELP_SUBMENU_ID};
 use tauri::{ipc::Channel, Manager, Runtime};
 use tauri_plugin_sql::{Migration, MigrationKind};
 use tokio::sync::mpsc;
@@ -815,9 +817,44 @@ pub fn run() {
         kind: MigrationKind::Up,
     }];
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(JsonlLogState::default())
-        .manage(NativeBleState::default())
+        .manage(NativeBleState::default());
+
+    #[cfg(desktop)]
+    let builder = builder
+        .menu(|app| {
+            let menu = Menu::default(app)?;
+            #[cfg(debug_assertions)]
+            if let Some(help) = menu
+                .get(HELP_SUBMENU_ID)
+                .and_then(|item| item.as_submenu().cloned())
+            {
+                let developer_tools = MenuItem::with_id(
+                    app,
+                    "open-developer-tools",
+                    "Open Developer Tools",
+                    true,
+                    Some("CmdOrCtrl+Alt+I"),
+                )?;
+                help.append(&developer_tools)?;
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            #[cfg(debug_assertions)]
+            if event.id().as_ref() == "open-developer-tools" {
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_devtools_open() {
+                        window.close_devtools();
+                    } else {
+                        window.open_devtools();
+                    }
+                }
+            }
+        });
+
+    builder
         .invoke_handler(tauri::generate_handler![
             write_jsonl_log,
             gan_ble_subscribe,
