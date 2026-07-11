@@ -414,21 +414,23 @@
         <p class="instruction">将魔方中心色严格按提示摆放，平放或稳定握持。必须同时对齐“朝上”和“朝前”，保持至少 1 秒。</p>
         <CalibrationGuide3D mode="static" top={currentStatic.top} front={currentStatic.front} />
         <div class="live-samples"><span class:ready={recentQuaternionCount >= 8}></span>最近窗口 {recentQuaternionCount} 个姿态样本</div>
-        <div class="pose-recognition" class:matched={staticPoseMatches} class:mismatch={recognizedStaticPose?.confident && !staticPoseMatches}>
-          {#if recognizedStaticPose?.confident}
-            <Check size={16} />
-            <span>
-              {staticPoseMatches ? "姿态正确" : "当前识别"}：
-              {colorLabels[recognizedStaticPose.topColor]}朝上 · {colorLabels[recognizedStaticPose.frontColor]}朝前
-            </span>
-          {:else}
-            <Radio size={16} /> <span>正在自动识别朝上面与朝前面…</span>
-          {/if}
-        </div>
-        <div class="step-actions">
+        <div class="confirm-pose-row">
           <button class="primary" disabled={!orientation || recentQuaternionCount < 8} onclick={confirmStaticPose}>
             <Check size={18} /> 确认此姿态
           </button>
+          <div class="pose-recognition" class:matched={staticPoseMatches} class:mismatch={recognizedStaticPose?.confident && !staticPoseMatches}>
+            {#if recognizedStaticPose?.confident}
+              <Check size={16} />
+              <span>
+                {staticPoseMatches ? "姿态正确" : "当前识别"}：
+                {colorLabels[recognizedStaticPose.topColor]}朝上 · {colorLabels[recognizedStaticPose.frontColor]}朝前
+              </span>
+            {:else}
+              <Radio size={16} /> <span>正在自动识别朝上面与朝前面…</span>
+            {/if}
+          </div>
+        </div>
+        <div class="step-actions">
           <button class="secondary" onclick={skipStaticPose}>跳过此姿态</button>
         </div>
         <button class="skip-all" onclick={skipAllStaticPoses}>跳过全部静态姿态，直接进入动态轴</button>
@@ -563,6 +565,7 @@
   .live-samples { display: flex; align-items: center; gap: 8px; color: var(--color-text-muted); font-size: 0.75rem; }
   .live-samples span { width: 8px; height: 8px; border-radius: 50%; background: var(--color-warning); }
   .live-samples span.ready { background: #50d69c; box-shadow: 0 0 9px #50d69c; }
+  .confirm-pose-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 9px; }
   .pose-recognition { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid var(--color-outline); border-radius: 11px; color: var(--color-text-muted); background: var(--color-surface-highest); font-size: 0.72rem; }
   .pose-recognition.matched { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 42%, transparent); background: color-mix(in srgb, var(--color-success) 8%, var(--color-surface-highest)); }
   .pose-recognition.mismatch { color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 38%, transparent); }
