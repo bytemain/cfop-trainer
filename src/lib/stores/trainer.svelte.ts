@@ -24,6 +24,7 @@ import type {
   CubeMoveEvent,
   CubeOrientationEvent,
   CubeQuaternion,
+  CubeSignalFrameEvent,
   SmartCubeSession,
 } from "$lib/protocols/gan/types";
 import { DEFAULT_GYRO_CALIBRATION, type GyroCalibration } from "$lib/cube/orientation";
@@ -34,6 +35,7 @@ import {
   rememberCubeDevice,
   type RememberedCubeDevice,
 } from "$lib/data/database";
+import type { SignalCalibrationProfile } from "$lib/calibration/signalProfile";
 
 const SCRAMBLE_FACES = ["U", "R", "F", "D", "L", "B"] as const;
 const SCRAMBLE_SUFFIXES = ["", "'", "2"] as const;
@@ -120,6 +122,13 @@ class TrainerStore {
   gyroQuaternion = $state<CubeQuaternion | null>(null);
   gyroVelocity = $state<{ x: number; y: number; z: number } | null>(null);
   cubeSequence = $state<number | null>(null);
+  connectedProtocol = $state<"v1" | "v2" | "v3" | "v4" | null>(null);
+  gyroEventSerial = $state(0);
+  protocolMoveSerial = $state(0);
+  lastProtocolMove = $state<string | null>(null);
+  signalFrameSerial = $state(0);
+  lastSignalFrame = $state<CubeSignalFrameEvent | null>(null);
+  signalCalibrationProfile = $state<SignalCalibrationProfile | null>(null);
 
   phase = $derived(derivePhase(this.cube, this.crossColor));
   facts = $derived(derivePhaseFacts(this.cube, this.crossColor));
@@ -140,6 +149,7 @@ class TrainerStore {
   private session: SmartCubeSession | null = null;
   private unsubscribeMoves: (() => Promise<void>) | null = null;
   private unsubscribeOrientation: (() => Promise<void>) | null = null;
+  private unsubscribeSignals: (() => Promise<void>) | null = null;
   private lastCubeSequence: number | undefined;
   private connectedDeviceId: string | null = null;
   private initializationPromise: Promise<void> | null = null;
@@ -244,6 +254,7 @@ class TrainerStore {
         protocol: adapter.version,
       });
       this.session = await adapter.open(connection);
+      this.connectedProtocol = adapter.version;
       connection = null;
 
       this.connection = "synchronizing";
@@ -254,6 +265,7 @@ class TrainerStore {
       this.cubeSequence = snapshot.sequence ?? null;
       this.unsubscribeMoves = await this.session.moves((event) => this.handleRealMove(event));
       this.unsubscribeOrientation = await this.session.orientation((event) => this.handleOrientation(event));
+      this.unsubscribeSignals = await this.session.signals((event) => this.handleSignalFrame(event));
       this.connectedDeviceName = device.name;
       this.connection = "ready";
       this.connectionMessage = `${device.name} 已连接。`;
@@ -551,6 +563,27 @@ class TrainerStore {
     this.persistDevicePreferences();
   }
 
+  saveSignalCalibrationProfile(profile: SignalCalibrationProfile): void {
+    this.signalCalibrationProfile = profile;
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(GLOBAL_CUBE_PROFILE_KEY + ":signal-calibration", JSON.stringify(profile));
+      if (this.connectedDeviceId) {
+        localStorage.setItem(
+          "cfop-trainer:cube-profile:" + this.connectedDeviceId + ":signal-calibration",
+          JSON.stringify(profile),
+        );
+      }
+    }
+    safeLogger.info("calibration", "signal-profile-saved", {
+      protocol: profile.protocol,
+      staticPoseCount: profile.staticPoses.length,
+      dynamicAxisCount: profile.dynamicAxes.length,
+      moveMappingMatched: profile.moveValidation.matched,
+      renderConfirmed: profile.renderValidation.confirmed,
+      confidence: profile.overallConfidence,
+    });
+  }
+
   formatTime(milliseconds = this.elapsedMs): string {
     const safeValue = Math.max(0, Math.floor(milliseconds));
     const minutes = Math.floor(safeValue / 60_000);
@@ -593,6 +626,8 @@ class TrainerStore {
     this.lastCubeSequence = event.sequence;
     this.cubeSequence = event.sequence;
     const move = normalizeMove(event.move);
+    this.lastProtocolMove = move;
+    this.protocolMoveSerial += 1;
     this.applyDomainMove(move);
 
     if (this.sessionState === "scrambling" && this.currentScrambleMove === move) {
@@ -624,6 +659,8 @@ class TrainerStore {
     this.unsubscribeMoves = null;
     await this.unsubscribeOrientation?.().catch(() => undefined);
     this.unsubscribeOrientation = null;
+    await this.unsubscribeSignals?.().catch(() => undefined);
+    this.unsubscribeSignals = null;
     await this.session?.disconnect().catch(() => undefined);
     this.session = null;
     this.connectedDeviceName = null;
@@ -632,12 +669,25 @@ class TrainerStore {
     this.cubeSequence = null;
     this.gyroQuaternion = null;
     this.gyroVelocity = null;
+    this.connectedProtocol = null;
+    this.lastSignalFrame = null;
     this.connectedDeviceId = null;
   }
 
   private handleOrientation(event: CubeOrientationEvent): void {
     this.gyroQuaternion = event.quaternion;
     this.gyroVelocity = event.velocity ?? null;
+    this.gyroEventSerial += 1;
+  }
+
+  private handleSignalFrame(event: CubeSignalFrameEvent): void {
+    // The decoded frame lives only in this short-lived in-memory handoff. It is
+    // never sent to safeLogger or persisted by the TrainerStore.
+    this.lastSignalFrame = {
+      ...event,
+      bytes: event.bytes.slice(),
+    };
+    this.signalFrameSerial += 1;
   }
 
   private loadDevicePreferences(deviceId: string): void {

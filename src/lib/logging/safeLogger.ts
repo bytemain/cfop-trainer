@@ -29,6 +29,9 @@ const FORBIDDEN_DETAIL_KEYS = new Set([
   "iv",
   "packet",
   "payload",
+  "quaternion",
+  "gyroquaternion",
+  "orientation",
 ]);
 const entries: SafeLogEntry[] = [];
 const listeners = new Set<(entry: SafeLogEntry) => void>();

@@ -2,6 +2,7 @@ import type { BleConnection, DiscoveredDevice } from "$lib/ble/types";
 import type {
   CubeMoveEvent,
   CubeOrientationEvent,
+  CubeSignalFrameEvent,
   CubeSnapshot,
   GanProtocolAdapter,
   GanProtocolMatch,
@@ -34,6 +35,7 @@ class GanV4Session implements SmartCubeSession {
   readonly protocol = "v4" as const;
   private listeners = new Set<(event: CubeMoveEvent) => void>();
   private orientationListeners = new Set<(event: CubeOrientationEvent) => void>();
+  private signalListeners = new Set<(event: CubeSignalFrameEvent) => void>();
   private pendingSnapshots: PendingResponse<CubeSnapshot>[] = [];
   private pendingBattery: PendingResponse<number | undefined>[] = [];
   private unsubscribe: (() => Promise<void>) | null = null;
@@ -79,6 +81,13 @@ class GanV4Session implements SmartCubeSession {
     this.orientationListeners.add(listener);
     return Promise.resolve(async () => {
       this.orientationListeners.delete(listener);
+    });
+  }
+
+  signals(listener: (event: CubeSignalFrameEvent) => void): Promise<() => Promise<void>> {
+    this.signalListeners.add(listener);
+    return Promise.resolve(async () => {
+      this.signalListeners.delete(listener);
     });
   }
 
@@ -188,7 +197,17 @@ class GanV4Session implements SmartCubeSession {
     this.notifications += 1;
     try {
       if (!this.cipher) return;
-      const packet = parseGanV4Packet(this.cipher.decode(encrypted));
+      const decoded = this.cipher.decode(encrypted);
+      const packet = parseGanV4Packet(decoded);
+      const packetType = packet.type === "move-history" ? "unknown" : packet.type;
+      const signal: CubeSignalFrameEvent = {
+        bytes: decoded.slice(),
+        layer: "decrypted",
+        packetType,
+        receivedAt: Date.now(),
+        protocol: "v4",
+      };
+      for (const listener of this.signalListeners) listener(signal);
       if (packet.type !== "unknown" || this.notifications <= 3 || this.notifications % 100 === 0) {
         safeLogger.debug("gan-v4", "packet-parsed", {
           packetType: packet.type,

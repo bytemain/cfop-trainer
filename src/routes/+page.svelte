@@ -14,6 +14,7 @@
     Pause,
     Play,
     Radio,
+    ScanSearch,
     RefreshCcw,
     RotateCcw,
     Settings,
@@ -29,6 +30,7 @@
   import CubeNet from "$lib/components/CubeNet.svelte";
   import StatusPill from "$lib/components/StatusPill.svelte";
   import TimerDisplay from "$lib/components/TimerDisplay.svelte";
+  import SignalCalibrationLab from "$lib/components/SignalCalibrationLab.svelte";
   import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
 
@@ -42,6 +44,7 @@
   let activeSection = $state<Section>("train");
   let cubeView = $state<"2d" | "3d">("2d");
   let deviceDialogOpen = $state(false);
+  let signalLabOpen = $state(false);
 
   const deviceDialogBusy = $derived(
     ["scanning", "connecting", "authenticating", "synchronizing", "reconnecting"].includes(
@@ -156,6 +159,7 @@
 
       if (event.key.toLowerCase() === "r") trainer.reset();
       if (event.key === "Escape" && deviceDialogOpen) closeDeviceDialog();
+      else if (event.key === "Escape" && signalLabOpen) signalLabOpen = false;
     };
 
     window.addEventListener("keydown", handleKeydown);
@@ -435,6 +439,21 @@
           </button>
         </div>
 
+        <div class="state-sync-panel signal-lab-entry">
+          <div>
+            <strong>魔方信号采集实验室</strong>
+            <small>用六面姿态、三轴整机旋转和标准公式，反推出协议轴、方向与动作映射。</small>
+          </div>
+          <button
+            class="primary-button"
+            disabled={!trainer.connectedDeviceName || !trainer.connectedProtocol || !trainer.gyroQuaternion}
+            onclick={() => (signalLabOpen = true)}
+          >
+            <ScanSearch size={17} />
+            开始采集
+          </button>
+        </div>
+
         <div class="calibration-panel">
           <div class="calibration-heading">
             <div><span class="eyebrow">Device calibration</span><h2>颜色与陀螺仪</h2></div>
@@ -642,6 +661,24 @@
         </footer>
       </div>
     </div>
+  {/if}
+
+  {#if signalLabOpen && trainer.connectedDeviceName && trainer.connectedProtocol}
+    <SignalCalibrationLab
+      deviceModel={trainer.connectedDeviceName}
+      protocol={trainer.connectedProtocol}
+      cube={trainer.cube}
+      orientation={trainer.gyroQuaternion}
+      velocity={trainer.gyroVelocity}
+      orientationSerial={trainer.gyroEventSerial}
+      moveSerial={trainer.protocolMoveSerial}
+      lastMove={trainer.lastProtocolMove}
+      signalFrame={trainer.lastSignalFrame}
+      signalFrameSerial={trainer.signalFrameSerial}
+      gyroCalibration={trainer.gyroCalibration}
+      onclose={() => (signalLabOpen = false)}
+      onsave={(profile) => trainer.saveSignalCalibrationProfile(profile)}
+    />
   {/if}
 </div>
 

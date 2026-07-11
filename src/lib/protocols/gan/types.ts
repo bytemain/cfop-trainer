@@ -30,6 +30,14 @@ export interface CubeOrientationEvent {
   protocol: GanProtocolVersion;
 }
 
+export interface CubeSignalFrameEvent {
+  bytes: Uint8Array;
+  layer: "decrypted" | "encrypted";
+  packetType: "gyro" | "move" | "snapshot" | "battery" | "hardware" | "unknown";
+  receivedAt: number;
+  protocol: GanProtocolVersion;
+}
+
 export interface GanProtocolMatch {
   protocol: GanProtocolVersion;
   confidence: number;
@@ -42,6 +50,7 @@ export interface SmartCubeSession {
   initialSnapshot(): Promise<CubeSnapshot>;
   moves(listener: (event: CubeMoveEvent) => void): Promise<() => Promise<void>>;
   orientation(listener: (event: CubeOrientationEvent) => void): Promise<() => Promise<void>>;
+  signals(listener: (event: CubeSignalFrameEvent) => void): Promise<() => Promise<void>>;
   requestSnapshot(): Promise<CubeSnapshot>;
   batteryLevel(): Promise<number | undefined>;
   disconnect(): Promise<void>;

@@ -1,0 +1,307 @@
+import type { CubeQuaternion, GanProtocolVersion } from "$lib/protocols/gan/types";
+
+export type CubeColor = "white" | "yellow" | "red" | "orange" | "green" | "blue";
+export type ProtocolAxis = "x" | "y" | "z";
+
+export interface TimedQuaternionSample {
+  at: number;
+  quaternion: CubeQuaternion;
+}
+
+export interface TimedVelocitySample {
+  at: number;
+  velocity: { x: number; y: number; z: number };
+}
+
+export interface InMemorySignalFrame {
+  at: number;
+  layer: "decrypted" | "encrypted";
+  packetType: string;
+  bytes: Uint8Array;
+}
+
+export interface FrameFieldEvidence {
+  layer: "decrypted" | "encrypted" | "mixed";
+  packetTypes: string[];
+  frameLengths: number[];
+  staticPoseCandidateByteIndexes: number[];
+  dynamicCandidateByteIndexes: Record<DynamicAxisCapture["physicalAxis"], number[]>;
+  moveCandidateByteIndexes: number[];
+  rawBytesPersisted: false;
+}
+
+export interface StaticPoseCapture {
+  top: CubeColor;
+  front: CubeColor;
+  average: CubeQuaternion;
+  sampleCount: number;
+  maxAngularDeviationDeg: number;
+  confidence: number;
+}
+
+export interface DynamicAxisCapture {
+  physicalAxis: "red-orange" | "blue-green" | "white-yellow";
+  positiveFace: CubeColor;
+  protocolAxis: ProtocolAxis;
+  sign: 1 | -1;
+  sampleCount: number;
+  activeSampleCount: number;
+  dominance: number;
+  confidence: number;
+}
+
+export interface MoveValidationCapture {
+  expected: string[];
+  observed: string[];
+  matched: boolean;
+}
+
+export interface RenderValidationCapture {
+  confirmed: boolean;
+}
+
+export interface SignalCalibrationProfile {
+  schemaVersion: 1;
+  profileKind: "smart-cube-signal-calibration";
+  deviceModel: string;
+  protocol: GanProtocolVersion;
+  createdAt: string;
+  staticPoses: StaticPoseCapture[];
+  dynamicAxes: DynamicAxisCapture[];
+  moveValidation: MoveValidationCapture;
+  renderValidation: RenderValidationCapture;
+  frameFieldEvidence: FrameFieldEvidence;
+  overallConfidence: number;
+  privacy: {
+    rawBlePersisted: false;
+    rawQuaternionStreamPersisted: false;
+    deviceAddressPersisted: false;
+  };
+}
+
+const AXES: ProtocolAxis[] = ["x", "y", "z"];
+
+export function normalizeQuaternion(value: CubeQuaternion): CubeQuaternion {
+  const length = Math.hypot(value.x, value.y, value.z, value.w) || 1;
+  return {
+    x: value.x / length,
+    y: value.y / length,
+    z: value.z / length,
+    w: value.w / length,
+  };
+}
+
+export function averageQuaternions(values: readonly CubeQuaternion[]): CubeQuaternion {
+  if (values.length === 0) throw new Error("至少需要一个四元数样本");
+  const reference = normalizeQuaternion(values[0]);
+  const sum = values.reduce(
+    (result, value) => {
+      const normalized = normalizeQuaternion(value);
+      const dot =
+        reference.x * normalized.x +
+        reference.y * normalized.y +
+        reference.z * normalized.z +
+        reference.w * normalized.w;
+      const sign = dot < 0 ? -1 : 1;
+      result.x += normalized.x * sign;
+      result.y += normalized.y * sign;
+      result.z += normalized.z * sign;
+      result.w += normalized.w * sign;
+      return result;
+    },
+    { x: 0, y: 0, z: 0, w: 0 },
+  );
+  return normalizeQuaternion(sum);
+}
+
+export function quaternionAngularDistanceDeg(
+  left: CubeQuaternion,
+  right: CubeQuaternion,
+): number {
+  const a = normalizeQuaternion(left);
+  const b = normalizeQuaternion(right);
+  const dot = Math.min(1, Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w));
+  return (2 * Math.acos(dot) * 180) / Math.PI;
+}
+
+export function summarizeStaticPose(
+  top: CubeColor,
+  front: CubeColor,
+  samples: readonly TimedQuaternionSample[],
+): StaticPoseCapture {
+  if (samples.length < 8) throw new Error("稳定样本不足，请保持姿态后再确认");
+  const average = averageQuaternions(samples.map((sample) => sample.quaternion));
+  const maxAngularDeviationDeg = Math.max(
+    ...samples.map((sample) => quaternionAngularDistanceDeg(sample.quaternion, average)),
+  );
+  const stability = Math.max(0, Math.min(1, 1 - maxAngularDeviationDeg / 8));
+  const coverage = Math.min(1, samples.length / 24);
+  return {
+    top,
+    front,
+    average,
+    sampleCount: samples.length,
+    maxAngularDeviationDeg: Number(maxAngularDeviationDeg.toFixed(3)),
+    confidence: Number((stability * 0.75 + coverage * 0.25).toFixed(3)),
+  };
+}
+
+export function summarizeDynamicAxis(
+  physicalAxis: DynamicAxisCapture["physicalAxis"],
+  positiveFace: CubeColor,
+  samples: readonly TimedVelocitySample[],
+): DynamicAxisCapture {
+  if (samples.length < 4) throw new Error("动态样本不足，请重新执行整颗魔方旋转");
+  const magnitudes = samples.map(({ velocity }) => Math.hypot(velocity.x, velocity.y, velocity.z));
+  const peak = Math.max(...magnitudes);
+  const threshold = Math.max(0.5, peak * 0.18);
+  const active = samples.filter((_, index) => magnitudes[index] >= threshold);
+  if (active.length < 3 || peak < 0.5) throw new Error("没有检测到明确旋转，请转动整颗魔方后确认");
+
+  const energy = { x: 0, y: 0, z: 0 };
+  const signed = { x: 0, y: 0, z: 0 };
+  for (const { velocity } of active) {
+    for (const axis of AXES) {
+      energy[axis] += Math.abs(velocity[axis]);
+      signed[axis] += velocity[axis];
+    }
+  }
+  const protocolAxis = AXES.reduce((best, axis) =>
+    energy[axis] > energy[best] ? axis : best,
+  );
+  const totalEnergy = energy.x + energy.y + energy.z || 1;
+  const dominance = energy[protocolAxis] / totalEnergy;
+  const activity = Math.min(1, active.length / 10);
+  return {
+    physicalAxis,
+    positiveFace,
+    protocolAxis,
+    sign: signed[protocolAxis] < 0 ? -1 : 1,
+    sampleCount: samples.length,
+    activeSampleCount: active.length,
+    dominance: Number(dominance.toFixed(3)),
+    confidence: Number((dominance * 0.8 + activity * 0.2).toFixed(3)),
+  };
+}
+
+export function normalizeObservedMove(move: string): string {
+  return move.trim().replace(/’/g, "'").toUpperCase();
+}
+
+export function summarizeMoveValidation(
+  expected: readonly string[],
+  observed: readonly string[],
+): MoveValidationCapture {
+  const normalizedExpected = expected.map(normalizeObservedMove);
+  const normalizedObserved = observed.map(normalizeObservedMove);
+  return {
+    expected: normalizedExpected,
+    observed: normalizedObserved,
+    matched:
+      normalizedExpected.length === normalizedObserved.length &&
+      normalizedExpected.every((move, index) => move === normalizedObserved[index]),
+  };
+}
+
+function changingByteIndexes(frames: readonly InMemorySignalFrame[]): number[] {
+  if (frames.length < 2) return [];
+  const comparableLength = Math.min(...frames.map((frame) => frame.bytes.length));
+  const indexes: number[] = [];
+  for (let index = 0; index < comparableLength; index += 1) {
+    const first = frames[0].bytes[index];
+    const changed = frames.slice(1).filter((frame) => frame.bytes[index] !== first).length;
+    if (changed / (frames.length - 1) >= 0.2) indexes.push(index);
+  }
+  return indexes;
+}
+
+export function summarizeFrameFieldEvidence(input: {
+  staticPoseGroups: readonly (readonly InMemorySignalFrame[])[];
+  dynamicGroups: Partial<Record<DynamicAxisCapture["physicalAxis"], readonly InMemorySignalFrame[]>>;
+  moveFrames: readonly InMemorySignalFrame[];
+}): FrameFieldEvidence {
+  const frames = [
+    ...input.staticPoseGroups.flat(),
+    ...Object.values(input.dynamicGroups).flat(),
+    ...input.moveFrames,
+  ];
+  const layers = [...new Set(frames.map((frame) => frame.layer))];
+  const gyroGroups = input.staticPoseGroups
+    .map((group) => group.filter((frame) => frame.packetType === "gyro"))
+    .filter((group) => group.length > 0);
+  const comparableLength = gyroGroups.length > 0
+    ? Math.min(...gyroGroups.flat().map((frame) => frame.bytes.length))
+    : 0;
+  const staticPoseCandidateByteIndexes: number[] = [];
+  for (let index = 0; index < comparableLength; index += 1) {
+    const means = gyroGroups.map((group) =>
+      group.reduce((sum, frame) => sum + frame.bytes[index], 0) / group.length,
+    );
+    const betweenPoseRange = Math.max(...means) - Math.min(...means);
+    const meanWithinPoseRange = gyroGroups.reduce((sum, group) => {
+      const values = group.map((frame) => frame.bytes[index]);
+      return sum + Math.max(...values) - Math.min(...values);
+    }, 0) / gyroGroups.length;
+    if (betweenPoseRange >= 3 && betweenPoseRange > meanWithinPoseRange * 1.4) {
+      staticPoseCandidateByteIndexes.push(index);
+    }
+  }
+  return {
+    layer: layers.length === 1 ? layers[0] : layers.length === 0 ? "decrypted" : "mixed",
+    packetTypes: [...new Set(frames.map((frame) => frame.packetType))].sort(),
+    frameLengths: [...new Set(frames.map((frame) => frame.bytes.length))].sort((a, b) => a - b),
+    staticPoseCandidateByteIndexes,
+    dynamicCandidateByteIndexes: {
+      "red-orange": changingByteIndexes(input.dynamicGroups["red-orange"] ?? []),
+      "blue-green": changingByteIndexes(input.dynamicGroups["blue-green"] ?? []),
+      "white-yellow": changingByteIndexes(input.dynamicGroups["white-yellow"] ?? []),
+    },
+    moveCandidateByteIndexes: changingByteIndexes(
+      input.moveFrames.filter((frame) => frame.packetType === "move" || frame.packetType === "unknown"),
+    ),
+    rawBytesPersisted: false,
+  };
+}
+
+export function createSignalCalibrationProfile(input: {
+  deviceModel: string;
+  protocol: GanProtocolVersion;
+  staticPoses: StaticPoseCapture[];
+  dynamicAxes: DynamicAxisCapture[];
+  moveValidation: MoveValidationCapture;
+  renderValidation: RenderValidationCapture;
+  frameFieldEvidence: FrameFieldEvidence;
+  now?: Date;
+}): SignalCalibrationProfile {
+  const confidenceValues = [
+    ...input.staticPoses.map((capture) => capture.confidence),
+    ...input.dynamicAxes.map((capture) => capture.confidence),
+    input.moveValidation.matched ? 1 : 0,
+    input.renderValidation.confirmed ? 1 : 0,
+  ];
+  const overallConfidence = confidenceValues.length
+    ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length
+    : 0;
+  return {
+    schemaVersion: 1,
+    profileKind: "smart-cube-signal-calibration",
+    deviceModel: input.deviceModel,
+    protocol: input.protocol,
+    createdAt: (input.now ?? new Date()).toISOString(),
+    staticPoses: input.staticPoses,
+    dynamicAxes: input.dynamicAxes,
+    moveValidation: input.moveValidation,
+    renderValidation: input.renderValidation,
+    frameFieldEvidence: input.frameFieldEvidence,
+    overallConfidence: Number(overallConfidence.toFixed(3)),
+    privacy: {
+      rawBlePersisted: false,
+      rawQuaternionStreamPersisted: false,
+      deviceAddressPersisted: false,
+    },
+  };
+}
+
+export function serializeSignalCalibrationProfile(profile: SignalCalibrationProfile): string {
+  return JSON.stringify(profile, null, 2);
+}
