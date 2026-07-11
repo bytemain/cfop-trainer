@@ -49,6 +49,35 @@ describe("signal calibration profile", () => {
     expect(capture.protocolAxis).toBe("y");
     expect(capture.sign).toBe(-1);
     expect(capture.dominance).toBeGreaterThan(0.9);
+    expect(capture.signalSource).toBe("angular-velocity");
+  });
+
+  it("falls back to quaternion deltas when GAN angular velocity stays at zero", () => {
+    const quaternionSamples = Array.from({ length: 31 }, (_, index) => {
+      const radians = (index * 3 * Math.PI) / 180;
+      return {
+        at: index * 10,
+        quaternion: {
+          x: Math.sin(radians / 2),
+          y: 0,
+          z: 0,
+          w: Math.cos(radians / 2),
+        },
+      };
+    });
+    const capture = summarizeDynamicAxis(
+      "red-orange",
+      "red",
+      quaternionSamples.map((sample) => ({
+        at: sample.at,
+        velocity: { x: 0, y: 0, z: 0 },
+      })),
+      quaternionSamples,
+    );
+    expect(capture.protocolAxis).toBe("x");
+    expect(capture.sign).toBe(1);
+    expect(capture.signalSource).toBe("quaternion-delta");
+    expect(capture.dominance).toBeGreaterThan(0.99);
   });
 
   it("validates move face and direction in order", () => {

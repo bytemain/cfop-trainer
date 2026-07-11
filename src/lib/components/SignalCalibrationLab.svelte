@@ -20,6 +20,7 @@
   } from "$lib/protocols/gan/types";
   import {
     createSignalCalibrationProfile,
+    quaternionAngularDistanceDeg,
     serializeSignalCalibrationProfile,
     summarizeFrameFieldEvidence,
     summarizeDynamicAxis,
@@ -99,11 +100,13 @@
   let message = $state("保持魔方静止约 1 秒，再确认当前姿态。");
   let recentQuaternionCount = $state(0);
   let dynamicSampleCount = $state(0);
+  let detectedRotationDeg = $state(0);
   let lastOrientationSerial = -1;
   let lastMoveSerial = -1;
   let lastSignalFrameSerial = -1;
   let recentQuaternions: TimedQuaternionSample[] = [];
   let dynamicVelocities: TimedVelocitySample[] = [];
+  let dynamicQuaternions: TimedQuaternionSample[] = [];
   let recentSignalFrames: InMemorySignalFrame[] = [];
   let staticSignalGroups: InMemorySignalFrame[][] = [];
   let dynamicSignalGroups: Partial<Record<DynamicAxisCapture["physicalAxis"], InMemorySignalFrame[]>> = {};
@@ -133,9 +136,17 @@
     recentQuaternions.push({ at: now, quaternion: { ...orientation } });
     recentQuaternions = recentQuaternions.filter((sample) => now - sample.at <= 1_400);
     recentQuaternionCount = recentQuaternions.length;
-    if (dynamicRecording && velocity) {
-      dynamicVelocities.push({ at: now, velocity: { ...velocity } });
-      dynamicSampleCount = dynamicVelocities.length;
+    if (dynamicRecording) {
+      dynamicQuaternions.push({ at: now, quaternion: { ...orientation } });
+      if (velocity) dynamicVelocities.push({ at: now, velocity: { ...velocity } });
+      dynamicSampleCount = dynamicQuaternions.length;
+      const start = dynamicQuaternions[0]?.quaternion;
+      if (start) {
+        detectedRotationDeg = Math.max(
+          detectedRotationDeg,
+          quaternionAngularDistanceDeg(start, orientation),
+        );
+      }
     }
   });
 
@@ -190,8 +201,10 @@
 
   function startDynamicCapture(): void {
     dynamicVelocities = [];
+    dynamicQuaternions = [];
     dynamicSignalFrames = [];
     dynamicSampleCount = 0;
+    detectedRotationDeg = 0;
     dynamicRecording = true;
     message = "正在记录：朝正面看目标颜色，将整颗魔方顺时针转约 90°，然后点击确认。";
   }
@@ -203,6 +216,7 @@
         currentDynamic.physicalAxis,
         currentDynamic.positiveFace,
         dynamicVelocities,
+        dynamicQuaternions,
       );
       dynamicRecording = false;
       dynamicCaptures = [...dynamicCaptures, capture];
@@ -210,7 +224,7 @@
         ...frame,
         bytes: frame.bytes.slice(),
       }));
-      message = `识别为协议 ${capture.protocolAxis.toUpperCase()} 轴，方向 ${capture.sign > 0 ? "+" : "−"}，主导度 ${Math.round(capture.dominance * 100)}%。`;
+      message = `通过${capture.signalSource === "angular-velocity" ? "角速度" : "四元数差分"}识别为协议 ${capture.protocolAxis.toUpperCase()} 轴，方向 ${capture.sign > 0 ? "+" : "−"}，主导度 ${Math.round(capture.dominance * 100)}%。`;
       if (dynamicIndex + 1 >= dynamicSteps.length) {
         stage = "moves";
         message = "现在验证面编号和顺逆时针。开始记录后执行给定公式。";
@@ -354,13 +368,21 @@
         />
         <div class="recording-card" class:recording={dynamicRecording}>
           <span></span>
-          <strong>{dynamicRecording ? "正在采集角速度" : "等待开始"}</strong>
-          <small>{dynamicSampleCount} samples</small>
+          <strong>{dynamicRecording ? "正在采集姿态与角速度" : "等待开始"}</strong>
+          <small>{dynamicSampleCount} samples · 已转 {Math.round(detectedRotationDeg)}°</small>
         </div>
         {#if dynamicRecording}
-          <button class="primary" onclick={confirmDynamicCapture}><Check size={18} /> 完成并识别轴</button>
+          <div class="rotation-meter" class:ready={detectedRotationDeg >= 20}>
+            <span style={`width:${Math.min(100, detectedRotationDeg / 90 * 100)}%`}></span>
+          </div>
+          <small class="rotation-hint">
+            {detectedRotationDeg >= 20
+              ? "已经检测到整机旋转，可以继续转到约 90° 后确认"
+              : "请按动画转动整颗魔方，至少达到 20°"}
+          </small>
+          <button class="primary" disabled={detectedRotationDeg < 20} onclick={confirmDynamicCapture}><Check size={18} /> 完成并识别轴</button>
         {:else}
-          <button class="primary" disabled={!velocity} onclick={startDynamicCapture}><Radio size={18} /> 开始记录</button>
+          <button class="primary" disabled={!orientation} onclick={startDynamicCapture}><Radio size={18} /> 开始记录</button>
         {/if}
       {:else if stage === "moves"}
         <div class="instruction-icon"><Radio size={34} /></div>
@@ -463,6 +485,10 @@
   .recording-card > span { width: 10px; height: 10px; border-radius: 50%; background: var(--color-text-muted); }
   .recording-card.recording > span { background: #ff625e; box-shadow: 0 0 0 6px rgb(255 98 94 / 0.12); animation: pulse 1s infinite; }
   .recording-card small { color: var(--color-text-muted); }
+  .rotation-meter { width: min(420px, 100%); height: 7px; overflow: hidden; border-radius: 999px; background: var(--color-surface-highest); }
+  .rotation-meter span { display: block; height: 100%; border-radius: inherit; background: var(--color-warning); transition: width 120ms linear; }
+  .rotation-meter.ready span { background: var(--color-primary); }
+  .rotation-hint { color: var(--color-text-muted); font-size: 0.7rem; }
   .algorithm { display: flex; gap: 9px; padding: 15px 18px; border-radius: 14px; background: var(--color-surface-highest); }
   .algorithm strong { display: grid; min-width: 38px; height: 38px; place-items: center; border-radius: 9px; color: var(--color-primary); background: var(--color-surface); }
   .observed { display: grid; grid-template-columns: auto 1fr; gap: 12px; width: min(500px, 100%); padding: 12px 15px; border-radius: 12px; color: var(--color-text-muted); background: var(--color-surface-highest); text-align: left; }

@@ -48,6 +48,8 @@ export interface DynamicAxisCapture {
   activeSampleCount: number;
   dominance: number;
   confidence: number;
+  signalSource: "angular-velocity" | "quaternion-delta";
+  quaternionDeltaOrder?: "previous-inverse-current" | "current-previous-inverse";
 }
 
 export interface MoveValidationCapture {
@@ -150,20 +152,55 @@ export function summarizeDynamicAxis(
   physicalAxis: DynamicAxisCapture["physicalAxis"],
   positiveFace: CubeColor,
   samples: readonly TimedVelocitySample[],
+  quaternionSamples: readonly TimedQuaternionSample[] = [],
 ): DynamicAxisCapture {
-  if (samples.length < 4) throw new Error("动态样本不足，请重新执行整颗魔方旋转");
-  const magnitudes = samples.map(({ velocity }) => Math.hypot(velocity.x, velocity.y, velocity.z));
-  const peak = Math.max(...magnitudes);
-  const threshold = Math.max(0.5, peak * 0.18);
-  const active = samples.filter((_, index) => magnitudes[index] >= threshold);
-  if (active.length < 3 || peak < 0.5) throw new Error("没有检测到明确旋转，请转动整颗魔方后确认");
+  const velocityMagnitudes = samples.map(({ velocity }) =>
+    Math.hypot(velocity.x, velocity.y, velocity.z),
+  );
+  const velocityPeak = velocityMagnitudes.length > 0 ? Math.max(...velocityMagnitudes) : 0;
+  const velocityThreshold = Math.max(0.5, velocityPeak * 0.18);
+  const activeVelocity = samples.filter(
+    (_, index) => velocityMagnitudes[index] >= velocityThreshold,
+  );
+  if (activeVelocity.length >= 3 && velocityPeak >= 0.5) {
+    return summarizeAxisVectors(
+      physicalAxis,
+      positiveFace,
+      activeVelocity.map((sample) => sample.velocity),
+      samples.length,
+      "angular-velocity",
+    );
+  }
 
+  const deltaCandidates = quaternionDeltaCandidates(quaternionSamples);
+  const best = deltaCandidates.sort((left, right) => right.dominance - left.dominance)[0];
+  if (!best || best.vectors.length < 3) {
+    throw new Error("没有检测到明确旋转；请点击开始后将整颗魔方转动至少 20°");
+  }
+  return summarizeAxisVectors(
+    physicalAxis,
+    positiveFace,
+    best.vectors,
+    quaternionSamples.length,
+    "quaternion-delta",
+    best.order,
+  );
+}
+
+function summarizeAxisVectors(
+  physicalAxis: DynamicAxisCapture["physicalAxis"],
+  positiveFace: CubeColor,
+  vectors: readonly { x: number; y: number; z: number }[],
+  sampleCount: number,
+  signalSource: DynamicAxisCapture["signalSource"],
+  quaternionDeltaOrder?: DynamicAxisCapture["quaternionDeltaOrder"],
+): DynamicAxisCapture {
   const energy = { x: 0, y: 0, z: 0 };
   const signed = { x: 0, y: 0, z: 0 };
-  for (const { velocity } of active) {
+  for (const vector of vectors) {
     for (const axis of AXES) {
-      energy[axis] += Math.abs(velocity[axis]);
-      signed[axis] += velocity[axis];
+      energy[axis] += Math.abs(vector[axis]);
+      signed[axis] += vector[axis];
     }
   }
   const protocolAxis = AXES.reduce((best, axis) =>
@@ -171,17 +208,75 @@ export function summarizeDynamicAxis(
   );
   const totalEnergy = energy.x + energy.y + energy.z || 1;
   const dominance = energy[protocolAxis] / totalEnergy;
-  const activity = Math.min(1, active.length / 10);
+  const activity = Math.min(1, vectors.length / 10);
   return {
     physicalAxis,
     positiveFace,
     protocolAxis,
     sign: signed[protocolAxis] < 0 ? -1 : 1,
-    sampleCount: samples.length,
-    activeSampleCount: active.length,
+    sampleCount,
+    activeSampleCount: vectors.length,
     dominance: Number(dominance.toFixed(3)),
     confidence: Number((dominance * 0.8 + activity * 0.2).toFixed(3)),
+    signalSource,
+    quaternionDeltaOrder,
   };
+}
+
+function multiplyRaw(left: CubeQuaternion, right: CubeQuaternion): CubeQuaternion {
+  return normalizeQuaternion({
+    w: left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z,
+    x: left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y,
+    y: left.w * right.y - left.x * right.z + left.y * right.w + left.z * right.x,
+    z: left.w * right.z + left.x * right.y - left.y * right.x + left.z * right.w,
+  });
+}
+
+function conjugate(value: CubeQuaternion): CubeQuaternion {
+  const normalized = normalizeQuaternion(value);
+  return { x: -normalized.x, y: -normalized.y, z: -normalized.z, w: normalized.w };
+}
+
+function alignedTo(reference: CubeQuaternion, value: CubeQuaternion): CubeQuaternion {
+  const normalizedReference = normalizeQuaternion(reference);
+  const normalizedValue = normalizeQuaternion(value);
+  const dot =
+    normalizedReference.x * normalizedValue.x +
+    normalizedReference.y * normalizedValue.y +
+    normalizedReference.z * normalizedValue.z +
+    normalizedReference.w * normalizedValue.w;
+  return dot < 0
+    ? { x: -normalizedValue.x, y: -normalizedValue.y, z: -normalizedValue.z, w: -normalizedValue.w }
+    : normalizedValue;
+}
+
+function quaternionDeltaCandidates(samples: readonly TimedQuaternionSample[]): Array<{
+  order: NonNullable<DynamicAxisCapture["quaternionDeltaOrder"]>;
+  vectors: Array<{ x: number; y: number; z: number }>;
+  dominance: number;
+}> {
+  const orders: Array<NonNullable<DynamicAxisCapture["quaternionDeltaOrder"]>> = [
+    "previous-inverse-current",
+    "current-previous-inverse",
+  ];
+  return orders.map((order) => {
+    const vectors: Array<{ x: number; y: number; z: number }> = [];
+    for (let index = 1; index < samples.length; index += 1) {
+      const previous = normalizeQuaternion(samples[index - 1].quaternion);
+      const current = alignedTo(previous, samples[index].quaternion);
+      const delta = order === "previous-inverse-current"
+        ? multiplyRaw(conjugate(previous), current)
+        : multiplyRaw(current, conjugate(previous));
+      const stepAngle = quaternionAngularDistanceDeg(previous, current);
+      if (stepAngle < 0.08 || stepAngle > 20) continue;
+      vectors.push({ x: delta.x, y: delta.y, z: delta.z });
+    }
+    const energy = AXES.map((axis) =>
+      vectors.reduce((sum, vector) => sum + Math.abs(vector[axis]), 0),
+    );
+    const total = energy.reduce((sum, value) => sum + value, 0) || 1;
+    return { order, vectors, dominance: Math.max(...energy, 0) / total };
+  });
 }
 
 export function normalizeObservedMove(move: string): string {
