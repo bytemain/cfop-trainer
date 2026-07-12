@@ -85,9 +85,11 @@ describe("GAN V4 packet parser", () => {
     expect(parseGanV4Packet(battery)).toEqual({ type: "battery", level: 87 });
   });
 
-  it("decodes GAN V4 orientation and angular velocity telemetry", () => {
+  it("decodes CubeStation's byte-level 0xEC field contract", () => {
     const gyro = new Uint8Array(20);
     gyro.set([0xec, 0x0a]);
+    // CubeStation ProtocolV3: four consecutive sign:1 + magnitude:15 fields.
+    // Android bridge constructor order is array[2], array[1], array[3], array[0].
     setBits(gyro, 16, 16, 0x7fff);
     setBits(gyro, 32, 16, 0x4000);
     setBits(gyro, 48, 16, 0xc000);

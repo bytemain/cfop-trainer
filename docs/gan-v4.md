@@ -4,6 +4,8 @@
 
 公开参考实现：[csTimer `gancube.js`](https://github.com/cs0x7f/cstimer/blob/master/src/js/hardware/gancube.js)。本项目按自身 transport/session/domain 接口重新实现，并用独立 AES fixture 与实际 GAN16 ui 数据验证。
 
+csTimer 当前实现能逐 bit 交叉验证 `01`（实时动作）、`ed`（完整状态）、`d1`（历史动作）和 `ef`（电量），但它的 V4 `0xec` 分支只有 `// gyro` 注释，没有解析四元数。因此 csTimer 不是姿态轴正反的证据来源；`0xec` 的字段边界来自 CubeStation APK 内置的 GAN SDK `ProtocolV3` 官方规则，分量语义再由其 Android bridge 验证。
+
 ## GATT
 
 | 用途 | UUID |
@@ -36,7 +38,21 @@
 
 ## 姿态分量与坐标方向
 
-`ec` gyro packet 的协议字段顺序为 `qw, qx, qy, qz`，但不能把字段名直接作为应用语义分量。CubeStation Android bridge 和 GAN16 ui 受控整机旋转采样共同确认，应用四元数必须重排为：
+CubeStation 的官方规则把解密后的 `ec` gyro packet 定义为：
+
+| bit 范围 | 字节 | CubeStation 字段 | 编码 | 应用语义 |
+|---:|---:|---|---|---|
+| 0–7 | 0 | `bleProtoId` | `0xec` | mode |
+| 8–15 | 1 | `dataLength` | unsigned 8-bit | length |
+| 16–31 | 2–3 | `dataFour1[0]` | 1-bit sign + 15-bit magnitude | `w` |
+| 32–47 | 4–5 | `dataFour1[1]` | 1-bit sign + 15-bit magnitude | `y` |
+| 48–63 | 6–7 | `dataFour1[2]` | 1-bit sign + 15-bit magnitude | `x` |
+| 64–79 | 8–9 | `dataFour1[3]` | 1-bit sign + 15-bit magnitude | `z` |
+| 80–83 | byte 10 高半字节 | `angleSpeed1[0]` | 1-bit sign + 3-bit magnitude | velocity x |
+| 84–87 | byte 10 低半字节 | `angleSpeed1[1]` | 1-bit sign + 3-bit magnitude | velocity y |
+| 88–91 | byte 11 高半字节 | `angleSpeed1[2]` | 1-bit sign + 3-bit magnitude | velocity z |
+
+符号位 `0` 为正、`1` 为负。CubeStation 的 `Quaternion(float,float,float,float)` 构造器按 `(x,y,z,w)` 存储，而 bridge 明确调用 `Quaternion(array[2], array[1], array[3], array[0])`。因此应用四元数必须重排为：
 
 ```text
 app.x = protocol qy
@@ -59,6 +75,8 @@ relativeOrder = reference * inverse(current)
 ```
 
 应用连接 GAN V4 时必须覆盖历史本地 axis calibration，不能要求普通用户重复三轴采集。首个姿态帧经固定契约转换成绝对 `CubePose` 后建立 session anchor；anchor 只负责掉线/传感器重启后的连续性，不得把首帧强制归零成 identity。
+
+旧版本曾允许用 `invertX/Y/Z` 与三个 Euler offset 补偿协议模型。这些值如果继续保存在本地，会在固定协议矩阵之后再次生效，表现为“初始姿态斜着、某个轴又反了”。pose contract v1 会在 GAN V4 首次重连时只清除一次未版本化的旧补偿；之后用户在当前版本主动设置的显示偏好仍会保留。
 
 一组红色中心持续朝向用户、整颗魔方绕红—橙轴旋转的脱敏真机 fixture 得到 X 主导相对轴，已固化在 `orientation.test.ts`。如果省略 X/Y 重排，同一动作会错误显示为 Y 主导，这也是早期 3D 视图轴错位的根因。
 

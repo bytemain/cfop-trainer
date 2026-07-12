@@ -63,6 +63,7 @@ export type Matrix3 = [
 // Canonical cube space is +X red, +Y white, +Z green.
 export const GAN_V4_BODY_TO_MODEL: Matrix3 = [[0, -1, 0], [0, 0, -1], [1, 0, 0]];
 export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "reference-current-inverse";
+export const GAN_V4_POSE_CONTRACT_VERSION = 1;
 
 export const GAN_V4_SENSOR_AXES: Record<"x" | "y" | "z", [number, number, number]> = {
   x: [0, -1, 0],
@@ -102,6 +103,22 @@ export const DEFAULT_VIEW_PREFERENCE: ViewPreference = {
   invertY: false,
   invertZ: false,
 };
+
+/**
+ * Axis inversions and Euler offsets were previously used to compensate for an
+ * incomplete GAN V4 pose model. They are display preferences in the current
+ * SSOT, so keep values written by the current contract but discard unversioned
+ * legacy compensation once when a GAN V4 device reconnects.
+ */
+export function migrateGanV4ViewPreference(
+  poseContractVersion: number | undefined,
+  preference: ViewPreference,
+): { preference: ViewPreference; migrated: boolean } {
+  if ((poseContractVersion ?? 0) >= GAN_V4_POSE_CONTRACT_VERSION) {
+    return { preference, migrated: false };
+  }
+  return { preference: { ...DEFAULT_VIEW_PREFERENCE }, migrated: true };
+}
 
 export function composeGyroCalibration(
   device: DeviceCalibration,

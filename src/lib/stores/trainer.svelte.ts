@@ -34,7 +34,9 @@ import {
   DEFAULT_DEVICE_CALIBRATION,
   DEFAULT_VIEW_PREFERENCE,
   GAN_V4_BODY_TO_MODEL,
+  GAN_V4_POSE_CONTRACT_VERSION,
   GAN_V4_RELATIVE_ORDER,
+  migrateGanV4ViewPreference,
   GAN_V4_SENSOR_AXES,
   composeGyroCalibration,
   type DeviceCalibration,
@@ -310,6 +312,7 @@ class TrainerStore {
   private protocolSelfTestStartDiagnostics = createEmptyGanV4ProtocolDiagnostics();
   private protocolSelfTestSnapshot: { facelets: string; sequence: number | null } | null = null;
   private protocolSelfTestBattery: number | null = null;
+  private poseContractVersion = 0;
 
   constructor() {
     registerBuiltInGanProtocols();
@@ -420,10 +423,18 @@ class TrainerStore {
           meanPoseErrorDeg: null,
           maxPoseErrorDeg: null,
         };
+        const viewMigration = migrateGanV4ViewPreference(
+          this.poseContractVersion,
+          this.viewPreference,
+        );
+        this.viewPreference = viewMigration.preference;
+        this.poseContractVersion = GAN_V4_POSE_CONTRACT_VERSION;
         this.poseSession.configure(this.deviceCalibration, this.viewPreference);
         safeLogger.info("calibration", "gan-v4-fixed-pose-contract-applied", {
           relativeOrder: GAN_V4_RELATIVE_ORDER,
+          legacyViewCompensationCleared: viewMigration.migrated,
         });
+        this.persistDevicePreferences();
       }
 
       const transport = new TauriBlecTransport();
@@ -1488,6 +1499,7 @@ class TrainerStore {
     // never leak from one physical cube profile into another.
     this.deviceCalibration = { ...DEFAULT_DEVICE_CALIBRATION };
     this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
+    this.poseContractVersion = 0;
     this.poseSession.configure(this.deviceCalibration, this.viewPreference);
     this.poseSession.resetPhysicalSession();
     this.sessionAnchor = null;
@@ -1539,6 +1551,7 @@ class TrainerStore {
       const raw = localStorage.getItem(storageKey);
       if (!raw) return;
       const profile = JSON.parse(raw) as {
+        poseContractVersion?: number;
         faceColors?: Record<Face, StickerColor>;
         crossColor?: StickerColor;
         stickerPalette?: Partial<StickerPalette>;
@@ -1546,6 +1559,9 @@ class TrainerStore {
         deviceCalibration?: DeviceCalibration;
         viewPreference?: ViewPreference;
       };
+      this.poseContractVersion = Number.isFinite(profile.poseContractVersion)
+        ? Number(profile.poseContractVersion)
+        : 0;
       if (profile.faceColors) this.faceColors = { ...SOLVED_COLORS, ...profile.faceColors };
       if (profile.crossColor) this.crossColor = profile.crossColor;
       if (profile.stickerPalette) {
@@ -1586,6 +1602,7 @@ class TrainerStore {
   private persistDevicePreferences(): void {
     if (typeof localStorage === "undefined") return;
     const value = JSON.stringify({
+      poseContractVersion: this.poseContractVersion,
       faceColors: this.faceColors,
       crossColor: this.crossColor,
       stickerPalette: this.stickerPalette,
@@ -1707,7 +1724,7 @@ const trainerGlobal = globalThis as typeof globalThis & {
   __cfopTrainerStore?: TrainerStore;
   __cfopTrainerStoreSchema?: number;
 };
-const TRAINER_STORE_SCHEMA = 4;
+const TRAINER_STORE_SCHEMA = 5;
 
 // HMR normally keeps the BLE session alive by reusing the store. When a code
 // update adds reactive fields or subscriptions, however, an old instance

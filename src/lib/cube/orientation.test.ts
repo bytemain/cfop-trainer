@@ -8,7 +8,9 @@ import {
   quaternionFromAxisAngle,
   DEFAULT_DEVICE_CALIBRATION,
   GAN_V4_BODY_TO_MODEL,
+  GAN_V4_POSE_CONTRACT_VERSION,
   GAN_V4_RELATIVE_ORDER,
+  migrateGanV4ViewPreference,
 } from "./orientation";
 
 function matrixValues(transform: string): number[] {
@@ -22,6 +24,32 @@ describe("GAN orientation mapping", () => {
     expect(DEFAULT_DEVICE_CALIBRATION.bodyToModel).toEqual(GAN_V4_BODY_TO_MODEL);
     expect(DEFAULT_DEVICE_CALIBRATION.relativeOrder).toBe(GAN_V4_RELATIVE_ORDER);
     expect(GAN_V4_BODY_TO_MODEL).toEqual([[0, -1, 0], [0, 0, -1], [1, 0, 0]]);
+  });
+
+  it("clears unversioned legacy axis compensation exactly once", () => {
+    const legacy = {
+      offsetX: 17,
+      offsetY: -31,
+      offsetZ: 8,
+      invertX: true,
+      invertY: false,
+      invertZ: true,
+    };
+    expect(migrateGanV4ViewPreference(undefined, legacy)).toEqual({
+      preference: {
+        offsetX: 0,
+        offsetY: 0,
+        offsetZ: 0,
+        invertX: false,
+        invertY: false,
+        invertZ: false,
+      },
+      migrated: true,
+    });
+    expect(migrateGanV4ViewPreference(GAN_V4_POSE_CONTRACT_VERSION, legacy)).toEqual({
+      preference: legacy,
+      migrated: false,
+    });
   });
 
   const whiteUpGreenFrontFixture = {
