@@ -800,6 +800,37 @@
                 <p class="protocol-complete-message">{trainer.protocolSelfTest.message}</p>
               {/if}
 
+              {#if trainer.currentProtocolValidationStep?.kind === "whole-cube-rotation"}
+                {@const rotation = trainer.currentProtocolValidationRotation}
+                {@const rotationAngle = rotation?.angleDeg ?? 0}
+                <section class:anchored={trainer.protocolSelfTest.captureAnchored} class="protocol-rotation-feedback" aria-label="整颗旋转实时进度">
+                  <div class="protocol-rotation-target">
+                    <span>{trainer.protocolSelfTest.captureAnchored ? "当前已旋转" : "尚未开始记录"}</span>
+                    <strong>{trainer.protocolSelfTest.captureAnchored ? `${rotationAngle.toFixed(1)}°` : "—"}</strong>
+                    <small>/ 目标 90°</small>
+                  </div>
+                  <progress value={Math.min(rotationAngle, 90)} max="90"></progress>
+                  <div class="protocol-rotation-guidance">
+                    <strong>
+                      {!trainer.protocolSelfTest.captureAnchored
+                        ? "先摆好指定朝向，再点击“以当前姿态为起点”"
+                        : rotationAngle < 8
+                          ? "起点已锁定，可以开始旋转"
+                          : rotationAngle < 75
+                            ? `继续旋转，还差约 ${(90 - rotationAngle).toFixed(0)}°`
+                            : rotationAngle <= 105
+                              ? "已到达 90° 目标区间，请保持不动"
+                              : `已超过目标约 ${(rotationAngle - 90).toFixed(0)}°`}
+                    </strong>
+                    <span>
+                      {rotation
+                        ? `实时识别：${rotation.dominantAxis.toUpperCase()} 轴 · ${rotation.direction === "positive" ? "正方向" : "负方向"}`
+                        : "锁定起点后，这里会实时显示识别轴和方向"}
+                    </span>
+                  </div>
+                </section>
+              {/if}
+
               <div class="protocol-live-grid">
                 <article><span>实际动作</span><strong>{trainer.protocolSelfTest.observedMoves.join(" ") || "—"}</strong></article>
                 <article><span>Sequence</span><strong>{trainer.cubeSequence ?? "—"}</strong></article>
@@ -1388,6 +1419,16 @@
   .protocol-current-step > span { color: var(--color-primary); font-size: 0.66rem; text-transform: uppercase; }
   .protocol-current-step h4, .protocol-current-step p { margin: 0; }
   .protocol-current-step p, .protocol-complete-message { color: var(--color-text-muted); font-size: 0.76rem; line-height: 1.55; }
+  .protocol-rotation-feedback { display: grid; gap: 12px; padding: 16px; border: 1px dashed var(--color-border-strong); border-radius: 14px; background: var(--color-surface-high); }
+  .protocol-rotation-feedback.anchored { border-style: solid; border-color: color-mix(in srgb, var(--color-primary) 52%, var(--color-border)); }
+  .protocol-rotation-target { display: flex; align-items: baseline; gap: 7px; }
+  .protocol-rotation-target span { margin-right: auto; color: var(--color-text-muted); font-size: 0.72rem; }
+  .protocol-rotation-target strong { color: var(--color-primary); font-size: clamp(2rem, 6vw, 3.3rem); font-variant-numeric: tabular-nums; line-height: 1; }
+  .protocol-rotation-target small { color: var(--color-text-muted); font-size: 0.76rem; }
+  .protocol-rotation-feedback progress { width: 100%; height: 12px; overflow: hidden; border: 0; border-radius: 999px; accent-color: var(--color-primary); }
+  .protocol-rotation-guidance { display: grid; gap: 4px; }
+  .protocol-rotation-guidance strong { font-size: 0.84rem; }
+  .protocol-rotation-guidance span { color: var(--color-text-muted); font-size: 0.7rem; }
   .protocol-live-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
   .protocol-live-grid article { display: grid; min-width: 0; gap: 4px; padding: 10px; border-radius: 11px; background: var(--color-surface-high); }
   .protocol-live-grid span { color: var(--color-text-muted); font-size: 0.64rem; }
