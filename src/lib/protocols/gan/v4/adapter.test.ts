@@ -147,6 +147,51 @@ describe("GAN V4 session", () => {
     await session.disconnect();
   });
 
+  it("writes CubeStation's solved cubie state and verifies it with 0xED", async () => {
+    const device: DiscoveredDevice = {
+      id: "state-reset-device",
+      name: "GAN16ui_STATE_RESET",
+      serviceUuids: [],
+      manufacturerData: { 1: [9, 9, 9, 0, 1, 2, 3, 4, 5] },
+    };
+    const cipher = new GanV2Cipher(deriveGanV2CipherMaterial(extractGanHardwareAddress(device.manufacturerData)!));
+    let notify: ((data: Uint8Array) => void) | undefined;
+    let logicalStateSolved = false;
+    let resetRequest: Uint8Array | null = null;
+    const staleScrambledState = fromHex("ed0e930011f5ab5492280cdd133c4e1800005727");
+    const connection: BleConnection = {
+      device,
+      disconnect: vi.fn(async () => undefined),
+      read: vi.fn(async () => new Uint8Array()),
+      subscribe: vi.fn(async (_service, _characteristic, listener) => {
+        notify = listener;
+        return async () => undefined;
+      }),
+      write: vi.fn(async (_service, _characteristic, encrypted) => {
+        const request = cipher.decode(encrypted);
+        if (request[0] === 0xd2) {
+          resetRequest = request;
+          logicalStateSolved = true;
+          return;
+        }
+        if (request[0] === 0xdd && request[3] === 0xed) {
+          const response = logicalStateSolved ? solvedSnapshot(5) : staleScrambledState;
+          queueMicrotask(() => notify?.(cipher.encode(response)));
+        }
+      }),
+    };
+
+    const session = await new GanV4Protocol().open(connection);
+    await expect(session.initialSnapshot()).resolves.toMatchObject({ sequence: 147 });
+    await expect(session.writeSolvedState?.()).resolves.toMatchObject({
+      sequence: 5,
+      facelets: "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB",
+    });
+    expect(resetRequest).not.toBeNull();
+    expect(resetRequest).toEqual(fromHex("d20d05397700000123456789ab00000000000000"));
+    await session.disconnect();
+  });
+
   it("emits the first real move when the initial snapshot and move both use sequence zero", async () => {
     const device: DiscoveredDevice = {
       id: "zero-counter-device",

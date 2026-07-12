@@ -695,20 +695,48 @@ class TrainerStore {
     }
   }
 
-  assumeSolvedCubeState(): boolean {
+  async assumeSolvedCubeState(): Promise<boolean> {
     if (!this.session || !this.connectedDeviceName) {
       this.connectionMessage = "请先连接实体魔方，再设置还原状态。";
       return false;
     }
-    this.applyCubeStateBaseline(cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors));
-    this.cubeSequence = this.lastCubeSequence ?? null;
-    this.connection = "ready";
-    this.connectionMessage = `${this.connectedDeviceName} 已按用户确认设置为还原态。`;
-    safeLogger.info("trainer", "manual-solved-baseline-applied", {
-      name: this.connectedDeviceName,
-      sequence: this.lastCubeSequence,
-    });
-    return true;
+    const deviceName = this.connectedDeviceName;
+    this.stopTimer();
+    this.stopDemoPlayback();
+    this.connection = "synchronizing";
+    this.connectionMessage = "正在按 CubeStation 协议向 GAN 写入复原 cubie state…";
+    safeLogger.info("trainer", "manual-solved-state-write-start", { name: deviceName });
+    try {
+      const snapshot = this.session.writeSolvedState
+        ? await withTimeout(this.session.writeSolvedState(), 12_000, "写入 GAN 复原状态超时")
+        : {
+            facelets: SOLVED_FACELETS,
+            sequence: this.lastCubeSequence,
+            receivedAt: Date.now(),
+          };
+      this.applyCubeStateBaseline(cubeStateFromFacelets(snapshot.facelets, this.faceColors));
+      const activeSequence = reliableSnapshotMoveSequence(snapshot.sequence) ?? this.lastCubeSequence;
+      this.lastCubeSequence = activeSequence;
+      this.cubeSequence = activeSequence ?? null;
+      this.connection = "ready";
+      this.connectionMessage = this.session.writeSolvedState
+        ? `${deviceName} 已写入复原状态，并通过 0xED 回读校验。`
+        : `${deviceName} 已按用户确认设置为本地还原态。`;
+      safeLogger.info("trainer", "manual-solved-baseline-applied", {
+        name: deviceName,
+        sequence: activeSequence ?? null,
+        deviceWriteVerified: Boolean(this.session.writeSolvedState),
+      });
+      return true;
+    } catch (error) {
+      this.connection = "degraded";
+      this.connectionMessage = `复原状态写入失败：${error instanceof Error ? error.message : String(error)}`;
+      safeLogger.warn("trainer", "manual-solved-state-write-failed", {
+        name: deviceName,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
   }
 
   get currentProtocolValidationStep(): ProtocolValidationStep | null {

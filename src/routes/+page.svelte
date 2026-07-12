@@ -235,13 +235,15 @@
     if (stateSynced) quickCalibrationOpen = false;
   }
 
-  function confirmQuickSolvedCalibration(): void {
+  async function confirmQuickSolvedCalibration(): Promise<void> {
     if (!quickCalibrationReady || quickCalibrationSyncing) return;
     if (!trainer.quickCalibrateWhiteUpGreenFront()) {
       quickCalibrationStatus = "姿态校准失败，请确认魔方已连接、稳定且陀螺仪跟随已开启。";
       return;
     }
-    const solvedApplied = trainer.assumeSolvedCubeState();
+    quickCalibrationSyncing = true;
+    const solvedApplied = await trainer.assumeSolvedCubeState();
+    quickCalibrationSyncing = false;
     quickCalibrationStatus = solvedApplied
       ? "魔方已完成姿态校准，并按你的确认设置为还原态。"
       : "姿态已校准，但还原态设置失败，请保持连接后重试。";
@@ -612,7 +614,7 @@
         <div class="state-sync-panel">
           <div>
             <strong>同步魔方状态</strong>
-            <small>默认从 GAN 读取当前任意乱序的完整六面；只有实体确实还原时才使用“设为还原态”。</small>
+            <small>“同步当前六面”只读取 GAN 内部状态；实体确实还原但设备状态错误时，使用“实体已还原”按 CubeStation 协议写回复原 cubie state。</small>
           </div>
           <div class="state-sync-actions">
             <button
@@ -626,7 +628,7 @@
             <button
               class="secondary-button"
               disabled={!trainer.connectedDeviceName || trainer.connection === "synchronizing"}
-              onclick={() => trainer.assumeSolvedCubeState()}
+              onclick={() => void trainer.assumeSolvedCubeState()}
             >实体已还原</button>
           </div>
         </div>
@@ -945,7 +947,7 @@
             <Activity size={17} /> 请保持魔方静止，当前帧变化 {trainer.poseHealth.lastStepDeg?.toFixed(2) ?? "—"}°
           {/if}
         </div>
-        <small>默认动作会读取 GAN 的 0xED 当前状态包；只有你确定实体魔方已经完全还原时，才使用下方“实体已还原”备用动作。设备轴映射仍由完整 Pose Graph 标定负责。</small>
+        <small>默认动作只读取 GAN 的 0xED 当前状态包；只有你确定实体魔方已经完全还原时，才使用“实体已还原”向设备写入 CubeStation 的 D2 复原状态命令。设备轴映射不受影响。</small>
         <div class="quick-calibration-actions">
           <button class="secondary-button" onclick={() => (quickCalibrationOpen = false)}>取消</button>
           {#if !poseStreamFresh}

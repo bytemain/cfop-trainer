@@ -21,6 +21,7 @@ import {
 import {
   createGanV4Request,
   createGanV4HistoryRequest,
+  createGanV4SolvedStateRequest,
   parseGanV4Packet,
   type GanV4Packet,
 } from "./parser";
@@ -177,6 +178,27 @@ class GanV4Session implements SmartCubeSession {
       "snapshot",
       "Timed out while waiting for GAN V4 cube state",
     );
+  }
+
+  async writeSolvedState(): Promise<CubeSnapshot> {
+    safeLogger.info("gan-v4", "solved-state-write-start", { name: this.device.name });
+    await this.send(createGanV4SolvedStateRequest());
+    // CubeStation receives a D2 acknowledgement, but the authoritative check
+    // is a fresh ED state read because firmware result values vary by revision.
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    let snapshot = await this.requestSnapshot();
+    if (snapshot.facelets !== SOLVED_FACELETS) {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      snapshot = await this.requestSnapshot();
+    }
+    const verified = snapshot.facelets === SOLVED_FACELETS;
+    safeLogger.info("gan-v4", "solved-state-write-verified", {
+      verified,
+      sequence: snapshot.sequence ?? null,
+    });
+    if (!verified) throw new Error("GAN did not report a solved state after CubeStation reset command");
+    this.establishMoveBaseline(reliableSnapshotMoveSequence(snapshot.sequence));
+    return snapshot;
   }
 
   batteryLevel(): Promise<number | undefined> {

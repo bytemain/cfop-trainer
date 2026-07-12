@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createGanV4HistoryRequest,
   createGanV4Request,
+  createGanV4SolvedStateRequest,
   parseGanV4Packet,
 } from "./parser";
 
@@ -111,5 +112,7 @@ describe("GAN V4 packet parser", () => {
     expect([...createGanV4Request("battery").slice(0, 4)]).toEqual([0xdd, 0x04, 0, 0xef]);
     expect([...createGanV4Request("hardware").slice(0, 4)]).toEqual([0xdf, 0x03, 0, 0]);
     expect([...createGanV4HistoryRequest(10, 3).slice(0, 6)]).toEqual([0xd1, 0x04, 9, 0, 4, 0]);
+    expect(fromHex("d20d05397700000123456789ab00000000000000"))
+      .toEqual(createGanV4SolvedStateRequest());
   });
 });

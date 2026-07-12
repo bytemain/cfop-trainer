@@ -71,6 +71,16 @@ function readUint32LE(data: Uint8Array, offset: number): number {
     (data[offset + 3] << 24)) >>> 0;
 }
 
+function writeBits(data: Uint8Array, start: number, length: number, value: number): void {
+  for (let offset = 0; offset < length; offset += 1) {
+    const bitIndex = start + offset;
+    const bit = (value >> (length - offset - 1)) & 1;
+    const mask = 1 << (7 - (bitIndex % 8));
+    if (bit) data[Math.floor(bitIndex / 8)] |= mask;
+    else data[Math.floor(bitIndex / 8)] &= ~mask;
+  }
+}
+
 function decodeSignedMagnitude(value: number, magnitudeMask: number, signBit: number): number {
   return (1 - ((value >> signBit) & 1) * 2) * (value & magnitudeMask) / magnitudeMask;
 }
@@ -216,5 +226,29 @@ export function createGanV4HistoryRequest(startSequence: number, count: number):
   request[1] = 0x04;
   request[2] = alignedStart;
   request[4] = alignedCount;
+  return request;
+}
+
+/**
+ * CubeStation ProtocolWriteV3 appProtoId=6. This writes the complete solved
+ * cubie state into the GAN firmware; it is different from DD 04 00 ED, which
+ * only reads the device's current logical state.
+ */
+export function createGanV4SolvedStateRequest(): Uint8Array {
+  const request = new Uint8Array(20);
+  request[0] = 0xd2;
+  request[1] = 0x0d;
+  let cursor = 16;
+
+  for (let corner = 0; corner < 8; corner += 1) {
+    writeBits(request, cursor, 3, corner);
+    cursor += 3;
+  }
+  cursor += 8 * 2; // solved corner orientations
+  for (let edge = 0; edge < 12; edge += 1) {
+    writeBits(request, cursor, 4, edge);
+    cursor += 4;
+  }
+  // The final 12 edge-orientation bits and remaining packet padding are zero.
   return request;
 }

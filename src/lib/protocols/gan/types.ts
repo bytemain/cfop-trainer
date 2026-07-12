@@ -70,6 +70,7 @@ export interface SmartCubeSession {
   orientation(listener: (event: CubeOrientationEvent) => void): Promise<() => Promise<void>>;
   signals(listener: (event: CubeSignalFrameEvent) => void): Promise<() => Promise<void>>;
   requestSnapshot(): Promise<CubeSnapshot>;
+  writeSolvedState?(): Promise<CubeSnapshot>;
   batteryLevel(): Promise<number | undefined>;
   hardwareInfo(): Promise<CubeHardwareInfo | undefined>;
   disconnect(): Promise<void>;

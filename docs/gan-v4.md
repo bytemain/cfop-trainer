@@ -33,8 +33,11 @@ csTimer 当前实现能逐 bit 交叉验证 `01`（实时动作）、`ed`（完�
 | 完整状态 | `dd 04 00 ed` | `ed` |
 | 电量 | `dd 04 00 ef` | `ef` |
 | 历史动作 | `d1 04 ...` | `d1` |
+| 写入完整复原状态 | `d2 0d 05 39 77 00 00 01 23 45 67 89 ab ...` | `d2`，随后用 `ed` 回读校验 |
 
 `01` 是实时 move，包含设备时间戳、16-bit move counter、转轴和方向。`ed` 用 corner/edge permutation + orientation 表示完整状态；解析后先做 cubie 合法性校验，再转换成 54 字符 `URFDLB` facelet 串。
+
+CubeStation 的“读取同步”和“复原设备状态”是两个不同操作。`appProtoId=2` 仅发送 `dd 04 00 ed` 读取固件内部状态；`appProtoId=6` 使用 `d2 0d` 加 100-bit 完整 cubie state 写入设备。复原 payload 依次为 8×3-bit 角块排列 `0…7`、8×2-bit 零方向、12×4-bit 棱块排列 `0…11`、12×1-bit 零方向。应用只在用户明确确认实体已经复原时发送该写命令，随后必须重新请求 `ed` 并验证为 solved，不能只修改前端画面。
 
 ## 姿态分量与坐标方向
 
