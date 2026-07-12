@@ -50,7 +50,8 @@ export interface ViewPreference {
 
 export type SensorRelativeOrder =
   | "current-reference-inverse"
-  | "reference-current-inverse";
+  | "reference-current-inverse"
+  | "reference-inverse-current";
 
 export type Matrix3 = [
   [number, number, number],
@@ -238,7 +239,9 @@ export function gyroModelMatrix(
     const reference = quaternionMatrix(calibration.zero);
     const relative = calibration.relativeOrder === "current-reference-inverse"
       ? multiplyMatrix3(current, transposeMatrix3(reference))
-      : multiplyMatrix3(reference, transposeMatrix3(current));
+      : calibration.relativeOrder === "reference-inverse-current"
+        ? multiplyMatrix3(transposeMatrix3(reference), current)
+        : multiplyMatrix3(reference, transposeMatrix3(current));
     const relativePose = multiplyMatrix3(
       multiplyMatrix3(bodyToModel as Matrix3, relative),
       transposeMatrix3(bodyToModel as Matrix3),

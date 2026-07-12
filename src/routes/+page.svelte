@@ -213,7 +213,9 @@
 
   async function completeProtocolValidationStep(forceMismatch = false): Promise<void> {
     const result = trainer.completeProtocolValidationStep(forceMismatch);
-    if (result === "mismatch") await downloadProtocolValidationReport();
+    if (result === "mismatch" || trainer.protocolSelfTest.status === "complete") {
+      await downloadProtocolValidationReport();
+    }
   }
 
   async function confirmQuickCalibration(): Promise<void> {

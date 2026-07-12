@@ -58,6 +58,7 @@ import {
   positiveAxisReference,
   relativeBodyRotation,
 } from "$lib/pose/relativeRotation";
+import { solveBodyAxisCalibration } from "$lib/pose/axisCalibration";
 import { reconstructSolve } from "$lib/analysis/solveReconstruction";
 import { solveCrossOptimal } from "$lib/analysis/crossSolver";
 import { reliableSnapshotMoveSequence } from "$lib/protocols/gan/sequence";
@@ -880,6 +881,9 @@ class TrainerStore {
       steps: GAN_V4_VALIDATION_STEPS,
       results: this.protocolSelfTest.results,
       learnedBodyAxes: this.protocolAxisReferences,
+      appliedDeviceCalibration: this.deviceCalibration.bodyToModel
+        ? { ...this.deviceCalibration, bodyToModel: this.deviceCalibration.bodyToModel.map((row) => [...row]) }
+        : null,
       activeStepEvidence: currentStep ? {
         stepId: currentStep.id,
         expectedMove: currentStep.expectedMove,
@@ -937,10 +941,11 @@ class TrainerStore {
     const results = [...this.protocolSelfTest.results, result];
     const nextIndex = this.protocolSelfTest.stepIndex + 1;
     if (nextIndex >= GAN_V4_VALIDATION_STEPS.length) {
+      const appliedCalibration = this.applyProtocolAxisCalibration(results);
       this.protocolSelfTest = {
         ...this.protocolSelfTest,
         status: "complete",
-        message: `协议验收完成：${results.filter((item) => item.status === "passed").length} 通过，${results.filter((item) => item.status === "mismatch").length} 不一致，${results.filter((item) => item.status === "skipped").length} 跳过。请下载 JSON 发给 Codex。`,
+        message: `协议验收完成：${results.filter((item) => item.status === "passed").length} 通过，${results.filter((item) => item.status === "mismatch").length} 不一致，${results.filter((item) => item.status === "skipped").length} 跳过。${appliedCalibration ? `已应用并保存姿态标定（平均轴误差 ${appliedCalibration.meanAxisErrorDeg.toFixed(1)}°）。` : "尚未形成可应用的三轴姿态标定。"}`,
         stepIndex: nextIndex,
         results,
       };
@@ -963,6 +968,33 @@ class TrainerStore {
         message: `已沿用上一步终点作为起点。${nextStep.instruction.split("；").slice(1).join("；")}`,
       };
     }
+  }
+
+  private applyProtocolAxisCalibration(results: ProtocolValidationStepResult[]) {
+    const solution = solveBodyAxisCalibration(this.protocolAxisReferences);
+    const baseline = results.find((item) => item.stepId === "baseline" && item.status === "passed");
+    if (!solution || !baseline?.endQuaternion) return null;
+    this.deviceCalibration = {
+      schemaVersion: 3,
+      enabled: this.deviceCalibration.enabled,
+      bodyToModel: solution.bodyToModel,
+      relativeOrder: "reference-inverse-current",
+      meanPoseErrorDeg: solution.meanAxisErrorDeg,
+      maxPoseErrorDeg: solution.maxAxisErrorDeg,
+    };
+    this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+    this.poseSession.bootstrap(baseline.endQuaternion, baseline.completedAt);
+    this.sessionAnchor = this.poseSession.currentAnchor();
+    this.poseHealth = this.poseSession.currentHealth();
+    this.persistDevicePreferences();
+    safeLogger.info("calibration", "protocol-axis-calibration-applied", {
+      meanAxisErrorDeg: solution.meanAxisErrorDeg,
+      maxAxisErrorDeg: solution.maxAxisErrorDeg,
+      evidenceDeterminant: solution.evidenceDeterminant,
+      relativeOrder: this.deviceCalibration.relativeOrder,
+    });
+    return solution;
   }
 
   private applyCubeStateBaseline(cube: CubeState): void {
