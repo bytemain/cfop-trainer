@@ -33,6 +33,9 @@ import type {
 import {
   DEFAULT_DEVICE_CALIBRATION,
   DEFAULT_VIEW_PREFERENCE,
+  GAN_V4_BODY_TO_MODEL,
+  GAN_V4_RELATIVE_ORDER,
+  GAN_V4_SENSOR_AXES,
   composeGyroCalibration,
   type DeviceCalibration,
   type GyroCalibration,
@@ -55,10 +58,8 @@ import { MoveTimeline, type MoveTimelineItem } from "$lib/timeline/moveTimeline"
 import { PoseSession, type PoseHealth } from "$lib/pose/poseSession";
 import {
   matchesAxisDirection,
-  positiveAxisReference,
-  relativeBodyRotation,
+  relativeProtocolRotation,
 } from "$lib/pose/relativeRotation";
-import { solveBodyAxisCalibration } from "$lib/pose/axisCalibration";
 import { reconstructSolve } from "$lib/analysis/solveReconstruction";
 import { solveCrossOptimal } from "$lib/analysis/crossSolver";
 import { reliableSnapshotMoveSequence } from "$lib/protocols/gan/sequence";
@@ -309,7 +310,6 @@ class TrainerStore {
   private protocolSelfTestStartDiagnostics = createEmptyGanV4ProtocolDiagnostics();
   private protocolSelfTestSnapshot: { facelets: string; sequence: number | null } | null = null;
   private protocolSelfTestBattery: number | null = null;
-  private protocolAxisReferences: Partial<Record<"x" | "y" | "z", { x: number; y: number; z: number }>> = {};
 
   constructor() {
     registerBuiltInGanProtocols();
@@ -407,6 +407,23 @@ class TrainerStore {
         this.connection = "unsupported";
         this.connectionMessage = `${device.name} 暂未匹配到已实现的 GAN 协议。`;
         return;
+      }
+      if (adapter.version === "v4") {
+        // GAN V4 mounting is a protocol/model constant. Discard obsolete
+        // locally-derived axis mappings while preserving the user's gyro
+        // enable/disable preference.
+        this.deviceCalibration = {
+          schemaVersion: 3,
+          enabled: this.deviceCalibration.enabled,
+          bodyToModel: GAN_V4_BODY_TO_MODEL,
+          relativeOrder: GAN_V4_RELATIVE_ORDER,
+          meanPoseErrorDeg: null,
+          maxPoseErrorDeg: null,
+        };
+        this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+        safeLogger.info("calibration", "gan-v4-fixed-pose-contract-applied", {
+          relativeOrder: GAN_V4_RELATIVE_ORDER,
+        });
       }
 
       const transport = new TauriBlecTransport();
@@ -687,9 +704,9 @@ class TrainerStore {
     return GAN_V4_VALIDATION_STEPS[this.protocolSelfTest.stepIndex] ?? null;
   }
 
-  get currentProtocolValidationRotation(): ReturnType<typeof relativeBodyRotation> {
+  get currentProtocolValidationRotation(): ReturnType<typeof relativeProtocolRotation> {
     if (!this.protocolSelfTest.captureAnchored) return null;
-    return relativeBodyRotation(this.protocolSelfTestStartQuaternion, this.gyroQuaternion);
+    return relativeProtocolRotation(this.protocolSelfTestStartQuaternion, this.gyroQuaternion);
   }
 
   async startProgressiveProtocolValidation(): Promise<void> {
@@ -703,7 +720,6 @@ class TrainerStore {
     }
 
     this.protocolDiagnostics = this.protocolInspector.reset();
-    this.protocolAxisReferences = {};
     this.protocolSelfTest = {
       ...EMPTY_PROTOCOL_SELF_TEST,
       status: "preparing",
@@ -752,7 +768,7 @@ class TrainerStore {
       ))
       .map((issue) => issue.code);
     const endQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
-    const rotation = relativeBodyRotation(this.protocolSelfTestStartQuaternion, endQuaternion);
+    const rotation = relativeProtocolRotation(this.protocolSelfTestStartQuaternion, endQuaternion);
     const observedMoves = [...this.protocolSelfTest.observedMoves];
 
     let passed = false;
@@ -764,7 +780,10 @@ class TrainerStore {
     } else if (step.kind === "layer-move") {
       passed = observedMoves.length === 1 && observedMoves[0] === step.expectedMove;
     } else {
-      const axisReference = step.expectedAxis ? this.protocolAxisReferences[step.expectedAxis] : undefined;
+      const expectedAxis = step.expectedAxis ? GAN_V4_SENSOR_AXES[step.expectedAxis] : undefined;
+      const axisReference = expectedAxis
+        ? { x: expectedAxis[0], y: expectedAxis[1], z: expectedAxis[2] }
+        : undefined;
       const angleAccepted = (rotation?.angleDeg ?? 0) >= 70 && (rotation?.angleDeg ?? 0) <= 110;
       const directionAccepted = !axisReference || !rotation
         ? true
@@ -774,12 +793,6 @@ class TrainerStore {
         Boolean(rotation) &&
         angleAccepted &&
         directionAccepted;
-      if (passed && rotation && step.expectedAxis && !axisReference) {
-        this.protocolAxisReferences[step.expectedAxis] = positiveAxisReference(
-          rotation.axis,
-          step.expectedDirection ?? "positive",
-        );
-      }
     }
     if (forceMismatch) passed = false;
 
@@ -846,7 +859,6 @@ class TrainerStore {
     this.protocolSelfTestStartSequence = null;
     this.protocolSelfTestSnapshot = null;
     this.protocolSelfTestBattery = null;
-    this.protocolAxisReferences = {};
   }
 
   anchorCurrentProtocolValidationStep(): void {
@@ -869,7 +881,7 @@ class TrainerStore {
   protocolValidationReport(): Record<string, unknown> {
     const currentStep = this.currentProtocolValidationStep;
     const currentEndQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
-    const currentRotation = relativeBodyRotation(this.protocolSelfTestStartQuaternion, currentEndQuaternion);
+    const currentRotation = relativeProtocolRotation(this.protocolSelfTestStartQuaternion, currentEndQuaternion);
     return {
       schemaVersion: 1,
       kind: "gan-v4-progressive-protocol-validation",
@@ -880,10 +892,11 @@ class TrainerStore {
       diagnostics: this.protocolInspector.current(),
       steps: GAN_V4_VALIDATION_STEPS,
       results: this.protocolSelfTest.results,
-      learnedBodyAxes: this.protocolAxisReferences,
-      appliedDeviceCalibration: this.deviceCalibration.bodyToModel
-        ? { ...this.deviceCalibration, bodyToModel: this.deviceCalibration.bodyToModel.map((row) => [...row]) }
-        : null,
+      protocolAxisContract: {
+        bodyToModel: GAN_V4_BODY_TO_MODEL,
+        relativeOrder: GAN_V4_RELATIVE_ORDER,
+        sensorAxes: GAN_V4_SENSOR_AXES,
+      },
       activeStepEvidence: currentStep ? {
         stepId: currentStep.id,
         expectedMove: currentStep.expectedMove,
@@ -941,11 +954,10 @@ class TrainerStore {
     const results = [...this.protocolSelfTest.results, result];
     const nextIndex = this.protocolSelfTest.stepIndex + 1;
     if (nextIndex >= GAN_V4_VALIDATION_STEPS.length) {
-      const appliedCalibration = this.applyProtocolAxisCalibration(results);
       this.protocolSelfTest = {
         ...this.protocolSelfTest,
         status: "complete",
-        message: `协议验收完成：${results.filter((item) => item.status === "passed").length} 通过，${results.filter((item) => item.status === "mismatch").length} 不一致，${results.filter((item) => item.status === "skipped").length} 跳过。${appliedCalibration ? `已应用并保存姿态标定（平均轴误差 ${appliedCalibration.meanAxisErrorDeg.toFixed(1)}°）。` : "尚未形成可应用的三轴姿态标定。"}`,
+        message: `协议验收完成：${results.filter((item) => item.status === "passed").length} 通过，${results.filter((item) => item.status === "mismatch").length} 不一致，${results.filter((item) => item.status === "skipped").length} 跳过。报告将自动下载；验收不会修改设备配置。`,
         stepIndex: nextIndex,
         results,
       };
@@ -968,33 +980,6 @@ class TrainerStore {
         message: `已沿用上一步终点作为起点。${nextStep.instruction.split("；").slice(1).join("；")}`,
       };
     }
-  }
-
-  private applyProtocolAxisCalibration(results: ProtocolValidationStepResult[]) {
-    const solution = solveBodyAxisCalibration(this.protocolAxisReferences);
-    const baseline = results.find((item) => item.stepId === "baseline" && item.status === "passed");
-    if (!solution || !baseline?.endQuaternion) return null;
-    this.deviceCalibration = {
-      schemaVersion: 3,
-      enabled: this.deviceCalibration.enabled,
-      bodyToModel: solution.bodyToModel,
-      relativeOrder: "reference-inverse-current",
-      meanPoseErrorDeg: solution.meanAxisErrorDeg,
-      maxPoseErrorDeg: solution.maxAxisErrorDeg,
-    };
-    this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
-    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
-    this.poseSession.bootstrap(baseline.endQuaternion, baseline.completedAt);
-    this.sessionAnchor = this.poseSession.currentAnchor();
-    this.poseHealth = this.poseSession.currentHealth();
-    this.persistDevicePreferences();
-    safeLogger.info("calibration", "protocol-axis-calibration-applied", {
-      meanAxisErrorDeg: solution.meanAxisErrorDeg,
-      maxAxisErrorDeg: solution.maxAxisErrorDeg,
-      evidenceDeterminant: solution.evidenceDeterminant,
-      relativeOrder: this.deviceCalibration.relativeOrder,
-    });
-    return solution;
   }
 
   private applyCubeStateBaseline(cube: CubeState): void {
@@ -1125,7 +1110,7 @@ class TrainerStore {
     const derivedCalibration = profile.renderValidation.confirmed
       ? deriveGyroCalibrationFromSignalProfile(profile)
       : null;
-    if (derivedCalibration?.valid) {
+    if (derivedCalibration?.valid && this.connectedProtocol !== "v4") {
       this.deviceCalibration = {
         schemaVersion: 3,
         enabled: this.deviceCalibration.enabled,
@@ -1155,7 +1140,7 @@ class TrainerStore {
       moveMappingMatched: profile.moveValidation.matched,
       renderConfirmed: profile.renderValidation.confirmed,
       confidence: profile.overallConfidence,
-      gyroMappingApplied: Boolean(derivedCalibration?.valid),
+      gyroMappingApplied: Boolean(derivedCalibration?.valid && this.connectedProtocol !== "v4"),
       gyroMappingConfidence: derivedCalibration?.confidence,
     });
   }
@@ -1179,6 +1164,13 @@ class TrainerStore {
       },
     };
     this.signalCalibrationProfile = reprocessedProfile;
+    if (this.connectedProtocol === "v4") {
+      safeLogger.info("calibration", "signal-profile-reprocessed-diagnostic-only", {
+        protocol: profile.protocol,
+        reason: "gan-v4-uses-fixed-pose-contract",
+      });
+      return true;
+    }
     this.deviceCalibration = {
       schemaVersion: 3,
       enabled: this.deviceCalibration.enabled,
@@ -1469,7 +1461,7 @@ class TrainerStore {
     this.gyroVelocity = event.velocity ?? null;
     this.gyroEventSerial += 1;
     if (this.protocolSelfTest.status === "collecting") {
-      const rotation = relativeBodyRotation(this.protocolSelfTestStartQuaternion, observation.quaternion);
+      const rotation = relativeProtocolRotation(this.protocolSelfTestStartQuaternion, observation.quaternion);
       this.protocolSelfTest = {
         ...this.protocolSelfTest,
         gyroSampleCount: this.protocolSelfTest.gyroSampleCount + 1,

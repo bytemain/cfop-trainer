@@ -45,11 +45,20 @@ app.z = protocol qz
 app.w = protocol qw
 ```
 
-重排后的四元数按 `cube body -> GAN world` 使用。相对机体旋转为：
+重排后的四元数按 GAN V4 传感器姿态使用。协议验收与渲染必须共享同一个相对顺序，不能分别通过交换乘法或翻转 UI 轴相互补偿。
+
+GAN16 ui 的传感器安装方向是型号/协议级固定契约，不是用户标定项。运行时 canonical cube space 使用：
 
 ```text
-inverse(previous) * current
+bodyToModel =
+[ 0 -1  0 ]
+[ 0  0 -1 ]
+[ 1  0  0 ]
+
+relativeOrder = reference * inverse(current)
 ```
+
+应用连接 GAN V4 时必须覆盖历史本地 axis calibration，不能要求普通用户重复三轴采集。首个姿态帧经固定契约转换成绝对 `CubePose` 后建立 session anchor；anchor 只负责掉线/传感器重启后的连续性，不得把首帧强制归零成 identity。
 
 一组红色中心持续朝向用户、整颗魔方绕红—橙轴旋转的脱敏真机 fixture 得到 X 主导相对轴，已固化在 `orientation.test.ts`。如果省略 X/Y 重排，同一动作会错误显示为 Y 主导，这也是早期 3D 视图轴错位的根因。
 

@@ -6,6 +6,9 @@ import {
   gyroModelMatrix,
   quaternionMatrix,
   quaternionFromAxisAngle,
+  DEFAULT_DEVICE_CALIBRATION,
+  GAN_V4_BODY_TO_MODEL,
+  GAN_V4_RELATIVE_ORDER,
 } from "./orientation";
 
 function matrixValues(transform: string): number[] {
@@ -15,6 +18,12 @@ function matrixValues(transform: string): number[] {
 }
 
 describe("GAN orientation mapping", () => {
+  it("ships the verified GAN V4 pose contract as the runtime default", () => {
+    expect(DEFAULT_DEVICE_CALIBRATION.bodyToModel).toEqual(GAN_V4_BODY_TO_MODEL);
+    expect(DEFAULT_DEVICE_CALIBRATION.relativeOrder).toBe(GAN_V4_RELATIVE_ORDER);
+    expect(GAN_V4_BODY_TO_MODEL).toEqual([[0, -1, 0], [0, 0, -1], [1, 0, 0]]);
+  });
+
   const whiteUpGreenFrontFixture = {
     w: -0.5278115896786351,
     x: -0.07567134227142988,

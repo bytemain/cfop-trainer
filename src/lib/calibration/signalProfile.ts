@@ -220,9 +220,7 @@ function relativeSensorMatrix(
 ): Matrix3 {
   return order === "current-reference-inverse"
     ? multiplyMatrix3(current, transposeMatrix3(reference))
-    : order === "reference-inverse-current"
-      ? multiplyMatrix3(transposeMatrix3(reference), current)
-      : multiplyMatrix3(reference, transposeMatrix3(current));
+    : multiplyMatrix3(reference, transposeMatrix3(current));
 }
 
 function rotationVector(matrix: Matrix3): [number, number, number] | null {

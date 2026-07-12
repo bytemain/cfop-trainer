@@ -50,14 +50,25 @@ export interface ViewPreference {
 
 export type SensorRelativeOrder =
   | "current-reference-inverse"
-  | "reference-current-inverse"
-  | "reference-inverse-current";
+  | "reference-current-inverse";
 
 export type Matrix3 = [
   [number, number, number],
   [number, number, number],
   [number, number, number],
 ];
+
+// Fixed GAN V4 protocol contract confirmed by CubeStation's Android bridge,
+// csTimer-compatible packet semantics and controlled GAN16ui rotations.
+// Canonical cube space is +X red, +Y white, +Z green.
+export const GAN_V4_BODY_TO_MODEL: Matrix3 = [[0, -1, 0], [0, 0, -1], [1, 0, 0]];
+export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "reference-current-inverse";
+
+export const GAN_V4_SENSOR_AXES: Record<"x" | "y" | "z", [number, number, number]> = {
+  x: [0, -1, 0],
+  y: [0, 0, -1],
+  z: [1, 0, 0],
+};
 
 export const DEFAULT_GYRO_CALIBRATION: GyroCalibration = {
   modelVersion: 2,
@@ -77,8 +88,8 @@ export const DEFAULT_GYRO_CALIBRATION: GyroCalibration = {
 export const DEFAULT_DEVICE_CALIBRATION: DeviceCalibration = {
   schemaVersion: 3,
   enabled: true,
-  bodyToModel: null,
-  relativeOrder: "reference-current-inverse",
+  bodyToModel: GAN_V4_BODY_TO_MODEL,
+  relativeOrder: GAN_V4_RELATIVE_ORDER,
   meanPoseErrorDeg: null,
   maxPoseErrorDeg: null,
 };
@@ -232,16 +243,14 @@ export function gyroModelMatrix(
   // The signal lab derives this signed permutation independently for each
   // physical cube. Until calibration is complete, retain the protocol's
   // conservative legacy fallback so gyro rendering remains usable.
-  const bodyToModel = calibration.bodyToModel ?? [[1, 0, 0], [0, 0, 1], [0, -1, 0]];
+  const bodyToModel = calibration.bodyToModel ?? GAN_V4_BODY_TO_MODEL;
   const ganWorldToUiWorld: Matrix3 = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
   let model: Matrix3;
   if (calibration.zero) {
     const reference = quaternionMatrix(calibration.zero);
     const relative = calibration.relativeOrder === "current-reference-inverse"
       ? multiplyMatrix3(current, transposeMatrix3(reference))
-      : calibration.relativeOrder === "reference-inverse-current"
-        ? multiplyMatrix3(transposeMatrix3(reference), current)
-        : multiplyMatrix3(reference, transposeMatrix3(current));
+      : multiplyMatrix3(reference, transposeMatrix3(current));
     const relativePose = multiplyMatrix3(
       multiplyMatrix3(bodyToModel as Matrix3, relative),
       transposeMatrix3(bodyToModel as Matrix3),

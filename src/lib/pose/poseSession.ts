@@ -106,9 +106,13 @@ export class PoseSession {
 
     const current = this.lastAccepted ? alignedTo(this.lastAccepted, value) : normalizeQuaternion(value);
     if (!this.anchor) {
+      const absolutePose = gyroModelMatrix(
+        current,
+        composeGyroCalibration(this.device, null, this.view),
+      ) ?? IDENTITY;
       this.anchor = {
         sensorReference: current,
-        cubeReference: IDENTITY,
+        cubeReference: absolutePose,
         establishedAt: at,
         reason: "session-start",
       };
