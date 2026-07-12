@@ -36,11 +36,13 @@
     orientation = null,
     gyroCalibration,
     stickerPalette,
+    interactive = true,
   }: {
     cube: CubeState;
     orientation?: CubeQuaternion | null;
     gyroCalibration: GyroCalibration;
     stickerPalette: StickerPalette;
+    interactive?: boolean;
   } = $props();
 
   let canvas: HTMLCanvasElement;
@@ -233,6 +235,7 @@
   }
 
   function startDrag(event: PointerEvent): void {
+    if (!interactive) return;
     dragging = true;
     dragLastX = event.clientX;
     dragLastY = event.clientY;
@@ -240,7 +243,7 @@
   }
 
   function moveDrag(event: PointerEvent): void {
-    if (!dragging) return;
+    if (!interactive || !dragging) return;
     const deltaX = event.clientX - dragLastX;
     const deltaY = event.clientY - dragLastY;
     dragLastX = event.clientX;
@@ -251,11 +254,13 @@
   }
 
   function stopDrag(event: PointerEvent): void {
+    if (!interactive) return;
     dragging = false;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   }
 
   function rotateWithKeyboard(event: KeyboardEvent): void {
+    if (!interactive) return;
     const step = event.shiftKey ? 30 : 12;
     if (event.key === "ArrowLeft") rotateView("y", -step);
     else if (event.key === "ArrowRight") rotateView("y", step);
@@ -349,22 +354,25 @@
   <div
     bind:this={stage}
     class:dragging
+    class:interactive
     class="cube-stage"
   >
     <canvas
       bind:this={canvas}
-      role="button"
-      tabindex="0"
-      aria-label="当前魔方 3D 视图（WebGL）。可向任意方向连续拖动翻转，双击或按 Home 恢复默认视角。"
+      role={interactive ? "button" : "img"}
+      tabindex={interactive ? 0 : -1}
+      aria-label={interactive
+        ? "当前魔方 3D 视图（WebGL）。可向任意方向连续拖动翻转，双击或按 Home 恢复默认视角。"
+        : "当前魔方 3D 实时姿态（WebGL）。真机陀螺仪跟随时已禁用手动拖动。"}
       onpointerdown={startDrag}
       onpointermove={moveDrag}
       onpointerup={stopDrag}
       onpointercancel={stopDrag}
       onkeydown={rotateWithKeyboard}
-      ondblclick={resetView}
+      ondblclick={() => interactive && resetView()}
     ></canvas>
   </div>
-  <p>GPU WebGL 全向视图 · 拖动观察 · 双击 / Home 复位</p>
+  <p>{interactive ? "GPU WebGL 全向视图 · 拖动观察 · 双击 / Home 复位" : "GPU WebGL 实时姿态 · 手动拖动已禁用"}</p>
 </div>
 
 <style>
@@ -382,12 +390,13 @@
     height: 320px;
     border-radius: 22px;
     background: radial-gradient(circle at 50% 44%, rgb(135 232 188 / 0.07), transparent 55%);
-    cursor: grab;
-    touch-action: none;
+    cursor: default;
+    touch-action: auto;
     user-select: none;
   }
 
-  .cube-stage.dragging { cursor: grabbing; }
+  .cube-stage.interactive { cursor: grab; touch-action: none; }
+  .cube-stage.interactive.dragging { cursor: grabbing; }
   canvas { display: block; width: 100%; height: 100%; border-radius: inherit; outline: none; }
   canvas:focus-visible { box-shadow: inset 0 0 0 2px rgb(135 232 188 / 0.8); }
   p { margin: 0; color: var(--color-text-muted); font-size: 0.68rem; }

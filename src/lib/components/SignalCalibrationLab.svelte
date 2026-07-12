@@ -924,7 +924,7 @@
           {/if}
           {#if derivedGyroCalibration?.valid}
             <div class="dynamic-live-pose">
-              <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} /></div>
+              <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} interactive={false} /></div>
               <div class="pose-recognition" class:matched={dynamicRecognizedEndpointMatches}>
                 {#if recognizedLivePose}
                   {#if dynamicRecognizedEndpointMatches}<Check size={16} />{:else}<Rotate3D size={16} />{/if}
@@ -987,7 +987,7 @@
           </div>
           <div>
             <strong>实时识别</strong>
-            <div class="cube-preview compound-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} /></div>
+            <div class="cube-preview compound-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} interactive={false} /></div>
             <span class="live-pose-label">
               {#if recognizedLivePose}
                 当前 {colorLabels[recognizedLivePose.topColor]}上 / {colorLabels[recognizedLivePose.frontColor]}前
@@ -1114,7 +1114,7 @@
             </div>
           {/if}
         {/if}
-        <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} /></div>
+        <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} interactive={false} /></div>
         <div class="render-actions">
           <button class="secondary danger" onclick={() => confirmRender(false)}>仍然不一致</button>
           <button class="primary" disabled={!derivedGyroCalibration?.valid} onclick={() => confirmRender(true)}><Check size={18} /> 完全一致</button>

@@ -194,6 +194,17 @@ canonical R_cube_pose → Three.js poseGroup.quaternion → WebGL
 manual orbit          → Three.js viewGroup.quaternion → WebGL
 ```
 
+When a physical cube is connected and gyro following is enabled, manual orbit
+input is disabled. Pointer and keyboard dragging must not compete with the
+sensor-owned pose or make a camera change look like calibration. Manual orbit
+is available only for demo/offline viewing or when gyro following is disabled.
+
+The home-page quick calibration is a session-anchor operation, not a device
+solver. The user places the cube white-up/green-front, waits for a stable
+window, and binds the current sensor quaternion to canonical identity. It may
+clear view offsets/inversions, but it must not replace `bodyToModel`, mutate
+stickers, or claim to have rerun the Pose Graph.
+
 ### Legacy CSS/debug serialization
 
 CSS coordinates use positive Y down, while the canonical cube uses positive Y

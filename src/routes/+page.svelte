@@ -30,6 +30,7 @@
   import StatusPill from "$lib/components/StatusPill.svelte";
   import TimerDisplay from "$lib/components/TimerDisplay.svelte";
   import CubeConnectionDialog from "$lib/components/CubeConnectionDialog.svelte";
+  import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
   import CaseLibrary from "$lib/components/CaseLibrary.svelte";
   import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
@@ -49,7 +50,16 @@
   let deviceDialogAutoScan = $state(false);
   let replayIndex = $state(0);
   let signalReprocessStatus = $state("");
+  let quickCalibrationOpen = $state(false);
+  let quickCalibrationStatus = $state("");
   const replayCube = $derived(trainer.reconstruction.replayStates[replayIndex] ?? trainer.cube);
+  const quickCalibrationReady = $derived(
+    Boolean(trainer.connectedDeviceName) &&
+    Boolean(trainer.gyroQuaternion) &&
+    trainer.gyroCalibration.enabled &&
+    trainer.poseHealth.lastStepDeg !== null &&
+    trainer.poseHealth.lastStepDeg <= 1.5,
+  );
 
   const deviceDialogBusy = $derived(
     ["scanning", "connecting", "authenticating", "synchronizing", "reconnecting"].includes(
@@ -149,6 +159,14 @@
       : "现有档案仍不足以得到可靠模型，请进入采集实验室补充姿态。";
   }
 
+  function confirmQuickCalibration(): void {
+    if (!quickCalibrationReady) return;
+    quickCalibrationStatus = trainer.quickCalibrateWhiteUpGreenFront()
+      ? "当前会话已校准为白上绿前，手动视角偏移已清除。"
+      : "快速校准失败，请确认魔方已连接且陀螺仪跟随已开启。";
+    if (quickCalibrationStatus.startsWith("当前会话")) quickCalibrationOpen = false;
+  }
+
   onMount(() => {
     void trainer.initialize();
     const handleKeydown = (event: KeyboardEvent) => {
@@ -161,6 +179,7 @@
 
       if (event.key.toLowerCase() === "r") trainer.reset();
       if (event.key === "Escape" && deviceDialogOpen) closeDeviceDialog();
+      if (event.key === "Escape" && quickCalibrationOpen) quickCalibrationOpen = false;
     };
 
     window.addEventListener("keydown", handleKeydown);
@@ -236,12 +255,22 @@
               <span class="eyebrow">实时魔方</span>
               <h1>{PHASE_LABELS[trainer.phase]} 阶段</h1>
             </div>
-            <button
-              class="secondary-button"
-              aria-label="切换 2D 辅助视图"
-              aria-pressed={show2dOverlay}
-              onclick={() => (show2dOverlay = !show2dOverlay)}
-            >2D 辅助</button>
+            <div class="section-actions">
+              <button
+                class="secondary-button"
+                disabled={!trainer.connectedDeviceName || !trainer.gyroQuaternion}
+                onclick={() => {
+                  quickCalibrationStatus = "";
+                  quickCalibrationOpen = true;
+                }}
+              ><RefreshCcw size={16} /> 快速姿态校准</button>
+              <button
+                class="secondary-button"
+                aria-label="切换 2D 辅助视图"
+                aria-pressed={show2dOverlay}
+                onclick={() => (show2dOverlay = !show2dOverlay)}
+              >2D 辅助</button>
+            </div>
           </div>
 
           <div class="cube-visual-stage">
@@ -250,6 +279,7 @@
               orientation={trainer.gyroQuaternion}
               gyroCalibration={trainer.gyroCalibration}
               stickerPalette={trainer.stickerPalette}
+              interactive={!trainer.connectedDeviceName || !trainer.gyroCalibration.enabled}
             />
             {#if show2dOverlay}
               <aside class="cube-net-overlay" aria-label="3D 视图的 2D 辅助图">
@@ -269,6 +299,10 @@
               <span>首步开始 · Solved 停止</span>
             </div>
           </div>
+
+          {#if quickCalibrationStatus}
+            <p class="quick-calibration-status">{quickCalibrationStatus}</p>
+          {/if}
 
           <div class="primary-actions">
             <button class="primary-button" onclick={primaryAction}>
@@ -647,6 +681,33 @@
     </button>
   </nav>
 
+  {#if quickCalibrationOpen}
+    <div
+      class="quick-calibration-backdrop"
+      role="presentation"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) quickCalibrationOpen = false;
+      }}
+    >
+      <div class="quick-calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-calibration-title">
+        <span class="eyebrow">Session anchor</span>
+        <h2 id="quick-calibration-title">快速姿态校准</h2>
+        <p>把实体魔方稳定放在桌面上：白色中心朝上、绿色中心朝向你、红色自然位于右侧。保持约 1 秒，稳定后把当前传感器姿态定义为本次会话的白上绿前。</p>
+        <CalibrationGuide3D mode="static" top="white" front="green" />
+        <div class="quick-calibration-readiness" class:ready={quickCalibrationReady}>
+          {#if quickCalibrationReady}<Check size={17} /> 姿态已稳定，可以校准{:else}<Activity size={17} /> 请保持魔方静止，当前帧变化 {trainer.poseHealth.lastStepDeg?.toFixed(2) ?? "—"}°{/if}
+        </div>
+        <small>快速校准只重建当前会话姿态基准，不修改贴纸状态，也不替代完整 Pose Graph 设备标定。</small>
+        <div class="quick-calibration-actions">
+          <button class="secondary-button" onclick={() => (quickCalibrationOpen = false)}>取消</button>
+          <button class="primary-button" disabled={!quickCalibrationReady} onclick={confirmQuickCalibration}>
+            <Check size={17} /> 确认白上绿前
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if deviceDialogOpen}
     <CubeConnectionDialog autoScan={deviceDialogAutoScan} onclose={closeDeviceDialog} />
   {/if}
@@ -803,6 +864,16 @@
   .primary-button:hover { background: var(--color-primary-strong); }
   .secondary-button { color: var(--color-text); background: var(--color-surface-highest); }
   .secondary-button:disabled { cursor: not-allowed; opacity: 0.42; }
+  .section-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .quick-calibration-status { margin: -4px 0 4px; color: var(--color-primary); font-size: 0.72rem; text-align: center; }
+  .quick-calibration-backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 20px; background: rgb(5 8 8 / 0.74); backdrop-filter: blur(10px); }
+  .quick-calibration-dialog { display: grid; width: min(560px, 100%); max-height: calc(100vh - 40px); justify-items: center; gap: 13px; overflow: auto; padding: 24px; border: 1px solid var(--color-outline); border-radius: 22px; background: var(--color-surface); box-shadow: 0 28px 90px rgb(0 0 0 / 0.5); text-align: center; }
+  .quick-calibration-dialog h2 { margin: 0; }
+  .quick-calibration-dialog > p { max-width: 500px; margin: 0; color: var(--color-text-muted); font-size: 0.82rem; line-height: 1.65; }
+  .quick-calibration-dialog > small { color: var(--color-text-muted); font-size: 0.68rem; line-height: 1.5; }
+  .quick-calibration-readiness { display: inline-flex; align-items: center; gap: 7px; padding: 9px 12px; border: 1px solid var(--color-outline); border-radius: 11px; color: var(--color-warning); background: var(--color-surface-highest); font-size: 0.74rem; }
+  .quick-calibration-readiness.ready { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 40%, transparent); }
+  .quick-calibration-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; }
 
   .training-layout {
     display: grid;
@@ -1130,6 +1201,9 @@
     .cube-workspace { padding: 14px 10px; }
     .cube-net-overlay { right: 2px; bottom: 6px; transform: scale(0.82); transform-origin: right bottom; }
     .section-heading { padding-inline: 5px; }
+    .section-heading { align-items: start; }
+    .section-actions { justify-content: stretch; }
+    .section-actions .secondary-button { flex: 1 1 auto; }
     .section-heading h1 { font-size: 1.25rem; }
     .timer-panel { padding: 13px 4px; }
     .primary-actions { display: grid; grid-template-columns: 1fr; padding-inline: 4px; }
@@ -1160,5 +1234,7 @@
     .split-table article { grid-template-columns: 64px 1fr; }
     .replay-player { grid-template-columns: 1fr; }
     .cross-suggestion { align-items: stretch; flex-direction: column; }
+    .quick-calibration-backdrop { align-items: end; padding: 0; }
+    .quick-calibration-dialog { max-height: 94vh; padding: 20px 14px 26px; border-radius: 22px 22px 0 0; }
   }
 </style>

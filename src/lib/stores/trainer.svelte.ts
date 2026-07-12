@@ -617,6 +617,23 @@ class TrainerStore {
     this.poseHealth = this.poseSession.currentHealth();
   }
 
+  quickCalibrateWhiteUpGreenFront(): boolean {
+    if (!this.gyroQuaternion || !this.deviceCalibration.enabled) return false;
+    // Quick calibration owns only the current session anchor. The persisted
+    // sensor-to-cube mapping still comes from the full Pose Graph solver.
+    this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+    this.poseSession.manuallyAnchor(this.gyroQuaternion);
+    this.sessionAnchor = this.poseSession.currentAnchor();
+    this.poseHealth = this.poseSession.currentHealth();
+    this.persistDevicePreferences();
+    safeLogger.info("calibration", "quick-anchor-applied", {
+      referencePose: "white-up-green-front",
+      lastStepDeg: this.poseHealth.lastStepDeg,
+    });
+    return true;
+  }
+
   resetGyroCalibration(): void {
     this.deviceCalibration = { ...DEFAULT_DEVICE_CALIBRATION };
     this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
