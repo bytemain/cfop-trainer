@@ -833,8 +833,8 @@
                     </strong>
                     <span>
                       {rotation
-                        ? `实时识别：${rotation.dominantAxis.toUpperCase()} 轴 · ${rotation.direction === "positive" ? "正方向" : "负方向"}`
-                        : "锁定起点后，这里会实时显示识别轴和方向"}
+                        ? `协议局部主分量：${rotation.dominantAxis.toUpperCase()} · ${rotation.direction === "positive" ? "正" : "负"}（仅供诊断，不代表现实方向）`
+                        : "锁定起点后，这里会显示协议局部分量；现实动作始终以指定颜色面正对你的视角为准"}
                     </span>
                   </div>
                 </section>

@@ -53,6 +53,11 @@ import {
 import { CubeClock, type CubeClockSample } from "$lib/timeline/cubeClock";
 import { MoveTimeline, type MoveTimelineItem } from "$lib/timeline/moveTimeline";
 import { PoseSession, type PoseHealth } from "$lib/pose/poseSession";
+import {
+  matchesAxisDirection,
+  positiveAxisReference,
+  relativeBodyRotation,
+} from "$lib/pose/relativeRotation";
 import { reconstructSolve } from "$lib/analysis/solveReconstruction";
 import { solveCrossOptimal } from "$lib/analysis/crossSolver";
 import { reliableSnapshotMoveSequence } from "$lib/protocols/gan/sequence";
@@ -134,7 +139,7 @@ export const GAN_V4_VALIDATION_STEPS: ProtocolValidationStep[] = [
     id: `rotation-${axis}-${direction}`,
     kind: "whole-cube-rotation" as const,
     title: `整颗绕${colorAxis}轴 · ${turn} 90°`,
-    instruction: `先让${viewpoint}色中心朝向你并保持不动，点击“以当前姿态为起点”；再从${viewpoint}色面看，把整颗魔方${turn}旋转约 90°。不要拧任何单层。`,
+    instruction: `先让${viewpoint}色面正对你：该面的法线沿你和魔方之间的视线前后方向。保持不动并点击“以当前姿态为起点”；再正面直视${viewpoint}色面，把整颗魔方${turn}旋转约 90°。不要拧任何单层。`,
     expectedAxis: axis,
     expectedDirection: direction,
   })),
@@ -181,46 +186,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       },
     );
   });
-}
-
-function quaternionDelta(
-  start: CubeQuaternion | null,
-  end: CubeQuaternion | null,
-): {
-  axis: { x: number; y: number; z: number };
-  angleDeg: number;
-  dominantAxis: "x" | "y" | "z";
-  direction: "positive" | "negative";
-} | null {
-  if (!start || !end) return null;
-  const startNorm = Math.hypot(start.x, start.y, start.z, start.w);
-  const endNorm = Math.hypot(end.x, end.y, end.z, end.w);
-  if (startNorm < 1e-6 || endNorm < 1e-6) return null;
-  const a = { x: start.x / startNorm, y: start.y / startNorm, z: start.z / startNorm, w: start.w / startNorm };
-  const b = { x: end.x / endNorm, y: end.y / endNorm, z: end.z / endNorm, w: end.w / endNorm };
-  const inverseA = { x: -a.x, y: -a.y, z: -a.z, w: a.w };
-  let delta = {
-    x: b.w * inverseA.x + b.x * inverseA.w + b.y * inverseA.z - b.z * inverseA.y,
-    y: b.w * inverseA.y - b.x * inverseA.z + b.y * inverseA.w + b.z * inverseA.x,
-    z: b.w * inverseA.z + b.x * inverseA.y - b.y * inverseA.x + b.z * inverseA.w,
-    w: b.w * inverseA.w - b.x * inverseA.x - b.y * inverseA.y - b.z * inverseA.z,
-  };
-  if (delta.w < 0) delta = { x: -delta.x, y: -delta.y, z: -delta.z, w: -delta.w };
-  const angleRad = 2 * Math.acos(Math.max(-1, Math.min(1, delta.w)));
-  const sinHalf = Math.sin(angleRad / 2);
-  const axis = Math.abs(sinHalf) < 1e-6
-    ? { x: 0, y: 0, z: 0 }
-    : { x: delta.x / sinHalf, y: delta.y / sinHalf, z: delta.z / sinHalf };
-  const axes: Array<"x" | "y" | "z"> = ["x", "y", "z"];
-  const dominantAxis = axes.sort((left, right) =>
-    Math.abs(axis[right]) - Math.abs(axis[left])
-  )[0];
-  return {
-    axis,
-    angleDeg: angleRad * 180 / Math.PI,
-    dominantAxis,
-    direction: axis[dominantAxis] >= 0 ? "positive" : "negative",
-  };
 }
 
 export const CONNECTION_LABELS: Record<CubeConnectionState, string> = {
@@ -343,6 +308,7 @@ class TrainerStore {
   private protocolSelfTestStartDiagnostics = createEmptyGanV4ProtocolDiagnostics();
   private protocolSelfTestSnapshot: { facelets: string; sequence: number | null } | null = null;
   private protocolSelfTestBattery: number | null = null;
+  private protocolAxisReferences: Partial<Record<"x" | "y" | "z", { x: number; y: number; z: number }>> = {};
 
   constructor() {
     registerBuiltInGanProtocols();
@@ -720,9 +686,9 @@ class TrainerStore {
     return GAN_V4_VALIDATION_STEPS[this.protocolSelfTest.stepIndex] ?? null;
   }
 
-  get currentProtocolValidationRotation(): ReturnType<typeof quaternionDelta> {
+  get currentProtocolValidationRotation(): ReturnType<typeof relativeBodyRotation> {
     if (!this.protocolSelfTest.captureAnchored) return null;
-    return quaternionDelta(this.protocolSelfTestStartQuaternion, this.gyroQuaternion);
+    return relativeBodyRotation(this.protocolSelfTestStartQuaternion, this.gyroQuaternion);
   }
 
   async startProgressiveProtocolValidation(): Promise<void> {
@@ -736,6 +702,7 @@ class TrainerStore {
     }
 
     this.protocolDiagnostics = this.protocolInspector.reset();
+    this.protocolAxisReferences = {};
     this.protocolSelfTest = {
       ...EMPTY_PROTOCOL_SELF_TEST,
       status: "preparing",
@@ -784,7 +751,7 @@ class TrainerStore {
       ))
       .map((issue) => issue.code);
     const endQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
-    const rotation = quaternionDelta(this.protocolSelfTestStartQuaternion, endQuaternion);
+    const rotation = relativeBodyRotation(this.protocolSelfTestStartQuaternion, endQuaternion);
     const observedMoves = [...this.protocolSelfTest.observedMoves];
 
     let passed = false;
@@ -796,12 +763,22 @@ class TrainerStore {
     } else if (step.kind === "layer-move") {
       passed = observedMoves.length === 1 && observedMoves[0] === step.expectedMove;
     } else {
+      const axisReference = step.expectedAxis ? this.protocolAxisReferences[step.expectedAxis] : undefined;
+      const angleAccepted = (rotation?.angleDeg ?? 0) >= 70 && (rotation?.angleDeg ?? 0) <= 110;
+      const directionAccepted = !axisReference || !rotation
+        ? true
+        : matchesAxisDirection(rotation.axis, step.expectedDirection ?? "positive", axisReference);
       passed = this.protocolSelfTest.captureAnchored &&
         observedMoves.length === 0 &&
         Boolean(rotation) &&
-        (rotation?.angleDeg ?? 0) >= 45 &&
-        rotation?.dominantAxis === step.expectedAxis &&
-        rotation?.direction === step.expectedDirection;
+        angleAccepted &&
+        directionAccepted;
+      if (passed && rotation && step.expectedAxis && !axisReference) {
+        this.protocolAxisReferences[step.expectedAxis] = positiveAxisReference(
+          rotation.axis,
+          step.expectedDirection ?? "positive",
+        );
+      }
     }
     if (forceMismatch) passed = false;
 
@@ -860,6 +837,7 @@ class TrainerStore {
     this.protocolSelfTestStartSequence = null;
     this.protocolSelfTestSnapshot = null;
     this.protocolSelfTestBattery = null;
+    this.protocolAxisReferences = {};
   }
 
   anchorCurrentProtocolValidationStep(): void {
@@ -882,7 +860,7 @@ class TrainerStore {
   protocolValidationReport(): Record<string, unknown> {
     const currentStep = this.currentProtocolValidationStep;
     const currentEndQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
-    const currentRotation = quaternionDelta(this.protocolSelfTestStartQuaternion, currentEndQuaternion);
+    const currentRotation = relativeBodyRotation(this.protocolSelfTestStartQuaternion, currentEndQuaternion);
     return {
       schemaVersion: 1,
       kind: "gan-v4-progressive-protocol-validation",
@@ -893,6 +871,7 @@ class TrainerStore {
       diagnostics: this.protocolInspector.current(),
       steps: GAN_V4_VALIDATION_STEPS,
       results: this.protocolSelfTest.results,
+      learnedBodyAxes: this.protocolAxisReferences,
       activeStepEvidence: currentStep ? {
         stepId: currentStep.id,
         expectedMove: currentStep.expectedMove,
@@ -926,9 +905,9 @@ class TrainerStore {
     };
   }
 
-  private beginProtocolValidationStep(): void {
+  private beginProtocolValidationStep(autoAnchor = false): void {
     const step = this.currentProtocolValidationStep;
-    const captureAnchored = step?.kind !== "whole-cube-rotation";
+    const captureAnchored = step?.kind !== "whole-cube-rotation" || autoAnchor;
     this.protocolSelfTestStartQuaternion = captureAnchored && this.gyroQuaternion
       ? { ...this.gyroQuaternion }
       : null;
@@ -946,6 +925,7 @@ class TrainerStore {
   }
 
   private advanceProtocolValidation(result: ProtocolValidationStepResult): void {
+    const completedStep = this.currentProtocolValidationStep;
     const results = [...this.protocolSelfTest.results, result];
     const nextIndex = this.protocolSelfTest.stepIndex + 1;
     if (nextIndex >= GAN_V4_VALIDATION_STEPS.length) {
@@ -964,7 +944,17 @@ class TrainerStore {
       results,
       message: GAN_V4_VALIDATION_STEPS[nextIndex].instruction,
     };
-    this.beginProtocolValidationStep();
+    const nextStep = GAN_V4_VALIDATION_STEPS[nextIndex];
+    const reusePreviousEndpoint = completedStep?.kind === "whole-cube-rotation" &&
+      nextStep.kind === "whole-cube-rotation" &&
+      completedStep.expectedAxis === nextStep.expectedAxis;
+    this.beginProtocolValidationStep(reusePreviousEndpoint);
+    if (reusePreviousEndpoint) {
+      this.protocolSelfTest = {
+        ...this.protocolSelfTest,
+        message: `已沿用上一步终点作为起点。${nextStep.instruction.split("；").slice(1).join("；")}`,
+      };
+    }
   }
 
   private applyCubeStateBaseline(cube: CubeState): void {
@@ -1439,7 +1429,7 @@ class TrainerStore {
     this.gyroVelocity = event.velocity ?? null;
     this.gyroEventSerial += 1;
     if (this.protocolSelfTest.status === "collecting") {
-      const rotation = quaternionDelta(this.protocolSelfTestStartQuaternion, observation.quaternion);
+      const rotation = relativeBodyRotation(this.protocolSelfTestStartQuaternion, observation.quaternion);
       this.protocolSelfTest = {
         ...this.protocolSelfTest,
         gyroSampleCount: this.protocolSelfTest.gyroSampleCount + 1,
