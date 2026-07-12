@@ -62,7 +62,7 @@ export type Matrix3 = [
 // csTimer-compatible packet semantics and controlled GAN16ui rotations.
 // Canonical cube space is +X red, +Y white, +Z green.
 export const GAN_V4_BODY_TO_MODEL: Matrix3 = [[0, -1, 0], [0, 0, -1], [1, 0, 0]];
-export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "reference-current-inverse";
+export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "current-reference-inverse";
 export const GAN_V4_POSE_CONTRACT_VERSION = 1;
 
 export const GAN_V4_SENSOR_AXES: Record<"x" | "y" | "z", [number, number, number]> = {
@@ -76,7 +76,7 @@ export const DEFAULT_GYRO_CALIBRATION: GyroCalibration = {
   enabled: true,
   zero: null,
   bodyToModel: null,
-  relativeOrder: "reference-current-inverse",
+  relativeOrder: GAN_V4_RELATIVE_ORDER,
   meanPoseErrorDeg: null,
   offsetX: 0,
   offsetY: 0,

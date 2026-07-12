@@ -85,6 +85,8 @@ the last accepted canonical pose so the renderer cannot jump arbitrarily.
 The multiplication order is data, not an implementation detail. ROS tf2 also
 defines a relative rotation that takes `q1` to `q2` as
 `q_relative = q2 × inverse(q1)` and explicitly warns that order matters.
+GAN V4 uses that forward order: `current-reference-inverse`. Reversing it
+preserves the apparent axis but renders every whole-cube turn backward.
 
 ## 4. Calibration solver
 

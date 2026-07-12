@@ -74,7 +74,7 @@ bodyToModel =
 [ 0  0 -1 ]
 [ 1  0  0 ]
 
-relativeOrder = reference * inverse(current)
+relativeOrder = current * inverse(reference)
 ```
 
 应用连接 GAN V4 时必须覆盖历史本地 axis calibration，不能要求普通用户重复三轴采集。首个姿态帧经固定契约转换成绝对 `CubePose` 后建立 session anchor；anchor 只负责掉线/传感器重启后的连续性，不得把首帧强制归零成 identity。

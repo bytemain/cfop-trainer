@@ -1095,6 +1095,24 @@ class TrainerStore {
     this.persistDevicePreferences();
   }
 
+  refreshGanV4RuntimePoseContract(): void {
+    if (this.connectedProtocol !== "v4") return;
+    if (this.deviceCalibration.relativeOrder === GAN_V4_RELATIVE_ORDER) return;
+    this.deviceCalibration = {
+      schemaVersion: 3,
+      enabled: this.deviceCalibration.enabled,
+      bodyToModel: GAN_V4_BODY_TO_MODEL,
+      relativeOrder: GAN_V4_RELATIVE_ORDER,
+      meanPoseErrorDeg: null,
+      maxPoseErrorDeg: null,
+    };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+    this.persistDevicePreferences();
+    safeLogger.info("calibration", "gan-v4-runtime-pose-contract-refreshed", {
+      relativeOrder: GAN_V4_RELATIVE_ORDER,
+    });
+  }
+
   zeroGyro(): void {
     if (!this.gyroQuaternion) return;
     this.poseSession.manuallyAnchor(this.gyroQuaternion);
@@ -1602,7 +1620,7 @@ class TrainerStore {
           ...DEFAULT_DEVICE_CALIBRATION,
           enabled: profile.gyroCalibration.enabled ?? true,
           bodyToModel: profile.gyroCalibration.bodyToModel ?? null,
-          relativeOrder: profile.gyroCalibration.relativeOrder ?? "reference-current-inverse",
+          relativeOrder: profile.gyroCalibration.relativeOrder ?? GAN_V4_RELATIVE_ORDER,
           meanPoseErrorDeg: profile.gyroCalibration.meanPoseErrorDeg ?? null,
           maxPoseErrorDeg: profile.gyroCalibration.maxPoseErrorDeg ?? null,
         };
@@ -1770,6 +1788,7 @@ if (
 
 if (trainerGlobal.__cfopTrainerStore) {
   Object.setPrototypeOf(trainerGlobal.__cfopTrainerStore, TrainerStore.prototype);
+  trainerGlobal.__cfopTrainerStore.refreshGanV4RuntimePoseContract();
 }
 trainerGlobal.__cfopTrainerStoreSchema = TRAINER_STORE_SCHEMA;
 export const trainer = trainerGlobal.__cfopTrainerStore ??= new TrainerStore();

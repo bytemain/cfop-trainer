@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyMatrix3,
   cubePoseToCssMatrix,
   DEFAULT_GYRO_CALIBRATION,
   gyroCssTransform,
@@ -115,6 +116,25 @@ describe("GAN orientation mapping", () => {
     expect(values[0]).toBeGreaterThan(0.9);
     expect(Math.abs(values[1])).toBeLessThan(0.4);
     expect(Math.abs(values[2])).toBeLessThan(0.4);
+  });
+
+  it("preserves positive whole-cube rotation direction on all three canonical axes", () => {
+    const calibration = {
+      ...DEFAULT_GYRO_CALIBRATION,
+      zero: { x: 0, y: 0, z: 0, w: 1 },
+      bodyToModel: GAN_V4_BODY_TO_MODEL,
+      relativeOrder: GAN_V4_RELATIVE_ORDER,
+    };
+    const redAxis = gyroModelMatrix(quaternionFromAxisAngle("y", -30), calibration);
+    const whiteAxis = gyroModelMatrix(quaternionFromAxisAngle("z", -30), calibration);
+    const greenAxis = gyroModelMatrix(quaternionFromAxisAngle("x", 30), calibration);
+
+    // +X/red sends +Y/white toward +Z/green.
+    expect(applyMatrix3(redAxis!, [0, 1, 0])[2]).toBeCloseTo(0.5, 6);
+    // +Y/white sends +Z/green toward +X/red.
+    expect(applyMatrix3(whiteAxis!, [0, 0, 1])[0]).toBeCloseTo(0.5, 6);
+    // +Z/green sends +X/red toward +Y/white.
+    expect(applyMatrix3(greenAxis!, [1, 0, 0])[1]).toBeCloseTo(0.5, 6);
   });
 
   it("treats relative quaternion order as explicit calibration data", () => {
