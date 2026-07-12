@@ -37,7 +37,7 @@ describe("GAN V4 runtime protocol diagnostics", () => {
     expect(JSON.stringify(snapshot)).not.toContain("bytes");
   });
 
-  it("surfaces unknown modes, invalid frames and the GAN16 zero-counter quirk", () => {
+  it("surfaces unknown modes and invalid frames while counting the GAN16 zero-counter quirk", () => {
     const diagnostics = new GanV4ProtocolDiagnostics();
     diagnostics.observe(frame([0xaa, 0, ...new Array(18).fill(0)], "unknown", 1));
     diagnostics.observe({ ...frame([], "invalid", 2), layer: "encrypted" });
@@ -64,7 +64,7 @@ describe("GAN V4 runtime protocol diagnostics", () => {
     expect(snapshot.issues.map((issue) => issue.code)).toEqual(expect.arrayContaining([
       "unknown-mode-aa",
       "packet-decode-failed",
-      "snapshot-zero-counter",
     ]));
+    expect(snapshot.issues.map((issue) => issue.code)).not.toContain("snapshot-zero-counter");
   });
 });

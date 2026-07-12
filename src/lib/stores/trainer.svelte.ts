@@ -107,6 +107,7 @@ export interface ProtocolSelfTestState {
   observedMoves: string[];
   gyroSampleCount: number;
   maxGyroDeltaDeg: number;
+  captureAnchored: boolean;
   results: ProtocolValidationStepResult[];
 }
 
@@ -132,7 +133,7 @@ export const GAN_V4_VALIDATION_STEPS: ProtocolValidationStep[] = [
     id: `rotation-${axis}-${direction}`,
     kind: "whole-cube-rotation" as const,
     title: `整颗绕${colorAxis}轴 · ${turn} 90°`,
-    instruction: `不要拧任何单层。让${viewpoint}色中心朝向你，从${viewpoint}色面看，把整颗魔方${turn}旋转约 90°，然后确认本步。`,
+    instruction: `先让${viewpoint}色中心朝向你并保持不动，点击“以当前姿态为起点”；再从${viewpoint}色面看，把整颗魔方${turn}旋转约 90°。不要拧任何单层。`,
     expectedAxis: axis,
     expectedDirection: direction,
   })),
@@ -146,6 +147,7 @@ const EMPTY_PROTOCOL_SELF_TEST: ProtocolSelfTestState = {
   observedMoves: [],
   gyroSampleCount: 0,
   maxGyroDeltaDeg: 0,
+  captureAnchored: false,
   results: [],
 };
 
@@ -704,6 +706,11 @@ class TrainerStore {
     return GAN_V4_VALIDATION_STEPS[this.protocolSelfTest.stepIndex] ?? null;
   }
 
+  get currentProtocolValidationRotation(): ReturnType<typeof quaternionDelta> {
+    if (!this.protocolSelfTest.captureAnchored) return null;
+    return quaternionDelta(this.protocolSelfTestStartQuaternion, this.gyroQuaternion);
+  }
+
   async startProgressiveProtocolValidation(): Promise<void> {
     if (!this.session || this.connectedProtocol !== "v4") {
       this.protocolSelfTest = {
@@ -775,7 +782,8 @@ class TrainerStore {
     } else if (step.kind === "layer-move") {
       passed = observedMoves.length === 1 && observedMoves[0] === step.expectedMove;
     } else {
-      passed = observedMoves.length === 0 &&
+      passed = this.protocolSelfTest.captureAnchored &&
+        observedMoves.length === 0 &&
         Boolean(rotation) &&
         (rotation?.angleDeg ?? 0) >= 45 &&
         rotation?.dominantAxis === step.expectedAxis &&
@@ -840,6 +848,23 @@ class TrainerStore {
     this.protocolSelfTestBattery = null;
   }
 
+  anchorCurrentProtocolValidationStep(): void {
+    if (this.protocolSelfTest.status !== "collecting") return;
+    const step = this.currentProtocolValidationStep;
+    if (step?.kind !== "whole-cube-rotation" || !this.gyroQuaternion) return;
+    this.protocolSelfTestStartQuaternion = { ...this.gyroQuaternion };
+    this.protocolSelfTestStartSequence = this.cubeSequence;
+    this.protocolSelfTestStartDiagnostics = this.protocolInspector.current();
+    this.protocolSelfTest = {
+      ...this.protocolSelfTest,
+      observedMoves: [],
+      gyroSampleCount: 0,
+      maxGyroDeltaDeg: 0,
+      captureAnchored: true,
+      message: `起点已锁定。${step.instruction.split("；").slice(1).join("；")}`,
+    };
+  }
+
   protocolValidationReport(): Record<string, unknown> {
     const currentStep = this.currentProtocolValidationStep;
     const currentEndQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
@@ -888,7 +913,11 @@ class TrainerStore {
   }
 
   private beginProtocolValidationStep(): void {
-    this.protocolSelfTestStartQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
+    const step = this.currentProtocolValidationStep;
+    const captureAnchored = step?.kind !== "whole-cube-rotation";
+    this.protocolSelfTestStartQuaternion = captureAnchored && this.gyroQuaternion
+      ? { ...this.gyroQuaternion }
+      : null;
     this.protocolSelfTestStartSequence = this.cubeSequence;
     this.protocolSelfTestStartDiagnostics = this.protocolInspector.current();
     this.protocolSelfTestSnapshot = null;
@@ -898,6 +927,7 @@ class TrainerStore {
       observedMoves: [],
       gyroSampleCount: 0,
       maxGyroDeltaDeg: 0,
+      captureAnchored,
     };
   }
 
@@ -1194,7 +1224,7 @@ class TrainerStore {
     this.lastCubeSequence = event.sequence;
     this.cubeSequence = event.sequence;
     const move = normalizeMove(event.move);
-    if (this.protocolSelfTest.status === "collecting") {
+    if (this.protocolSelfTest.status === "collecting" && this.protocolSelfTest.captureAnchored) {
       this.protocolSelfTest = {
         ...this.protocolSelfTest,
         observedMoves: [...this.protocolSelfTest.observedMoves, move],

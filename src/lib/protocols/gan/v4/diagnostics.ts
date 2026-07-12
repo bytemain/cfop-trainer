@@ -131,12 +131,6 @@ export class GanV4ProtocolDiagnostics {
 
     if (packet.type === "snapshot" && packet.sequence === 0) {
       this.snapshot.snapshotZeroCounters += 1;
-      this.recordIssue(
-        "snapshot-zero-counter",
-        "warning",
-        "0xED 状态包返回 move counter 0；已禁止它重置实时 move baseline",
-        receivedAt,
-      );
       return;
     }
 

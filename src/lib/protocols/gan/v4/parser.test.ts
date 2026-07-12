@@ -58,6 +58,18 @@ describe("GAN V4 packet parser", () => {
     });
   });
 
+  it("keeps a valid snapshot when GAN16 reports a zero move counter", () => {
+    const snapshot = solvedSnapshotFixture();
+    snapshot[1] = 0x0e;
+    snapshot[2] = 0;
+    snapshot[3] = 0;
+    expect(parseGanV4Packet(snapshot)).toEqual({
+      type: "snapshot",
+      sequence: 0,
+      facelets: SOLVED_FACELETS,
+    });
+  });
+
   it("decodes move, timestamp, counter and battery fields", () => {
     const move = new Uint8Array(20);
     move.set([0x01, 0x0a, 0x78, 0x56, 0x34, 0x12, 0xcd, 0xab, 0x60]);

@@ -805,8 +805,18 @@
                 <article><span>Sequence</span><strong>{trainer.cubeSequence ?? "—"}</strong></article>
                 <article><span>陀螺仪采样</span><strong>{trainer.protocolSelfTest.gyroSampleCount}</strong></article>
                 <article><span>最大姿态变化</span><strong>{trainer.protocolSelfTest.maxGyroDeltaDeg.toFixed(1)}°</strong></article>
+                <article>
+                  <span>实时整颗旋转</span>
+                  <strong>
+                    {trainer.currentProtocolValidationRotation
+                      ? `${trainer.currentProtocolValidationRotation.dominantAxis.toUpperCase()} · ${trainer.currentProtocolValidationRotation.direction === "positive" ? "+" : "−"} · ${trainer.currentProtocolValidationRotation.angleDeg.toFixed(1)}°`
+                      : trainer.currentProtocolValidationStep?.kind === "whole-cube-rotation"
+                        ? "等待设定起点"
+                        : "—"}
+                  </strong>
+                </article>
                 <article><span>包总数</span><strong>{trainer.protocolDiagnostics.totalFrames}</strong></article>
-                <article><span>0xED counter=0</span><strong>{trainer.protocolDiagnostics.snapshotZeroCounters}</strong></article>
+                <article><span>0xED 固件兼容包</span><strong>{trainer.protocolDiagnostics.snapshotZeroCounters}</strong></article>
                 <article><span>Sequence gap</span><strong>{trainer.protocolDiagnostics.moveSequenceGaps}</strong></article>
                 <article><span>Unknown / invalid</span><strong>{trainer.protocolDiagnostics.unknownFrames} / {trainer.protocolDiagnostics.invalidFrames}</strong></article>
               </div>
@@ -834,9 +844,14 @@
 
               <div class="protocol-validation-actions">
                 {#if trainer.protocolSelfTest.status === "collecting"}
+                  {#if trainer.currentProtocolValidationStep?.kind === "whole-cube-rotation"}
+                    <button class="secondary-button" onclick={() => trainer.anchorCurrentProtocolValidationStep()}>
+                      {trainer.protocolSelfTest.captureAnchored ? "重新设定旋转起点" : "以当前姿态为起点"}
+                    </button>
+                  {/if}
                   <button class="text-button" onclick={() => trainer.skipProtocolValidationStep()}>跳过本步</button>
                   <button class="secondary-button" onclick={() => void completeProtocolValidationStep(true)}>标记不一致并保存 JSON</button>
-                  <button class="primary-button" onclick={() => void completeProtocolValidationStep()}><Check size={17} /> 完成本步并判断</button>
+                  <button class="primary-button" disabled={trainer.currentProtocolValidationStep?.kind === "whole-cube-rotation" && !trainer.protocolSelfTest.captureAnchored} onclick={() => void completeProtocolValidationStep()}><Check size={17} /> 完成本步并判断</button>
                 {/if}
                 <button class="secondary-button" onclick={() => void downloadProtocolValidationReport()}><Download size={17} /> 下载诊断 JSON</button>
                 <button class="text-button" onclick={() => trainer.resetProgressiveProtocolValidation()}>重新开始</button>
