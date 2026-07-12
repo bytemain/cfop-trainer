@@ -4,6 +4,7 @@
   import {
     Activity,
     BarChart3,
+    Battery,
     Bluetooth,
     BluetoothSearching,
     BookOpenCheck,
@@ -100,6 +101,26 @@
       (trainer.connection === "ready" || trainer.connection === "degraded")
       ? `已连接 ${trainer.connectedDeviceName}`
       : CONNECTION_LABELS[trainer.connection],
+  );
+  const batteryTone = $derived(
+    trainer.battery === null
+      ? "neutral"
+      : trainer.battery <= 5
+        ? "error"
+        : trainer.battery <= 20
+          ? "warning"
+          : "success",
+  );
+  const batteryLabel = $derived(
+    trainer.battery === null ? "电量 —" : `电量 ${trainer.battery}%`,
+  );
+  const poseStreamTone = $derived(poseStreamFresh ? "success" : "warning");
+  const poseStreamLabel = $derived(
+    poseStreamFresh
+      ? `姿态实时 · ${Math.round(poseStreamAgeMs)}ms`
+      : Number.isFinite(poseStreamAgeMs)
+        ? `姿态中断 · ${(poseStreamAgeMs / 1_000).toFixed(1)}s`
+        : "姿态等待",
   );
 
   const sessionLabel = $derived(
@@ -233,6 +254,22 @@
           <span>{connectionLabel}</span>
         </StatusPill>
       </button>
+      {#if trainer.connectedDeviceName}
+        <div class="top-telemetry" aria-label="魔方连接健康">
+          <StatusPill tone={batteryTone}>
+            <Battery size={15} />
+            <span class="telemetry-full">{batteryLabel}</span>
+            <span class="telemetry-compact">{trainer.battery === null ? "—" : `${trainer.battery}%`}</span>
+          </StatusPill>
+          {#if trainer.gyroCalibration.enabled}
+            <StatusPill tone={poseStreamTone}>
+              {#if poseStreamFresh}<Activity size={15} />{:else}<CircleAlert size={15} />{/if}
+              <span class="telemetry-full">{poseStreamLabel}</span>
+              <span class="telemetry-compact">{Number.isFinite(poseStreamAgeMs) ? (poseStreamFresh ? `${Math.round(poseStreamAgeMs)}ms` : `${(poseStreamAgeMs / 1_000).toFixed(1)}s`) : "—"}</span>
+            </StatusPill>
+          {/if}
+        </div>
+      {/if}
       <button class="icon-button" aria-label="重置当前训练" onclick={() => trainer.reset()}>
         <RotateCcw size={18} />
       </button>
@@ -300,17 +337,6 @@
               </aside>
             {/if}
           </div>
-
-          {#if trainer.connectedDeviceName && trainer.gyroCalibration.enabled}
-            <div class="pose-stream-status" class:live={poseStreamFresh} class:stale={!poseStreamFresh}>
-              <span></span>
-              {#if poseStreamFresh}
-                实时姿态跟随中 · 最近一帧 {Math.round(poseStreamAgeMs)} ms 前
-              {:else}
-                姿态流已过期 · {Number.isFinite(poseStreamAgeMs) ? `${(poseStreamAgeMs / 1_000).toFixed(1)} 秒未收到新帧` : "尚未收到姿态帧"}
-              {/if}
-            </div>
-          {/if}
 
           <div class="timer-panel">
             <TimerDisplay value={trainer.formatTime()} state={sessionLabel} />
@@ -795,6 +821,8 @@
   .brand strong { color: var(--color-on-top-bar); font-size: 0.95rem; letter-spacing: -0.02em; }
   .brand span:last-child { color: var(--color-on-top-bar-muted); font-size: 0.68rem; }
   .top-status { gap: 9px; }
+  .top-telemetry { display: flex; min-width: 0; align-items: center; gap: 7px; }
+  .telemetry-compact { display: none; }
   .top-connection {
     min-width: 0;
     padding: 0;
@@ -901,11 +929,6 @@
   .secondary-button:disabled { cursor: not-allowed; opacity: 0.42; }
   .section-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .quick-calibration-status { margin: -4px 0 4px; color: var(--color-primary); font-size: 0.72rem; text-align: center; }
-  .pose-stream-status { display: inline-flex; align-items: center; gap: 7px; margin: -7px 0 2px; padding: 7px 10px; border-radius: 999px; color: var(--color-text-muted); background: var(--color-surface-highest); font-size: 0.68rem; }
-  .pose-stream-status span { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-  .pose-stream-status.live { color: var(--color-success); }
-  .pose-stream-status.live span { box-shadow: 0 0 8px currentColor; }
-  .pose-stream-status.stale { color: var(--color-warning); }
   .quick-calibration-backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 20px; background: rgb(5 8 8 / 0.74); backdrop-filter: blur(10px); }
   .quick-calibration-dialog { display: grid; width: min(560px, 100%); max-height: calc(100vh - 40px); justify-items: center; gap: 13px; overflow: auto; padding: 24px; border: 1px solid var(--color-outline); border-radius: 22px; background: var(--color-surface); box-shadow: 0 28px 90px rgb(0 0 0 / 0.5); text-align: center; }
   .quick-calibration-dialog h2 { margin: 0; }
@@ -1223,7 +1246,12 @@
     .app-shell { display: block; padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
     .top-app-bar { height: 58px; padding-top: env(safe-area-inset-top); }
     .brand > div { display: none; }
-    .top-connection :global(.status-pill) { max-width: min(58vw, 220px); }
+    .top-status { gap: 5px; }
+    .top-connection :global(.status-pill) { max-width: min(34vw, 140px); }
+    .top-telemetry { gap: 4px; }
+    .top-telemetry :global(.status-pill) { padding-inline: 7px; }
+    .telemetry-full { display: none; }
+    .telemetry-compact { display: inline; }
     .navigation-rail { display: none; }
     .content { padding: 10px 10px 22px; }
     .calibration-heading { align-items: start; flex-direction: column; }

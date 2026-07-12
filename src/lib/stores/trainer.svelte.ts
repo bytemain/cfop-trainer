@@ -203,6 +203,7 @@ class TrainerStore {
   private solveStartedEstimatedHostTime: number | null = null;
   private latestCubeClockSample: CubeClockSample | null = null;
   private poseSession = new PoseSession(this.deviceCalibration, this.viewPreference);
+  private batteryRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     registerBuiltInGanProtocols();
@@ -349,9 +350,8 @@ class TrainerStore {
         });
       }
 
-      void this.session.batteryLevel().then((level) => {
-        this.battery = level ?? null;
-      }).catch(() => undefined);
+      void this.refreshBatteryLevel();
+      this.startBatteryPolling();
       void this.session.hardwareInfo().then((info) => {
         this.firmwareVersion = info?.softwareVersion ?? "unknown";
         this.hardwareVersion = info?.hardwareVersion ?? "unknown";
@@ -863,6 +863,7 @@ class TrainerStore {
   }
 
   private async closeRealSession(): Promise<void> {
+    this.stopBatteryPolling();
     await this.unsubscribeMoves?.().catch(() => undefined);
     this.unsubscribeMoves = null;
     await this.unsubscribeContinuity?.().catch(() => undefined);
@@ -891,6 +892,32 @@ class TrainerStore {
     this.poseSession.resetPhysicalSession();
     this.sessionAnchor = null;
     this.poseHealth = this.poseSession.currentHealth();
+  }
+
+  private async refreshBatteryLevel(): Promise<void> {
+    const session = this.session;
+    if (!session) return;
+    try {
+      const level = await session.batteryLevel();
+      if (session !== this.session || level == null) return;
+      this.battery = Math.max(0, Math.min(100, Math.round(level)));
+    } catch (error) {
+      safeLogger.warn("trainer", "battery-refresh-failed", {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private startBatteryPolling(): void {
+    this.stopBatteryPolling();
+    this.batteryRefreshTimer = setInterval(() => {
+      void this.refreshBatteryLevel();
+    }, 5 * 60_000);
+  }
+
+  private stopBatteryPolling(): void {
+    if (this.batteryRefreshTimer) clearInterval(this.batteryRefreshTimer);
+    this.batteryRefreshTimer = null;
   }
 
   private handleContinuity(event: CubeContinuityEvent): void {
