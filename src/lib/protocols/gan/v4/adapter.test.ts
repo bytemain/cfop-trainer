@@ -104,6 +104,44 @@ describe("GAN V4 session", () => {
     expect(connection.disconnect).toHaveBeenCalledOnce();
   });
 
+  it("emits the first real move when the initial snapshot and move both use sequence zero", async () => {
+    const device: DiscoveredDevice = {
+      id: "zero-counter-device",
+      name: "GAN16ui_ZERO_COUNTER",
+      serviceUuids: [],
+      manufacturerData: { 1: [9, 9, 9, 0, 1, 2, 3, 4, 5] },
+    };
+    const cipher = new GanV2Cipher(deriveGanV2CipherMaterial(extractGanHardwareAddress(device.manufacturerData)!));
+    let notify: ((data: Uint8Array) => void) | undefined;
+    const connection: BleConnection = {
+      device,
+      disconnect: vi.fn(async () => undefined),
+      read: vi.fn(async () => new Uint8Array()),
+      subscribe: vi.fn(async (_service, _characteristic, listener) => {
+        notify = listener;
+        return async () => undefined;
+      }),
+      write: vi.fn(async (_service, _characteristic, encrypted) => {
+        const request = cipher.decode(encrypted);
+        if (request[0] === 0xdd && request[3] === 0xed) {
+          queueMicrotask(() => notify?.(cipher.encode(solvedSnapshot(0))));
+        }
+      }),
+    };
+
+    const session = await new GanV4Protocol().open(connection);
+    await expect(session.initialSnapshot()).resolves.toMatchObject({ sequence: 0 });
+    const moves: CubeMoveEvent[] = [];
+    await session.moves((event) => moves.push(event));
+
+    notify?.(cipher.encode(movePacket(0, 0x20, 1234)));
+
+    expect(moves).toEqual([
+      expect.objectContaining({ move: "R", sequence: 0, cubeTimestamp: 1234, source: "live" }),
+    ]);
+    await session.disconnect();
+  });
+
   it("recovers a 16-bit live sequence gap from 8-bit V4 history before emitting", async () => {
     const device: DiscoveredDevice = {
       id: "history-device",

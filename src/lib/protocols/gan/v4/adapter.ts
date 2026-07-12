@@ -286,7 +286,13 @@ class GanV4Session implements SmartCubeSession {
       // reports move counter 0 in those packets. Only the explicitly requested
       // initial snapshot owns the first move baseline. Later state packets may
       // refresh facelets, but must never rewind the live move stream.
-      if (establishesInitialBaseline) this.establishMoveBaseline(snapshot.sequence ?? null);
+      if (establishesInitialBaseline && snapshot.sequence !== 0) {
+        this.establishMoveBaseline(snapshot.sequence ?? null);
+      } else if (establishesInitialBaseline) {
+        safeLogger.info("gan-v4", "move-baseline-deferred", {
+          reason: "initial-snapshot-zero-counter",
+        });
+      }
       this.resolveNext(this.pendingSnapshots, snapshot);
       return;
     }
@@ -349,6 +355,18 @@ class GanV4Session implements SmartCubeSession {
   }
 
   private enqueueMove(event: CubeMoveEvent): void {
+    if (this.lastEmittedSequence === null) {
+      // GAN16ui can return sequence 0 in the requested initial 0xED snapshot,
+      // then use sequence 0 again for the first real 0x01 move. A zero
+      // snapshot counter is therefore an unknown baseline, not an already
+      // emitted move. Bootstrap immediately before the first live sequence so
+      // that the first physical turn is emitted instead of deduplicated.
+      this.lastEmittedSequence = (event.sequence - 1) & 0xffff;
+      safeLogger.info("gan-v4", "move-baseline-bootstrapped", {
+        firstMoveSequence: event.sequence,
+        baseline: this.lastEmittedSequence,
+      });
+    }
     if (this.lastEmittedSequence !== null) {
       const distance = (event.sequence - this.lastEmittedSequence) & 0xffff;
       if (distance === 0 || distance >= 0x8000) return;
