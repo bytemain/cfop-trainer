@@ -89,6 +89,15 @@ describe("GAN V4 session", () => {
     expect(listener).toHaveBeenCalledWith(
       expect.objectContaining({ move: "R", sequence: 0x1235, cubeTimestamp: 0x12345678 }),
     );
+
+    // GAN16ui may broadcast a valid state packet with counter 0. It must not
+    // rewind an already established live move baseline.
+    notify?.(cipher.encode(solvedSnapshot(0)));
+    notify?.(cipher.encode(movePacket(0x1236, 0x08, 0x12345679)));
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({ move: "F", sequence: 0x1236, cubeTimestamp: 0x12345679 }),
+    );
+    expect(listener).toHaveBeenCalledTimes(2);
     await expect(session.batteryLevel()).resolves.toBe(76);
 
     await session.disconnect();

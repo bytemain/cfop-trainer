@@ -478,10 +478,11 @@ class TrainerStore {
     if (this.session) {
       try {
         const snapshot = await this.session.requestSnapshot();
-        this.markTimelineDiscontinuity("manual-or-protocol-resync", snapshot.sequence ?? null);
+        const activeSequence = this.lastCubeSequence ?? snapshot.sequence;
+        this.markTimelineDiscontinuity("manual-or-protocol-resync", activeSequence ?? null);
         this.cube = cubeStateFromFacelets(snapshot.facelets, this.faceColors);
-        this.lastCubeSequence = snapshot.sequence;
-        this.cubeSequence = snapshot.sequence ?? null;
+        this.lastCubeSequence = activeSequence;
+        this.cubeSequence = activeSequence ?? null;
       } catch (error) {
         this.connection = "degraded";
         this.connectionMessage = `重同步失败：${error instanceof Error ? error.message : String(error)}`;
@@ -511,13 +512,62 @@ class TrainerStore {
 
     this.stopTimer();
     this.stopDemoPlayback();
-    // The user explicitly confirms that the physical cube is solved. That is
-    // stronger evidence than GAN V4's snapshot response, which can be stale or
-    // carry sequence 0 on GAN16ui. Keep the latest observed protocol sequence
-    // so subsequent moves continue from the current stream, but rebuild cubies
-    // from the solved state.
-    this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
+    this.connection = "synchronizing";
+    this.connectionMessage = "正在从 GAN 读取当前完整六面…";
+    safeLogger.info("trainer", "manual-state-sync-start", {
+      name: this.connectedDeviceName,
+      activeSequence: this.lastCubeSequence,
+    });
+
+    try {
+      const snapshot = await withTimeout(
+        this.session.requestSnapshot(),
+        12_000,
+        "读取当前完整六面超时",
+      );
+      const activeSequence = this.lastCubeSequence ?? snapshot.sequence;
+      this.applyCubeStateBaseline(cubeStateFromFacelets(snapshot.facelets, this.faceColors));
+      this.lastCubeSequence = activeSequence;
+      this.cubeSequence = activeSequence ?? null;
+      this.connection = "ready";
+      this.connectionMessage = `${this.connectedDeviceName} 的当前六面已同步。`;
+      safeLogger.info("trainer", "manual-state-sync-complete", {
+        name: this.connectedDeviceName,
+        snapshotSequence: snapshot.sequence ?? null,
+        activeSequence: activeSequence ?? null,
+      });
+      return true;
+    } catch (error) {
+      this.connection = "degraded";
+      this.connectionMessage = `当前六面同步失败：${error instanceof Error ? error.message : String(error)}`;
+      safeLogger.warn("trainer", "manual-state-sync-failed", {
+        name: this.connectedDeviceName,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
+  assumeSolvedCubeState(): boolean {
+    if (!this.session || !this.connectedDeviceName) {
+      this.connectionMessage = "请先连接实体魔方，再设置还原状态。";
+      return false;
+    }
+    this.applyCubeStateBaseline(cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors));
     this.cubeSequence = this.lastCubeSequence ?? null;
+    this.connection = "ready";
+    this.connectionMessage = `${this.connectedDeviceName} 已按用户确认设置为还原态。`;
+    safeLogger.info("trainer", "manual-solved-baseline-applied", {
+      name: this.connectedDeviceName,
+      sequence: this.lastCubeSequence,
+    });
+    return true;
+  }
+
+  private applyCubeStateBaseline(cube: CubeState): void {
+    this.stopTimer();
+    this.stopDemoPlayback();
+    this.cube = cube;
     this.scramble = [];
     this.scrambleIndex = 0;
     this.solveMoves = [];
@@ -529,13 +579,6 @@ class TrainerStore {
     this.hadDesync = false;
     this.resetSolveTimeline();
     this.send({ type: "RESET" });
-    this.connection = "ready";
-    this.connectionMessage = `${this.connectedDeviceName} 已以实体还原状态建立新基准。`;
-    safeLogger.info("trainer", "manual-solved-baseline-applied", {
-      name: this.connectedDeviceName,
-      sequence: this.lastCubeSequence,
-    });
-    return true;
   }
 
   reset(): void {
@@ -924,8 +967,11 @@ class TrainerStore {
     );
     if (event.snapshot) {
       this.cube = cubeStateFromFacelets(event.snapshot.facelets, this.faceColors);
-      this.lastCubeSequence = event.snapshot.sequence;
-      this.cubeSequence = event.snapshot.sequence ?? null;
+      const activeSequence = event.snapshot.sequence === 0 && event.targetSequence !== 0
+        ? event.targetSequence
+        : event.snapshot.sequence ?? event.targetSequence;
+      this.lastCubeSequence = activeSequence;
+      this.cubeSequence = activeSequence ?? null;
     }
     this.stopTimer();
     if (["scrambling", "ready", "running"].includes(this.sessionState)) {

@@ -258,13 +258,23 @@ class GanV4Session implements SmartCubeSession {
 
   private dispatch(packet: GanV4Packet): void {
     if (packet.type === "snapshot") {
-      safeLogger.info("gan-v4", "snapshot-received", { sequence: packet.sequence });
+      const requested = this.pendingSnapshots.length > 0;
+      const establishesInitialBaseline = requested && this.lastEmittedSequence === null;
+      safeLogger.info("gan-v4", "snapshot-received", {
+        sequence: packet.sequence,
+        requested,
+        establishesInitialBaseline,
+      });
       const snapshot: CubeSnapshot = {
         facelets: packet.facelets,
         sequence: packet.sequence,
         receivedAt: Date.now(),
       };
-      this.establishMoveBaseline(snapshot.sequence ?? null);
+      // GAN16ui broadcasts 0xED state packets periodically, and some firmware
+      // reports move counter 0 in those packets. Only the explicitly requested
+      // initial snapshot owns the first move baseline. Later state packets may
+      // refresh facelets, but must never rewind the live move stream.
+      if (establishesInitialBaseline) this.establishMoveBaseline(snapshot.sequence ?? null);
       this.resolveNext(this.pendingSnapshots, snapshot);
       return;
     }
@@ -423,7 +433,10 @@ class GanV4Session implements SmartCubeSession {
     try {
       const snapshot = await this.requestSnapshot();
       this.moveBuffer.clear();
-      this.establishMoveBaseline(snapshot.sequence ?? targetSequence);
+      const snapshotBaseline = snapshot.sequence === 0 && targetSequence !== 0
+        ? targetSequence
+        : snapshot.sequence ?? targetSequence;
+      this.establishMoveBaseline(snapshotBaseline);
       this.emitContinuity({
         type: "discontinuity",
         previousSequence,

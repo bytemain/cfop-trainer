@@ -202,9 +202,22 @@
     const stateSynced = await trainer.resetAndSyncCubeState();
     quickCalibrationSyncing = false;
     quickCalibrationStatus = stateSynced
-      ? "魔方已完成姿态校准，并以实体还原状态重建色块基准。"
-      : "姿态已校准，但色块基准重建失败，请保持连接后重试。";
+      ? "魔方已完成姿态校准，并从 GAN 同步当前完整六面。"
+      : "姿态已校准，但当前六面读取失败，请保持连接后重试。";
     if (stateSynced) quickCalibrationOpen = false;
+  }
+
+  function confirmQuickSolvedCalibration(): void {
+    if (!quickCalibrationReady || quickCalibrationSyncing) return;
+    if (!trainer.quickCalibrateWhiteUpGreenFront()) {
+      quickCalibrationStatus = "姿态校准失败，请确认魔方已连接、稳定且陀螺仪跟随已开启。";
+      return;
+    }
+    const solvedApplied = trainer.assumeSolvedCubeState();
+    quickCalibrationStatus = solvedApplied
+      ? "魔方已完成姿态校准，并按你的确认设置为还原态。"
+      : "姿态已校准，但还原态设置失败，请保持连接后重试。";
+    if (solvedApplied) quickCalibrationOpen = false;
   }
 
   onMount(() => {
@@ -570,17 +583,24 @@
 
         <div class="state-sync-panel">
           <div>
-            <strong>重置魔方状态</strong>
-            <small>实体魔方还原后，以用户确认的还原态建立新基准，并清空当前训练进度。</small>
+            <strong>同步魔方状态</strong>
+            <small>默认从 GAN 读取当前任意乱序的完整六面；只有实体确实还原时才使用“设为还原态”。</small>
           </div>
-          <button
-            class="primary-button"
-            disabled={!trainer.connectedDeviceName || trainer.connection === "synchronizing"}
-            onclick={() => void trainer.resetAndSyncCubeState()}
-          >
-            <RefreshCcw size={17} />
-            {trainer.connection === "synchronizing" ? "正在同步" : "重置并同步状态"}
-          </button>
+          <div class="state-sync-actions">
+            <button
+              class="primary-button"
+              disabled={!trainer.connectedDeviceName || trainer.connection === "synchronizing"}
+              onclick={() => void trainer.resetAndSyncCubeState()}
+            >
+              <RefreshCcw size={17} />
+              {trainer.connection === "synchronizing" ? "正在读取六面" : "同步当前六面"}
+            </button>
+            <button
+              class="secondary-button"
+              disabled={!trainer.connectedDeviceName || trainer.connection === "synchronizing"}
+              onclick={() => trainer.assumeSolvedCubeState()}
+            >实体已还原</button>
+          </div>
         </div>
 
         <div class="state-sync-panel signal-lab-entry">
@@ -757,18 +777,18 @@
       <div class="quick-calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-calibration-title">
         <span class="eyebrow">Pose + cube state</span>
         <h2 id="quick-calibration-title">快速校准魔方</h2>
-        <p>先把实体魔方完全还原，再稳定放在桌面上：白色中心朝上、绿色中心朝向你、红色自然位于右侧。确认后会同时校准本次会话姿态，并把用户确认的还原态作为虚拟魔方色块基准。</p>
+        <p>实体魔方不需要还原。把它稳定放在桌面上：白色中心朝上、绿色中心朝向你、红色自然位于右侧。确认后会校准本次会话姿态，并从 GAN 读取当前任意乱序的完整六面。</p>
         <CalibrationGuide3D mode="static" top="white" front="green" />
         <div class="quick-calibration-readiness" class:ready={quickCalibrationReady}>
           {#if quickCalibrationReady}
-            <Check size={17} /> 姿态流实时且魔方已稳定，可以同步姿态与还原状态
+            <Check size={17} /> 姿态流实时且魔方已稳定，可以校准姿态并读取当前六面
           {:else if !poseStreamFresh}
             <CircleAlert size={17} /> 姿态流已过期，请先转动唤醒魔方；仍无数据时重新连接
           {:else}
             <Activity size={17} /> 请保持魔方静止，当前帧变化 {trainer.poseHealth.lastStepDeg?.toFixed(2) ?? "—"}°
           {/if}
         </div>
-        <small>此操作会清空当前训练进度，直接以你确认的实体还原态重建虚拟色块；不会再被可能陈旧的 GAN 快照覆盖。设备轴映射仍由完整 Pose Graph 标定负责。</small>
+        <small>默认动作会读取 GAN 的 0xED 当前状态包；只有你确定实体魔方已经完全还原时，才使用下方“实体已还原”备用动作。设备轴映射仍由完整 Pose Graph 标定负责。</small>
         <div class="quick-calibration-actions">
           <button class="secondary-button" onclick={() => (quickCalibrationOpen = false)}>取消</button>
           {#if !poseStreamFresh}
@@ -777,8 +797,11 @@
               openCubeConnection();
             }}><BluetoothSearching size={17} /> 打开连接面板</button>
           {/if}
+          <button class="secondary-button" disabled={!quickCalibrationReady || quickCalibrationSyncing} onclick={confirmQuickSolvedCalibration}>
+            实体已还原
+          </button>
           <button class="primary-button" disabled={!quickCalibrationReady || quickCalibrationSyncing} onclick={() => void confirmQuickCalibration()}>
-            <Check size={17} /> {quickCalibrationSyncing ? "正在同步状态" : "校准并同步"}
+            <Check size={17} /> {quickCalibrationSyncing ? "正在读取当前六面" : "校准并读取当前六面"}
           </button>
         </div>
       </div>
@@ -1156,6 +1179,7 @@
     background: var(--color-surface-high);
   }
   .state-sync-panel > div { display: grid; gap: 4px; }
+  .state-sync-panel > .state-sync-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .state-sync-panel strong { color: var(--color-text); font-size: 0.86rem; }
   .state-sync-panel small { color: var(--color-text-muted); font-size: 0.7rem; line-height: 1.45; }
   .state-sync-panel .primary-button { flex: 0 0 auto; }
@@ -1275,6 +1299,7 @@
     .content { padding: 10px 10px 22px; }
     .calibration-heading { align-items: start; flex-direction: column; }
     .state-sync-panel { align-items: stretch; flex-direction: column; }
+    .state-sync-panel > .state-sync-actions { align-items: stretch; flex-direction: column; }
     .saved-profile-panel { align-items: stretch; flex-direction: column; }
     .saved-profile-panel .profile-actions { align-items: stretch; flex-direction: column; }
     .saved-profile-panel .profile-actions small { max-width: none; text-align: left; }
