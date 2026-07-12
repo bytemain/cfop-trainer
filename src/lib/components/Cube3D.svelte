@@ -216,6 +216,21 @@
     requestRender();
   }
 
+  function syncViewMode(): void {
+    if (interactive) {
+      resetView();
+      return;
+    }
+    // In physical-follow mode the camera frame must be neutral. The poseGroup
+    // already contains the complete GAN-derived cube pose; retaining the
+    // manual browser's isometric 24°/34° view would visually tilt every valid
+    // physical orientation a second time.
+    viewQuaternion.identity();
+    viewGroup?.quaternion.copy(viewQuaternion);
+    syncViewAttribute();
+    requestRender();
+  }
+
   function syncViewAttribute(): void {
     canvas?.setAttribute(
       "data-view-quaternion",
@@ -283,6 +298,11 @@
     updatePose();
   });
 
+  $effect(() => {
+    interactive;
+    syncViewMode();
+  });
+
   onMount(() => {
     renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });
     renderer.outputColorSpace = SRGBColorSpace;
@@ -315,7 +335,7 @@
     shadow.position.y = -2.12;
     rendererScene.add(shadow);
 
-    resetView();
+    syncViewMode();
     updateStickerColors();
     updatePose();
     resizeObserver = new ResizeObserver(([entry]) => {
@@ -372,7 +392,7 @@
       ondblclick={() => interactive && resetView()}
     ></canvas>
   </div>
-  <p>{interactive ? "GPU WebGL 全向视图 · 拖动观察 · 双击 / Home 复位" : "GPU WebGL 实时姿态 · 手动拖动已禁用"}</p>
+  <p>{interactive ? "GPU WebGL 全向视图 · 拖动观察 · 双击 / Home 复位" : "GPU WebGL 实时姿态 · 正对相机 · 手动拖动已禁用"}</p>
 </div>
 
 <style>
