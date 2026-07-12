@@ -503,10 +503,10 @@ class TrainerStore {
       : "演示状态已复位。";
   }
 
-  async resetAndSyncCubeState(): Promise<void> {
+  async resetAndSyncCubeState(): Promise<boolean> {
     if (!this.session || !this.connectedDeviceName) {
       this.connectionMessage = "请先连接实体魔方，再重置并同步状态。";
-      return;
+      return false;
     }
 
     this.stopTimer();
@@ -543,6 +543,7 @@ class TrainerStore {
         name: this.connectedDeviceName,
         sequence: snapshot.sequence ?? null,
       });
+      return true;
     } catch (error) {
       this.connection = "degraded";
       this.connectionMessage = `状态同步失败：${error instanceof Error ? error.message : String(error)}`;
@@ -550,6 +551,7 @@ class TrainerStore {
         name: this.connectedDeviceName,
         reason: error instanceof Error ? error.message : String(error),
       });
+      return false;
     }
   }
 

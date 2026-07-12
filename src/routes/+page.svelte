@@ -53,6 +53,7 @@
   let signalReprocessStatus = $state("");
   let quickCalibrationOpen = $state(false);
   let quickCalibrationStatus = $state("");
+  let quickCalibrationSyncing = $state(false);
   let poseClockNow = $state(Date.now());
   const replayCube = $derived(trainer.reconstruction.replayStates[replayIndex] ?? trainer.cube);
   const poseStreamAgeMs = $derived(
@@ -115,12 +116,13 @@
     trainer.battery === null ? "电量 —" : `电量 ${trainer.battery}%`,
   );
   const poseStreamTone = $derived(poseStreamFresh ? "success" : "warning");
-  const poseStreamLabel = $derived(
-    poseStreamFresh
-      ? `姿态实时 · ${Math.round(poseStreamAgeMs)}ms`
-      : Number.isFinite(poseStreamAgeMs)
-        ? `姿态中断 · ${(poseStreamAgeMs / 1_000).toFixed(1)}s`
-        : "姿态等待",
+  const poseStreamLatencyLabel = $derived(
+    `${Math.min(999, Math.max(0, Math.round(poseStreamAgeMs)))}ms`,
+  );
+  const poseStreamStaleLabel = $derived(
+    Number.isFinite(poseStreamAgeMs)
+      ? `姿态中断 · ${(poseStreamAgeMs / 1_000).toFixed(1)}s`
+      : "姿态等待",
   );
 
   const sessionLabel = $derived(
@@ -188,12 +190,21 @@
       : "现有档案仍不足以得到可靠模型，请进入采集实验室补充姿态。";
   }
 
-  function confirmQuickCalibration(): void {
-    if (!quickCalibrationReady) return;
-    quickCalibrationStatus = trainer.quickCalibrateWhiteUpGreenFront()
-      ? "当前会话已校准为白上绿前，手动视角偏移已清除。"
-      : "快速校准失败，请确认魔方已连接且陀螺仪跟随已开启。";
-    if (quickCalibrationStatus.startsWith("当前会话")) quickCalibrationOpen = false;
+  async function confirmQuickCalibration(): Promise<void> {
+    if (!quickCalibrationReady || quickCalibrationSyncing) return;
+    quickCalibrationSyncing = true;
+    if (!trainer.quickCalibrateWhiteUpGreenFront()) {
+      quickCalibrationStatus = "姿态校准失败，请确认魔方已连接、稳定且陀螺仪跟随已开启。";
+      quickCalibrationSyncing = false;
+      return;
+    }
+
+    const stateSynced = await trainer.resetAndSyncCubeState();
+    quickCalibrationSyncing = false;
+    quickCalibrationStatus = stateSynced
+      ? "魔方已完成姿态校准与块状态同步。"
+      : "姿态已校准，但块状态同步失败，请保持连接后重试。";
+    if (stateSynced) quickCalibrationOpen = false;
   }
 
   onMount(() => {
@@ -264,8 +275,13 @@
           {#if trainer.gyroCalibration.enabled}
             <StatusPill tone={poseStreamTone}>
               {#if poseStreamFresh}<Activity size={15} />{:else}<CircleAlert size={15} />{/if}
-              <span class="telemetry-full">{poseStreamLabel}</span>
-              <span class="telemetry-compact">{Number.isFinite(poseStreamAgeMs) ? (poseStreamFresh ? `${Math.round(poseStreamAgeMs)}ms` : `${(poseStreamAgeMs / 1_000).toFixed(1)}s`) : "—"}</span>
+              {#if poseStreamFresh}
+                <span class="telemetry-full">姿态实时 · <span class="pose-latency">{poseStreamLatencyLabel}</span></span>
+                <span class="telemetry-compact pose-latency">{poseStreamLatencyLabel}</span>
+              {:else}
+                <span class="telemetry-full">{poseStreamStaleLabel}</span>
+                <span class="telemetry-compact">{Number.isFinite(poseStreamAgeMs) ? `${(poseStreamAgeMs / 1_000).toFixed(1)}s` : "—"}</span>
+              {/if}
             </StatusPill>
           {/if}
         </div>
@@ -312,7 +328,7 @@
                   quickCalibrationStatus = "";
                   quickCalibrationOpen = true;
                 }}
-              ><RefreshCcw size={16} /> 快速姿态校准</button>
+              ><RefreshCcw size={16} /> 快速校准魔方</button>
               <button
                 class="secondary-button"
                 aria-label="切换 2D 辅助视图"
@@ -739,20 +755,20 @@
       }}
     >
       <div class="quick-calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-calibration-title">
-        <span class="eyebrow">Session anchor</span>
-        <h2 id="quick-calibration-title">快速姿态校准</h2>
-        <p>把实体魔方稳定放在桌面上：白色中心朝上、绿色中心朝向你、红色自然位于右侧。保持约 1 秒，稳定后把当前传感器姿态定义为本次会话的白上绿前。</p>
+        <span class="eyebrow">Pose + cube state</span>
+        <h2 id="quick-calibration-title">快速校准魔方</h2>
+        <p>先把实体魔方完全还原，再稳定放在桌面上：白色中心朝上、绿色中心朝向你、红色自然位于右侧。确认后会同时校准本次会话姿态，并读取六面块状态同步到虚拟魔方。</p>
         <CalibrationGuide3D mode="static" top="white" front="green" />
         <div class="quick-calibration-readiness" class:ready={quickCalibrationReady}>
           {#if quickCalibrationReady}
-            <Check size={17} /> 姿态流实时且魔方已稳定，可以校准
+            <Check size={17} /> 姿态流实时且魔方已稳定，可以同步姿态与块状态
           {:else if !poseStreamFresh}
             <CircleAlert size={17} /> 姿态流已过期，请先转动唤醒魔方；仍无数据时重新连接
           {:else}
             <Activity size={17} /> 请保持魔方静止，当前帧变化 {trainer.poseHealth.lastStepDeg?.toFixed(2) ?? "—"}°
           {/if}
         </div>
-        <small>快速校准只重建当前会话姿态基准，不修改贴纸状态，也不替代完整 Pose Graph 设备标定。</small>
+        <small>此操作会清空当前训练进度，并以实体魔方的完整六面快照重建虚拟块状态；设备轴映射仍由完整 Pose Graph 标定负责。</small>
         <div class="quick-calibration-actions">
           <button class="secondary-button" onclick={() => (quickCalibrationOpen = false)}>取消</button>
           {#if !poseStreamFresh}
@@ -761,8 +777,8 @@
               openCubeConnection();
             }}><BluetoothSearching size={17} /> 打开连接面板</button>
           {/if}
-          <button class="primary-button" disabled={!quickCalibrationReady} onclick={confirmQuickCalibration}>
-            <Check size={17} /> 确认白上绿前
+          <button class="primary-button" disabled={!quickCalibrationReady || quickCalibrationSyncing} onclick={() => void confirmQuickCalibration()}>
+            <Check size={17} /> {quickCalibrationSyncing ? "正在同步状态" : "校准并同步"}
           </button>
         </div>
       </div>
@@ -823,6 +839,7 @@
   .top-status { gap: 9px; }
   .top-telemetry { display: flex; min-width: 0; align-items: center; gap: 7px; }
   .telemetry-compact { display: none; }
+  .pose-latency { display: inline-block; width: 5ch; font-variant-numeric: tabular-nums; text-align: right; }
   .top-connection {
     min-width: 0;
     padding: 0;

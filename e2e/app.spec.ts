@@ -98,7 +98,7 @@ test("opens device selection in a modal dialog", async ({ page }) => {
 test("switches to an interactive 3D cube", async ({ page }) => {
   const cube3d = page.getByRole("button", { name: /当前魔方 3D 视图/ });
   await expect(cube3d).toBeVisible();
-  await expect(page.getByRole("button", { name: "快速姿态校准" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "快速校准魔方" })).toBeDisabled();
   const overlayToggle = page.getByRole("button", { name: "切换 2D 辅助视图" });
   await expect(overlayToggle).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByLabel("3D 视图的 2D 辅助图")).toBeVisible();
