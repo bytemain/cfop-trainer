@@ -63,6 +63,17 @@ export interface DynamicAxisCapture {
   confidence: number;
   signalSource: "angular-velocity" | "quaternion-delta";
   quaternionDeltaOrder?: "previous-inverse-current" | "current-previous-inverse";
+  startPose?: StaticPoseCapture;
+  endPose?: StaticPoseCapture;
+  expectedEnd?: { top: CubeColor; front: CubeColor };
+  layerMovesObserved?: string[];
+}
+
+export interface PoseGraphClosureCapture {
+  poseKey: string;
+  observationCount: number;
+  maxAbsoluteErrorDeg: number;
+  passed: boolean;
 }
 
 export interface MoveValidationCapture {
@@ -95,7 +106,7 @@ export interface SignalCalibrationProfile {
     protocol: GanProtocolVersion;
     firmwareVersion: string;
     hardwareVersion: string;
-    calibrationSchema: "cube-pose-v3";
+    calibrationSchema: "cube-pose-v4-pose-graph";
   };
   staticPoses: StaticPoseCapture[];
   dynamicAxes: DynamicAxisCapture[];
@@ -111,6 +122,12 @@ export interface SignalCalibrationProfile {
     maxPoseErrorDeg: number;
     poseResiduals: DerivedGyroCalibration["poseResiduals"];
     rejectedPoseKeys: string[];
+  };
+  poseGraph?: {
+    nodeCount: number;
+    edgeCount: number;
+    coveredTopColors: CubeColor[];
+    closures: PoseGraphClosureCapture[];
   };
   privacy: {
     rawBlePersisted: false;
@@ -453,6 +470,26 @@ export function quaternionAngularDistanceDeg(
   return (2 * Math.acos(dot) * 180) / Math.PI;
 }
 
+export function validatePoseGraphEdgeEndpoint(input: {
+  startPose: StaticPoseCapture;
+  endPose: StaticPoseCapture;
+  targetAngleDeg: 90 | 180;
+  layerMovesObserved: readonly string[];
+}): { endpointAngleDeg: number; toleranceDeg: number } {
+  if (input.layerMovesObserved.length > 0) {
+    throw new Error(`检测到层转 ${input.layerMovesObserved.join(" ")}；这条边已污染，请停止并重采，不要拧任何单独一层`);
+  }
+  const endpointAngleDeg = quaternionAngularDistanceDeg(
+    input.startPose.average,
+    input.endPose.average,
+  );
+  const toleranceDeg = input.targetAngleDeg === 180 ? 25 : 18;
+  if (Math.abs(endpointAngleDeg - input.targetAngleDeg) > toleranceDeg) {
+    throw new Error(`终点与目标 ${input.targetAngleDeg}° 相差过大（当前 ${endpointAngleDeg.toFixed(1)}°）；请继续调整到示意终点并停稳`);
+  }
+  return { endpointAngleDeg, toleranceDeg };
+}
+
 export function summarizeStaticPose(
   top: CubeColor,
   front: CubeColor,
@@ -774,6 +811,33 @@ export function createSignalCalibrationProfile(input: {
     staticPoses: input.staticPoses,
     dynamicAxes: input.dynamicAxes,
   });
+  const poseObservations = new Map<string, StaticPoseCapture[]>();
+  for (const capture of input.dynamicAxes) {
+    for (const pose of [capture.startPose, capture.endPose]) {
+      if (!pose) continue;
+      const key = `${pose.top}/${pose.front}`;
+      poseObservations.set(key, [...(poseObservations.get(key) ?? []), pose]);
+    }
+  }
+  const closures: PoseGraphClosureCapture[] = [...poseObservations.entries()]
+    .filter(([, observations]) => observations.length > 1)
+    .map(([poseKey, observations]) => {
+      let maxAbsoluteErrorDeg = 0;
+      for (let left = 0; left < observations.length; left += 1) {
+        for (let right = left + 1; right < observations.length; right += 1) {
+          maxAbsoluteErrorDeg = Math.max(
+            maxAbsoluteErrorDeg,
+            quaternionAngularDistanceDeg(observations[left].average, observations[right].average),
+          );
+        }
+      }
+      return {
+        poseKey,
+        observationCount: observations.length,
+        maxAbsoluteErrorDeg: Number(maxAbsoluteErrorDeg.toFixed(3)),
+        passed: maxAbsoluteErrorDeg <= 15,
+      };
+    });
   return {
     schemaVersion: 2,
     profileKind: "smart-cube-signal-calibration",
@@ -785,7 +849,7 @@ export function createSignalCalibrationProfile(input: {
       protocol: input.protocol,
       firmwareVersion: input.firmwareVersion ?? "unknown",
       hardwareVersion: input.hardwareVersion ?? "unknown",
-      calibrationSchema: "cube-pose-v3",
+      calibrationSchema: "cube-pose-v4-pose-graph",
     },
     staticPoses: input.staticPoses,
     dynamicAxes: input.dynamicAxes,
@@ -802,6 +866,12 @@ export function createSignalCalibrationProfile(input: {
       poseResiduals: calibration.poseResiduals,
       rejectedPoseKeys: calibration.rejectedPoseKeys,
     } : undefined,
+    poseGraph: {
+      nodeCount: input.staticPoses.length,
+      edgeCount: input.dynamicAxes.filter((capture) => capture.startPose && capture.endPose).length,
+      coveredTopColors: [...new Set(input.staticPoses.map((capture) => capture.top))].sort(),
+      closures,
+    },
     privacy: {
       rawBlePersisted: false,
       rawQuaternionStreamPersisted: false,

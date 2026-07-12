@@ -31,6 +31,7 @@
     summarizeStaticPose,
     capturedProtocolAxisVector,
     quaternionAxisTiltDeg,
+    validatePoseGraphEdgeEndpoint,
     type CubeColor,
     type DynamicAxisCapture,
     type CompoundMotionValidationCapture,
@@ -41,6 +42,7 @@
     type InMemorySignalFrame,
   } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
+  import { createDynamicGuideModel } from "$lib/calibration/calibrationGuide";
 
   let {
     deviceModel,
@@ -90,26 +92,11 @@
   const colorLabels: Record<CubeColor, string> = {
     white: "白色", yellow: "黄色", red: "红色", orange: "橙色", green: "绿色", blue: "蓝色",
   };
-  const oppositeColor: Record<CubeColor, CubeColor> = {
-    white: "yellow", yellow: "white", red: "orange", orange: "red", green: "blue", blue: "green",
-  };
-  const frontOrder: Record<CubeColor, CubeColor[]> = {
-    white: ["green", "red", "blue", "orange"],
-    yellow: ["blue", "red", "green", "orange"],
-    red: ["white", "green", "yellow", "blue"],
-    orange: ["white", "blue", "yellow", "green"],
-    green: ["white", "orange", "yellow", "red"],
-    blue: ["white", "red", "yellow", "orange"],
-  };
-  const staticSteps: Array<{ top: CubeColor; front: CubeColor; title: string }> =
-    (["white", "yellow", "red", "orange", "green", "blue"] as CubeColor[])
-      .flatMap((top) => frontOrder[top]
-        .filter((front) => front !== top && front !== oppositeColor[top])
-        .map((front) => ({
-          top,
-          front,
-          title: `${colorLabels[top]}朝上 · ${colorLabels[front]}朝前`,
-        })));
+  const staticSteps: Array<{ top: CubeColor; front: CubeColor; title: string }> = [{
+    top: "white",
+    front: "green",
+    title: "白色朝上 · 绿色朝前",
+  }];
   const dynamicSteps: Array<{
     physicalAxis: DynamicAxisCapture["physicalAxis"];
     positiveFace: CubeColor;
@@ -118,8 +105,11 @@
     title: string;
   }> = ([
     { physicalAxis: "red-orange", positiveFace: "red", axisLabel: "红—橙" },
+    { physicalAxis: "red-orange", positiveFace: "orange", axisLabel: "橙—红" },
     { physicalAxis: "blue-green", positiveFace: "blue", axisLabel: "蓝—绿" },
+    { physicalAxis: "blue-green", positiveFace: "green", axisLabel: "绿—蓝" },
     { physicalAxis: "white-yellow", positiveFace: "white", axisLabel: "白—黄" },
+    { physicalAxis: "white-yellow", positiveFace: "yellow", axisLabel: "黄—白" },
   ] as const).flatMap((axis) => [
     { ...axis, motionDirection: "clockwise" as const, targetAngleDeg: 90 as const, title: `${colorLabels[axis.positiveFace]}朝上 · 顺时针 90°` },
     { ...axis, motionDirection: "counterclockwise" as const, targetAngleDeg: 90 as const, title: `${colorLabels[axis.positiveFace]}朝上 · 逆时针 90°` },
@@ -147,6 +137,8 @@
   let detectedRotationDeg = $state(0);
   let dynamicLayerMoves = $state<string[]>([]);
   let dynamicStartedAt = $state<number | null>(null);
+  let dynamicStartPose = $state<StaticPoseCapture | null>(null);
+  let initialAnchorCapture = $state<StaticPoseCapture | null>(null);
   let liveOrientationRows = $state<LiveOrientationRow[]>([]);
   let diagnosticJson = $state("");
   let diagnosticCopyStatus = $state("");
@@ -163,6 +155,7 @@
   let recentSignalFrames: InMemorySignalFrame[] = [];
   let diagnosticSignalFrames: InMemorySignalFrame[] = [];
   let staticSignalGroups: InMemorySignalFrame[][] = [];
+  let staticFramesByPose: Record<string, InMemorySignalFrame[]> = {};
   let dynamicSignalGroups: Partial<Record<DynamicAxisCapture["physicalAxis"], InMemorySignalFrame[]>> = {};
   let dynamicSignalFrames: InMemorySignalFrame[] = [];
   let moveSignalFrames: InMemorySignalFrame[] = [];
@@ -183,6 +176,15 @@
   );
   const currentStatic = $derived(staticSteps[staticIndex]);
   const currentDynamic = $derived(dynamicSteps[dynamicIndex]);
+  const currentDynamicGuide = $derived(
+    currentDynamic
+      ? createDynamicGuideModel({
+          positiveFace: currentDynamic.positiveFace,
+          motionDirection: currentDynamic.motionDirection,
+          targetAngleDeg: currentDynamic.targetAngleDeg,
+        })
+      : null,
+  );
   const moveValidation = $derived(summarizeMoveValidation(expectedMoves, observedMoves));
   const stableAverageQuaternion = $derived.by(() => {
     orientationSerial;
@@ -197,7 +199,9 @@
     return average;
   });
   const capturedFormulaReference = $derived(
-    staticCaptures.find((capture) => capture.top === "white" && capture.front === "green")?.average ?? null,
+    initialAnchorCapture?.average ??
+      staticCaptures.find((capture) => capture.top === "white" && capture.front === "green")?.average ??
+      null,
   );
   const formulaGripReference = $derived(capturedFormulaReference ?? manualFormulaReference);
   const formulaGripDistanceDeg = $derived(
@@ -208,6 +212,31 @@
   const formulaGripMatches = $derived(
     formulaGripDistanceDeg !== null && formulaGripDistanceDeg <= 12,
   );
+  const dynamicEndpointAngleDeg = $derived(
+    dynamicStartPose && stableAverageQuaternion
+      ? quaternionAngularDistanceDeg(dynamicStartPose.average, stableAverageQuaternion)
+      : null,
+  );
+  const dynamicEndpointReady = $derived(
+    Boolean(stableAverageQuaternion) &&
+    dynamicEndpointAngleDeg !== null &&
+    currentDynamic !== undefined &&
+    Math.abs(dynamicEndpointAngleDeg - currentDynamic.targetAngleDeg) <=
+      (currentDynamic.targetAngleDeg === 180 ? 25 : 18) &&
+    dynamicLayerMoves.length === 0,
+  );
+  const poseGraphClosureCount = $derived.by(() => {
+    const observations = new Map<string, number>();
+    for (const capture of dynamicCaptures) {
+      for (const pose of [capture.startPose, capture.endPose]) {
+        if (!pose) continue;
+        const key = `${pose.top}/${pose.front}`;
+        observations.set(key, (observations.get(key) ?? 0) + 1);
+      }
+    }
+    return [...observations.values()].filter((count) => count > 1).length;
+  });
+  const coveredTopCount = $derived(new Set(staticCaptures.map((capture) => capture.top)).size);
   const derivedGyroCalibration = $derived(
     deriveGyroCalibrationFromSignalProfile({
       staticPoses: staticCaptures,
@@ -363,24 +392,94 @@
     if (moveRecording && lastMove) observedMoves = [...observedMoves, lastMove];
   });
 
+  function recentPoseCapture(top: CubeColor, front: CubeColor): StaticPoseCapture {
+    return summarizeStaticPose(
+      top,
+      front,
+      recentQuaternions.filter((sample) => Date.now() - sample.at <= 1_200),
+    );
+  }
+
+  function recentPoseFrames(): InMemorySignalFrame[] {
+    return recentSignalFrames
+      .filter((frame) => Date.now() - frame.at <= 1_200)
+      .map((frame) => ({ ...frame, bytes: frame.bytes.slice() }));
+  }
+
+  function upsertStaticPose(capture: StaticPoseCapture, frames: InMemorySignalFrame[]): void {
+    const poseKey = `${capture.top}/${capture.front}`;
+    const index = staticCaptures.findIndex((candidate) =>
+      candidate.top === capture.top && candidate.front === capture.front,
+    );
+    if (index < 0) {
+      staticCaptures = [...staticCaptures, capture];
+      staticFramesByPose = { ...staticFramesByPose, [poseKey]: frames };
+      staticSignalGroups = staticCaptures.map((pose) =>
+        staticFramesByPose[`${pose.top}/${pose.front}`] ?? [],
+      );
+      return;
+    }
+    if (capture.confidence >= staticCaptures[index].confidence) {
+      staticCaptures = staticCaptures.map((candidate, candidateIndex) =>
+        candidateIndex === index ? capture : candidate,
+      );
+      staticFramesByPose = { ...staticFramesByPose, [poseKey]: frames };
+      staticSignalGroups = staticCaptures.map((pose) =>
+        staticFramesByPose[`${pose.top}/${pose.front}`] ?? [],
+      );
+    }
+  }
+
+  function rebuildStaticNodes(): void {
+    const nodes = [
+      initialAnchorCapture,
+      ...dynamicCaptures.flatMap((capture) => [capture.startPose, capture.endPose]),
+    ].filter((capture): capture is StaticPoseCapture => Boolean(capture));
+    const best = new Map<string, StaticPoseCapture>();
+    for (const node of nodes) {
+      const key = `${node.top}/${node.front}`;
+      if (!best.has(key) || best.get(key)!.confidence <= node.confidence) best.set(key, node);
+    }
+    staticCaptures = [...best.values()];
+    staticSignalGroups = staticCaptures.map((pose) =>
+      staticFramesByPose[`${pose.top}/${pose.front}`] ?? [],
+    );
+  }
+
+  function dynamicStepMatchesCapture(
+    step: (typeof dynamicSteps)[number],
+    capture: DynamicAxisCapture,
+  ): boolean {
+    return capture.physicalAxis === step.physicalAxis &&
+      capture.positiveFace === step.positiveFace &&
+      capture.motionDirection === step.motionDirection &&
+      capture.targetAngleDeg === step.targetAngleDeg;
+  }
+
+  function dynamicStepTouchesPose(
+    step: (typeof dynamicSteps)[number],
+    top: CubeColor,
+    front: CubeColor,
+  ): boolean {
+    const guide = createDynamicGuideModel(step);
+    return guide.top === top && (guide.startFront === front || guide.endFront === front);
+  }
+
+  function removeDynamicStepCapture(step: (typeof dynamicSteps)[number]): void {
+    dynamicCaptures = dynamicCaptures.filter((capture) => !dynamicStepMatchesCapture(step, capture));
+    rebuildStaticNodes();
+  }
+
   function confirmStaticPose(): void {
     if (!currentStatic) return;
     try {
-      const capture = summarizeStaticPose(
-        currentStatic.top,
-        currentStatic.front,
-        recentQuaternions.filter((sample) => Date.now() - sample.at <= 1_200),
-      );
-      staticCaptures = [...staticCaptures, capture];
-      staticSignalGroups.push(
-        recentSignalFrames
-          .filter((frame) => Date.now() - frame.at <= 1_200)
-          .map((frame) => ({ ...frame, bytes: frame.bytes.slice() })),
-      );
+      const capture = recentPoseCapture(currentStatic.top, currentStatic.front);
+      initialAnchorCapture = capture;
+      upsertStaticPose(capture, recentPoseFrames());
       message = `已记录 ${capture.sampleCount} 个稳定样本，最大偏差 ${capture.maxAngularDeviationDeg}°。`;
       if (staticIndex + 1 >= staticSteps.length) {
         stage = "dynamic";
-        message = "接下来识别物理旋转轴。每一步先开始记录，再按提示转动整颗魔方。";
+        message = "锚点已建立。接下来每条动态边会自动记录稳定起点和终点，生成完整 Pose Graph。";
       } else {
         staticIndex += 1;
         recentQuaternions = [];
@@ -394,8 +493,19 @@
   }
 
   function startDynamicCapture(): void {
+    if (!currentDynamic || !currentDynamicGuide) return;
+    try {
+      dynamicStartPose = recentPoseCapture(
+        currentDynamicGuide.top,
+        currentDynamicGuide.startFront,
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+      return;
+    }
+    upsertStaticPose(dynamicStartPose, recentPoseFrames());
     dynamicVelocities = [];
-    dynamicQuaternions = [];
+    dynamicQuaternions = [{ at: Date.now(), quaternion: { ...dynamicStartPose.average } }];
     dynamicSignalFrames = [];
     dynamicSampleCount = 0;
     detectedRotationDeg = 0;
@@ -404,37 +514,34 @@
     diagnosticJson = "";
     diagnosticCopyStatus = "";
     dynamicRecording = true;
-    message = `正在记录：保持${colorLabels[currentDynamic?.positiveFace ?? "white"]}朝上、魔方贴住桌面，从正上方看${currentDynamic?.motionDirection === "counterclockwise" ? "逆时针" : "顺时针"}转 ${currentDynamic?.targetAngleDeg ?? 90}°。`;
+    message = `起点 ${colorLabels[currentDynamicGuide.top]}上/${colorLabels[currentDynamicGuide.startFront]}前已自动记录。现在保持贴桌面，从正上方看${currentDynamic.motionDirection === "counterclockwise" ? "逆时针" : "顺时针"}转 ${currentDynamic.targetAngleDeg}°，停稳到 ${colorLabels[currentDynamicGuide.endFront]}色朝前。`;
   }
 
-  function skipStaticPose(): void {
-    if (staticIndex + 1 >= staticSteps.length) {
-      stage = "dynamic";
-      message = "已跳过剩余静态姿态，开始采集动态旋转轴。";
-    } else {
-      staticIndex += 1;
-      recentQuaternions = [];
-      recentSignalFrames = [];
-      recentQuaternionCount = 0;
-      message = "已跳过上一静态姿态；未采集的步骤会降低最终档案置信度。";
-    }
-  }
-
-  function skipAllStaticPoses(): void {
+  function skipInitialAnchor(): void {
+    initialAnchorCapture = null;
     stage = "dynamic";
     dynamicIndex = 0;
-    message = "已跳过全部静态姿态，直接进入动态旋转轴。";
+    message = "已跳过初始锚点。动态边仍会自动生成姿态节点，但公式握姿需要稍后手动设定。";
   }
 
   function skipDynamicAxis(): void {
     dynamicRecording = false;
+    dynamicStartPose = null;
+    rebuildStaticNodes();
     if (dynamicIndex + 1 >= dynamicSteps.length) {
-      stage = "moves";
-      message = "已跳过剩余动态轴，进入动作公式验证。";
+      stage = "compound";
+      message = "已跳过最后一条动态边，继续做空中全向组合验证。";
     } else {
       dynamicIndex += 1;
       message = "已跳过上一动态轴；可以继续采集下一条轴。";
     }
+  }
+
+  function cancelDynamicCapture(): void {
+    dynamicRecording = false;
+    dynamicStartPose = null;
+    rebuildStaticNodes();
+    message = "本轮未保存。请按示意放稳起点后重新开始。";
   }
 
   function skipMoveValidation(): void {
@@ -444,9 +551,19 @@
   }
 
   function confirmDynamicCapture(): void {
-    if (!currentDynamic) return;
+    if (!currentDynamic || !currentDynamicGuide || !dynamicStartPose) return;
     try {
-      const capture = summarizeDynamicAxis(
+      const endPose = recentPoseCapture(
+        currentDynamicGuide.top,
+        currentDynamicGuide.endFront,
+      );
+      const { endpointAngleDeg: endpointAngle } = validatePoseGraphEdgeEndpoint({
+        startPose: dynamicStartPose,
+        endPose,
+        targetAngleDeg: currentDynamic.targetAngleDeg,
+        layerMovesObserved: dynamicLayerMoves,
+      });
+      const axisCapture = summarizeDynamicAxis(
         currentDynamic.physicalAxis,
         currentDynamic.positiveFace,
         dynamicVelocities,
@@ -454,13 +571,22 @@
         currentDynamic.motionDirection,
         currentDynamic.targetAngleDeg,
       );
+      const capture: DynamicAxisCapture = {
+        ...axisCapture,
+        startPose: dynamicStartPose,
+        endPose,
+        expectedEnd: { top: currentDynamicGuide.top, front: currentDynamicGuide.endFront },
+        layerMovesObserved: [],
+      };
       dynamicRecording = false;
       dynamicCaptures = [...dynamicCaptures, capture];
-      dynamicSignalGroups[currentDynamic.physicalAxis] = dynamicSignalFrames.map((frame) => ({
-        ...frame,
-        bytes: frame.bytes.slice(),
-      }));
-      message = `通过${capture.signalSource === "angular-velocity" ? "角速度" : "四元数差分"}识别为协议 ${capture.protocolAxis.toUpperCase()} 轴，方向 ${capture.sign > 0 ? "+" : "−"}，主导度 ${Math.round(capture.dominance * 100)}%。`;
+      upsertStaticPose(endPose, recentPoseFrames());
+      dynamicSignalGroups[currentDynamic.physicalAxis] = [
+        ...(dynamicSignalGroups[currentDynamic.physicalAxis] ?? []),
+        ...dynamicSignalFrames.map((frame) => ({ ...frame, bytes: frame.bytes.slice() })),
+      ];
+      dynamicStartPose = null;
+      message = `边与终点已记录：${colorLabels[currentDynamicGuide.top]}上/${colorLabels[currentDynamicGuide.endFront]}前，端点 ${endpointAngle.toFixed(1)}°；协议 ${capture.protocolAxis.toUpperCase()} 轴，主导度 ${Math.round(capture.dominance * 100)}%。当前已有 ${staticCaptures.length} 个唯一姿态节点。`;
       if (dynamicIndex + 1 >= dynamicSteps.length) {
         stage = "compound";
         message = "单轴采集完成。接下来做空中全向组合旋转，并回到白上绿前测量漂移。";
@@ -545,19 +671,28 @@
   }
 
   function recaptureStaticPose(top: StaticPoseCapture["top"], front: StaticPoseCapture["front"]): void {
-    const stepIndex = staticSteps.findIndex((step) => step.top === top && step.front === front);
-    const captureIndex = staticCaptures.findIndex((capture) => capture.top === top && capture.front === front);
-    if (stepIndex < 0) return;
-    if (captureIndex >= 0) {
-      staticCaptures = staticCaptures.filter((_, index) => index !== captureIndex);
-      staticSignalGroups = staticSignalGroups.filter((_, index) => index !== captureIndex);
+    if (top === "white" && front === "green" && initialAnchorCapture) {
+      initialAnchorCapture = null;
+      rebuildStaticNodes();
+      staticIndex = 0;
+      stage = "static";
+      message = "重新采集初始白上绿前锚点；动态边和其他姿态节点会保留。";
+      return;
     }
-    staticIndex = stepIndex;
-    stage = "static";
-    recentQuaternions = [];
-    recentSignalFrames = [];
-    recentQuaternionCount = 0;
-    message = `只重采 ${colorLabels[top]}色朝上、${colorLabels[front]}色朝前；其他已通过姿态会保留。`;
+    const stepIndex = dynamicSteps.findIndex((step) =>
+      dynamicCaptures.some((capture) => dynamicStepMatchesCapture(step, capture)) &&
+      dynamicStepTouchesPose(step, top, front),
+    );
+    if (stepIndex < 0) {
+      message = `没有找到生成 ${colorLabels[top]}上/${colorLabels[front]}前的已采动态边。`;
+      return;
+    }
+    removeDynamicStepCapture(dynamicSteps[stepIndex]);
+    dynamicIndex = stepIndex;
+    dynamicRecording = false;
+    dynamicStartPose = null;
+    stage = "dynamic";
+    message = `请重采生成 ${colorLabels[top]}上/${colorLabels[front]}前节点的动态边；其他节点和边会保留。`;
   }
 
   function continueWithMoveMismatch(): void {
@@ -693,23 +828,20 @@
   function goBack(): void {
     if (stage === "dynamic") {
       dynamicRecording = false;
+      dynamicStartPose = null;
       if (dynamicIndex === 0) {
         stage = "static";
-        staticIndex = staticSteps.length - 1;
-        staticCaptures = staticCaptures.slice(0, -1);
-        staticSignalGroups = staticSignalGroups.slice(0, -1);
+        staticIndex = 0;
+        initialAnchorCapture = null;
+        rebuildStaticNodes();
       } else {
         dynamicIndex -= 1;
-        const removed = dynamicCaptures.at(-1);
-        dynamicCaptures = dynamicCaptures.slice(0, -1);
-        if (removed) delete dynamicSignalGroups[removed.physicalAxis];
+        removeDynamicStepCapture(dynamicSteps[dynamicIndex]);
       }
     } else if (stage === "compound") {
       stage = "dynamic";
       dynamicIndex = dynamicSteps.length - 1;
-      const removed = dynamicCaptures.at(-1);
-      dynamicCaptures = dynamicCaptures.slice(0, -1);
-      if (removed) delete dynamicSignalGroups[removed.physicalAxis];
+      removeDynamicStepCapture(dynamicSteps[dynamicIndex]);
     } else if (stage === "moves") {
       stage = "compound";
       compoundCapture = null;
@@ -736,28 +868,25 @@
     <main>
       {#if stage === "static" && currentStatic}
         <div class="instruction-icon"><Radio size={34} /></div>
-        <span class="stage-label">桌面静态姿态 {staticIndex + 1}/{staticSteps.length}</span>
+        <span class="stage-label">初始人工锚点</span>
         <h3>{currentStatic.title}</h3>
-        <p class="instruction">把魔方放在桌面上，中心色严格按提示摆放。必须同时对齐“朝上”和“朝前”，本步骤会使用全新的独立采样窗口，保持至少 1 秒。</p>
+        <p class="instruction">把魔方稳定放在桌面上，白色中心朝上、绿色中心朝向你并保持至少 1 秒。只需人工确认这一个语义锚点；后续完整 24 姿态会由 18 条动态边的稳定首尾自动生成。</p>
         <CalibrationGuide3D mode="static" top={currentStatic.top} front={currentStatic.front} />
         <div class="live-samples"><span class:ready={recentQuaternionCount >= 8}></span>最近窗口 {recentQuaternionCount} 个姿态样本</div>
         <div class="confirm-pose-row">
-          <button class="primary" disabled={!orientation || recentQuaternionCount < 8} onclick={confirmStaticPose}>
+          <button class="primary" disabled={!stableAverageQuaternion} onclick={confirmStaticPose}>
             <Check size={18} /> 确认此姿态
           </button>
           <div class="pose-recognition" class:matched={Boolean(stableAverageQuaternion)}>
             {#if stableAverageQuaternion}
               <Check size={16} />
-              <span>{staticIndex === 0 ? "基准姿态已稳定，可以手动确认" : "当前姿态已稳定，可以手动确认"}</span>
+              <span>初始锚点已稳定，可以确认</span>
             {:else}
-              <Radio size={16} /> <span>{staticIndex === 0 ? "此步用于建立你的握持基准，请按示意摆放并保持稳定…" : "请按示意摆放并保持稳定…"}</span>
+              <Radio size={16} /> <span>请按示意摆放并保持稳定…</span>
             {/if}
           </div>
         </div>
-        <div class="step-actions">
-          <button class="secondary" onclick={skipStaticPose}>跳过此姿态</button>
-        </div>
-        <button class="skip-all" onclick={skipAllStaticPoses}>跳过全部静态姿态，直接进入动态轴</button>
+        <button class="skip-all" onclick={skipInitialAnchor}>跳过初始锚点（仅协议调试）</button>
       {:else if stage === "dynamic" && currentDynamic}
         <div class="instruction-icon"><Rotate3D size={34} /></div>
         <span class="stage-label">桌面转盘验证 {dynamicIndex + 1}/{dynamicSteps.length}</span>
@@ -776,17 +905,34 @@
           <small>{dynamicSampleCount} samples · 已转 {Math.round(detectedRotationDeg)}°</small>
         </div>
         {#if dynamicRecording}
-          <div class="rotation-meter" class:ready={detectedRotationDeg >= 20}>
-            <span style={`width:${Math.min(100, detectedRotationDeg / 90 * 100)}%`}></span>
+          {#if dynamicStartPose && currentDynamicGuide}
+            <div class="pose-recognition matched">
+              <Check size={16} />
+              <span>
+                起点已自动记录 · {colorLabels[currentDynamicGuide.top]}上/{colorLabels[currentDynamicGuide.startFront]}前
+                · 置信度 {Math.round(dynamicStartPose.confidence * 100)}%
+              </span>
+            </div>
+          {/if}
+          <div class="rotation-meter" class:ready={dynamicEndpointReady}>
+            <span style={`width:${Math.min(100, detectedRotationDeg / currentDynamic.targetAngleDeg * 100)}%`}></span>
           </div>
           <small class="rotation-hint">
-            {detectedRotationDeg >= currentDynamic.targetAngleDeg * 0.8
-              ? `已经接近目标 ${currentDynamic.targetAngleDeg}°，可以确认`
-              : `请保持贴桌面转动整颗魔方，目标 ${currentDynamic.targetAngleDeg}°`}
+            {#if dynamicLayerMoves.length > 0}
+              已检测到层转，当前边不能保存
+            {:else if !stableAverageQuaternion}
+              {detectedRotationDeg >= currentDynamic.targetAngleDeg * 0.8
+                ? `已经到达目标角度，请停稳到 ${colorLabels[currentDynamicGuide?.endFront ?? "green"]}色朝前`
+                : `请保持贴桌面转动整颗魔方，目标 ${currentDynamic.targetAngleDeg}°`}
+            {:else if dynamicEndpointReady && dynamicEndpointAngleDeg !== null}
+              终点稳定 · 实测 {dynamicEndpointAngleDeg.toFixed(1)}° · 可以确认
+            {:else if dynamicEndpointAngleDeg !== null}
+              终点已稳定，但实测 {dynamicEndpointAngleDeg.toFixed(1)}°；请调整到 {colorLabels[currentDynamicGuide?.endFront ?? "green"]}色朝前
+            {/if}
           </small>
-          {#if dynamicLayerMoves.length > 0 && detectedRotationDeg < 10}
+          {#if dynamicLayerMoves.length > 0}
             <div class="layer-move-warning">
-              检测到层转 {dynamicLayerMoves.join(" ")}，但没有检测到整颗魔方姿态变化。请不要拧任何一层；保持目标颜色朝上，让整颗魔方在桌面上转动。
+              检测到层转 {dynamicLayerMoves.join(" ")}，这条动态边已污染。请不要拧任何一层；停止本轮后，让整颗魔方在桌面上转动。
             </div>
           {:else if dynamicSampleCount >= 80 && detectedRotationDeg < 2}
             <div class="gyro-still-warning">
@@ -794,14 +940,17 @@
             </div>
           {/if}
           <div class="step-actions">
-            <button class="primary" disabled={detectedRotationDeg < currentDynamic.targetAngleDeg * 0.8} onclick={confirmDynamicCapture}><Check size={18} /> 完成并识别轴</button>
-            <button class="secondary" onclick={skipDynamicAxis}>跳过此轴</button>
+            <button class="primary" disabled={detectedRotationDeg < currentDynamic.targetAngleDeg * 0.8 || !dynamicEndpointReady} onclick={confirmDynamicCapture}><Check size={18} /> 保存终点与动态边</button>
+            <button class="secondary" onclick={cancelDynamicCapture}>停止并重来</button>
           </div>
         {:else}
           <div class="step-actions">
-            <button class="primary" disabled={!orientation} onclick={startDynamicCapture}><Radio size={18} /> 开始记录</button>
+            <button class="primary" disabled={!stableAverageQuaternion} onclick={startDynamicCapture}><Radio size={18} /> 起点稳定，开始记录</button>
             <button class="secondary" onclick={skipDynamicAxis}>跳过此轴</button>
           </div>
+          {#if !stableAverageQuaternion}
+            <small class="rotation-hint">请先按示意放好起点并保持稳定约 1 秒。</small>
+          {/if}
         {/if}
       {:else if stage === "compound"}
         <div class="instruction-icon"><Rotate3D size={34} /></div>
@@ -858,7 +1007,7 @@
             <span>
               {formulaGripMatches ? "已回到公式基准" : "尚未对齐公式基准"}
               · 角度偏差 {formulaGripDistanceDeg.toFixed(1)}°
-              · {capturedFormulaReference ? "来自静态姿态 1" : "本次手动设定"}
+              · {capturedFormulaReference ? "来自 Pose Graph 白上绿前节点" : "本次手动设定"}
             </span>
           {:else if !formulaGripReference}
             <Radio size={16} /> <span>前面未采集白上绿前参考；摆好后请设为本次公式基准。</span>
@@ -932,10 +1081,12 @@
         <div class="instruction-icon success"><ShieldCheck size={38} /></div>
         <span class="stage-label">采集完成</span>
         <h3>标定档案已生成</h3>
-        <p class="instruction">已保存 24 个桌面静态姿态、双向/180°轴验证、全向组合摘要、动作差异、字段候选位置和渲染确认。原始 BLE 帧与连续四元数没有写入 JSONL。</p>
+        <p class="instruction">已用 1 个人工语义锚点和 18 条桌面动态边自动生成完整姿态节点，并保存闭环误差、全向组合摘要、动作差异、字段候选位置和渲染确认。原始 BLE 帧与连续四元数没有写入 JSONL。</p>
         <div class="summary-grid">
-          <article><strong>{staticCaptures.length}/{staticSteps.length}</strong><span>静态姿态</span></article>
-          <article><strong>{dynamicCaptures.length}/{dynamicSteps.length}</strong><span>轴轨迹</span></article>
+          <article><strong>{staticCaptures.length}/24</strong><span>Pose Nodes</span></article>
+          <article><strong>{dynamicCaptures.length}/{dynamicSteps.length}</strong><span>Motion Edges</span></article>
+          <article><strong>{poseGraphClosureCount}</strong><span>Loop Closures</span></article>
+          <article><strong>{coveredTopCount}/6</strong><span>Covered Tops</span></article>
           <article><strong>{moveValidation.matched ? "一致" : "有差异"}</strong><span>动作映射</span></article>
           <article><strong>{renderConfirmed ? "通过" : "待修正"}</strong><span>渲染验证</span></article>
         </div>

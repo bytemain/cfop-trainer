@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDynamicGuideModel } from "./calibrationGuide";
+import type { CubeColor } from "./signalProfile";
 
 describe("dynamic tabletop calibration guide", () => {
   it("shows red up rotating clockwise around the red-orange tabletop normal", () => {
@@ -37,5 +38,27 @@ describe("dynamic tabletop calibration guide", () => {
     expect(model.startFront).toBe("green");
     expect(model.endFront).toBe("blue");
     expect(model.cssTurnDeg).toBe(-180);
+  });
+
+  it("covers all 24 legal top/front pose nodes from 18 dynamic edges", () => {
+    const tops: CubeColor[] = ["red", "orange", "blue", "green", "white", "yellow"];
+    const motions = [
+      { motionDirection: "clockwise" as const, targetAngleDeg: 90 as const },
+      { motionDirection: "counterclockwise" as const, targetAngleDeg: 90 as const },
+      { motionDirection: "clockwise" as const, targetAngleDeg: 180 as const },
+    ];
+    const poseKeys = new Set<string>();
+    for (const top of tops) {
+      const fronts = new Set<CubeColor>();
+      for (const motion of motions) {
+        const guide = createDynamicGuideModel({ positiveFace: top, ...motion });
+        fronts.add(guide.startFront);
+        fronts.add(guide.endFront);
+        poseKeys.add(`${top}/${guide.startFront}`);
+        poseKeys.add(`${top}/${guide.endFront}`);
+      }
+      expect(fronts.size).toBe(4);
+    }
+    expect(poseKeys.size).toBe(24);
   });
 });

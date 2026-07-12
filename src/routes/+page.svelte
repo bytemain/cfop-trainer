@@ -480,7 +480,7 @@
         <div class="state-sync-panel signal-lab-entry">
           <div>
             <strong>魔方信号采集实验室</strong>
-            <small>用六面姿态、三轴整机旋转和标准公式，反推出协议轴、方向与动作映射。</small>
+            <small>用动态边的稳定首尾自动生成 24 个姿态节点，再反推出协议轴、方向与动作映射。</small>
           </div>
           <button
             class="primary-button"
@@ -498,7 +498,7 @@
               <small>
                 置信度 {Math.round(trainer.signalCalibrationProfile.overallConfidence * 100)}%
                 · {trainer.signalCalibrationProfile.staticPoses.length}/24 姿态
-                · {trainer.signalCalibrationProfile.dynamicAxes.length}/9 轴轨迹
+                · {trainer.signalCalibrationProfile.dynamicAxes.length}/18 动态边
               </small>
             </div>
             <button class="secondary-button" onclick={() => void downloadSavedSignalProfile()}>

@@ -112,25 +112,31 @@ recaptured without discarding the remaining profile. Dynamic trajectories
 retain their normalized three-component axis vector; reducing them to only a
 dominant signed axis is insufficient for a continuous mounting solution.
 
-### Calibration protocol V2
+### Calibration protocol V3: Pose Graph
 
 The capture UI must provide enough independent excitation to distinguish a
 rigid pose model from a mapping that only happens to work near one grip:
 
-1. **24 tabletop static poses**: every valid combination of six top colors and
-   four orthogonal front colors. Each step owns a fresh rolling window; samples
-   from the previous pose may not leak into the next step.
-2. **Tabletop turntable motions** for each physical axis: clockwise 90°,
-   counterclockwise 90°, and clockwise 180°. The selected positive face points
-   upward along the table normal. The ±90° motions fit axis direction; 180° is
-   held out because its terminal pose cannot distinguish +180° from -180°.
+1. **One semantic anchor**: white up, green front. This explicitly binds the
+   protocol sensor frame to the user's physical color convention.
+2. **18 tabletop motion edges**: for each of the six top colors, record
+   clockwise 90°, counterclockwise 90°, and clockwise 180°. Every edge owns a
+   stable start window, its motion trajectory, and a stable end window. The
+   start/end windows are first-class pose nodes; they must not be requested
+   again as separate static steps.
 3. **Free-air compound validation**: start at white-up/green-front, cover pitch,
    yaw, and roll for at least six seconds, then return to the same tabletop
    reference. This trajectory is not fitted. It measures three-axis coverage,
    composition correctness, return-to-table tilt, and absolute reference drift.
 
-The discrete solver uses all valid static poses and only the ±90° direction
-evidence. A model is forbidden from becoming active when mean static residual
+The deterministic start front plus three endpoints produce all four legal
+front colors for each top color, so the 18 edges cover all 24 legal `top/front`
+nodes. Repeated endpoints are loop-closure observations. Their pairwise
+absolute angular error is persisted as diagnostics, but is not a hard gate
+because yaw/session drift is temporally distinct from the rigid axis mapping.
+
+The discrete solver uses the best observation for every generated pose node
+and only the ±90° direction evidence. A model is forbidden from becoming active when mean static residual
 exceeds 10° or maximum residual exceeds 20°. The 180° and compound trajectory
 remain validation evidence, so the solver cannot improve its score by fitting
 its own test set.
@@ -232,8 +238,11 @@ lock down:
 
 - quaternion normalization and composition order;
 - identity at the captured reference pose;
-- six declared top/front static poses;
+- the white-up/green-front semantic anchor;
 - three controlled positive-face clockwise rotations;
+- 18 dynamic edges producing exactly 24 unique legal pose nodes;
+- stable edge endpoints and loop-closure error summaries;
+- rejection of any dynamic edge contaminated by a layer move;
 - orthonormality and determinant `+1` for every produced cube pose;
 - canonical cube-to-CSS Y reflection;
 - CSS `matrix3d` column-major serialization;

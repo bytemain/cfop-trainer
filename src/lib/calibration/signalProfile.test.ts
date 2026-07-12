@@ -12,6 +12,7 @@ import {
   summarizeFrameFieldEvidence,
   summarizeMoveValidation,
   summarizeStaticPose,
+  validatePoseGraphEdgeEndpoint,
 } from "./signalProfile";
 import {
   applyMatrix3,
@@ -185,6 +186,35 @@ describe("signal calibration profile", () => {
     expect(capture.dominance).toBeGreaterThan(0.99);
   });
 
+  it("accepts stable edge endpoints only at the target angle and rejects layer-move pollution", () => {
+    const pose = (degrees: number) => ({
+      top: "white" as const,
+      front: "green" as const,
+      average: quaternionFromAxisAngle("y", degrees),
+      sampleCount: 12,
+      maxAngularDeviationDeg: 0.2,
+      confidence: 0.98,
+    });
+    expect(validatePoseGraphEdgeEndpoint({
+      startPose: pose(0),
+      endPose: pose(92),
+      targetAngleDeg: 90,
+      layerMovesObserved: [],
+    }).endpointAngleDeg).toBeCloseTo(92, 5);
+    expect(() => validatePoseGraphEdgeEndpoint({
+      startPose: pose(0),
+      endPose: pose(90),
+      targetAngleDeg: 90,
+      layerMovesObserved: ["R"],
+    })).toThrow(/已污染/);
+    expect(() => validatePoseGraphEdgeEndpoint({
+      startPose: pose(0),
+      endPose: pose(40),
+      targetAngleDeg: 90,
+      layerMovesObserved: [],
+    })).toThrow(/相差过大/);
+  });
+
   it("validates move face and direction in order", () => {
     expect(summarizeMoveValidation(["R", "U", "R'", "U'"], ["r", "u", "r’", "u’"]).matched)
       .toBe(true);
@@ -315,6 +345,79 @@ describe("signal calibration profile", () => {
     expect(evidence.moveCandidateByteIndexes).toEqual([2]);
     expect(evidence).not.toHaveProperty("frames");
     expect(evidence.rawBytesPersisted).toBe(false);
+  });
+
+  it("persists pose-graph edges and pairwise loop-closure diagnostics", () => {
+    const whiteGreen = {
+      top: "white" as const,
+      front: "green" as const,
+      average: { x: 0, y: 0, z: 0, w: 1 },
+      sampleCount: 12,
+      maxAngularDeviationDeg: 0.4,
+      confidence: 0.98,
+    };
+    const whiteRed = {
+      ...whiteGreen,
+      front: "red" as const,
+      average: quaternionFromAxisAngle("y", 90),
+    };
+    const repeatedWhiteGreen = {
+      ...whiteGreen,
+      average: quaternionFromAxisAngle("y", 5),
+      confidence: 0.96,
+    };
+    const dynamicBase = {
+      physicalAxis: "white-yellow" as const,
+      positiveFace: "white" as const,
+      protocolAxis: "z" as const,
+      sign: 1 as const,
+      sampleCount: 20,
+      activeSampleCount: 12,
+      dominance: 0.95,
+      confidence: 0.95,
+      signalSource: "quaternion-delta" as const,
+      quaternionDeltaOrder: "current-previous-inverse" as const,
+      targetAngleDeg: 90 as const,
+      layerMovesObserved: [],
+    };
+    const profile = createSignalCalibrationProfile({
+      deviceModel: "GAN16ui_TEST",
+      protocol: "v4",
+      staticPoses: [whiteGreen, whiteRed],
+      dynamicAxes: [
+        {
+          ...dynamicBase,
+          motionDirection: "clockwise",
+          startPose: whiteGreen,
+          endPose: whiteRed,
+          expectedEnd: { top: "white", front: "red" },
+        },
+        {
+          ...dynamicBase,
+          motionDirection: "counterclockwise",
+          startPose: repeatedWhiteGreen,
+          endPose: whiteRed,
+          expectedEnd: { top: "white", front: "red" },
+        },
+      ],
+      moveValidation: summarizeMoveValidation([], []),
+      renderValidation: { confirmed: false },
+      frameFieldEvidence: summarizeFrameFieldEvidence({
+        staticPoseGroups: [], dynamicGroups: {}, moveFrames: [],
+      }),
+    });
+    expect(profile.deviceIdentity.calibrationSchema).toBe("cube-pose-v4-pose-graph");
+    expect(profile.poseGraph?.nodeCount).toBe(2);
+    expect(profile.poseGraph?.edgeCount).toBe(2);
+    expect(profile.poseGraph?.coveredTopColors).toEqual(["white"]);
+    expect(profile.poseGraph?.closures).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        poseKey: "white/green",
+        observationCount: 2,
+        maxAbsoluteErrorDeg: 5,
+        passed: true,
+      }),
+    ]));
   });
 
   it("serializes only confirmed summaries and privacy declarations", () => {
