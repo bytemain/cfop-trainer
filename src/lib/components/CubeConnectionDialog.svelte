@@ -37,7 +37,7 @@
   );
 
   onMount(() => {
-    if (autoScan && !busy) void trainer.scanRealDevices();
+    if (autoScan && !busy) void scan();
   });
 
   function close(): void {
@@ -46,6 +46,11 @@
 
   async function connect(device: (typeof trainer.devices)[number]): Promise<void> {
     await trainer.connectRealDevice(device);
+    if (trainer.connection === "ready" || trainer.connection === "degraded") onclose();
+  }
+
+  async function scan(): Promise<void> {
+    await trainer.scanRealDevices();
     if (trainer.connection === "ready" || trainer.connection === "degraded") onclose();
   }
 </script>
@@ -116,7 +121,7 @@
 
     <footer class="device-dialog-actions">
       <button class="secondary-button" disabled={busy} onclick={close}>取消</button>
-      <button class="primary-button" disabled={busy} onclick={() => void trainer.scanRealDevices()}>
+      <button class="primary-button" disabled={busy} onclick={() => void scan()}>
         <RefreshCcw size={17} /> 重新扫描
       </button>
     </footer>

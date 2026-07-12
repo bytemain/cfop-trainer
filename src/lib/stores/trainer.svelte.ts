@@ -55,6 +55,7 @@ import { MoveTimeline, type MoveTimelineItem } from "$lib/timeline/moveTimeline"
 import { PoseSession, type PoseHealth } from "$lib/pose/poseSession";
 import { reconstructSolve } from "$lib/analysis/solveReconstruction";
 import { solveCrossOptimal } from "$lib/analysis/crossSolver";
+import { reliableSnapshotMoveSequence } from "$lib/protocols/gan/sequence";
 import {
   createEmptyGanV4ProtocolDiagnostics,
   GanV4ProtocolDiagnostics,
@@ -378,7 +379,7 @@ class TrainerStore {
     this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
   }
 
-  async scanRealDevices(): Promise<void> {
+  async scanRealDevices({ autoConnectSingle = true }: { autoConnectSingle?: boolean } = {}): Promise<void> {
     safeLogger.info("trainer", "scan-requested");
     this.connection = "scanning";
     this.connectionMessage = "正在扫描名称以 GAN 开头的 BLE 设备…";
@@ -402,10 +403,17 @@ class TrainerStore {
         candidates: this.devices.length,
         names: this.devices.map((device) => device.name),
       });
+      if (autoConnectSingle && this.devices.length === 1) {
+        const [device] = this.devices;
+        this.connectionMessage = `仅发现 ${device.name}，正在自动连接…`;
+        safeLogger.info("trainer", "single-candidate-auto-connect", { name: device.name });
+        await this.connectRealDevice(device);
+        return;
+      }
       this.connection = this.devices.length > 0 ? "idle" : "disconnected";
       this.connectionMessage =
         this.devices.length > 0
-          ? `发现 ${this.devices.length} 个候选设备。请选择 GAN16 ui 建立加密连接。`
+          ? `发现 ${this.devices.length} 个候选设备，请选择要连接的魔方。`
           : "未发现 GAN 候选设备。请确认魔方已唤醒并靠近本机。";
     } catch (error) {
       safeLogger.error("trainer", "scan-failed", {
@@ -456,8 +464,14 @@ class TrainerStore {
       this.unsubscribeSignals = await this.session.signals((event) => this.handleSignalFrame(event));
       const snapshot = await this.session.initialSnapshot();
       this.cube = cubeStateFromFacelets(snapshot.facelets, this.faceColors);
-      this.lastCubeSequence = snapshot.sequence;
-      this.cubeSequence = snapshot.sequence ?? null;
+      const snapshotBaseline = reliableSnapshotMoveSequence(snapshot.sequence);
+      this.lastCubeSequence = snapshotBaseline ?? undefined;
+      this.cubeSequence = snapshotBaseline;
+      if (snapshotBaseline === null) {
+        safeLogger.info("trainer", "move-baseline-deferred", {
+          reason: "initial-snapshot-zero-counter",
+        });
+      }
       this.resetSolveTimeline();
       this.initialSynchronizing = false;
       const queuedMoves = this.initialMoveQueue;
@@ -1201,7 +1215,13 @@ class TrainerStore {
     }
     if (this.lastCubeSequence !== undefined) {
       const gap = (event.sequence - this.lastCubeSequence) & 0xffff;
-      if (gap === 0) return;
+      if (gap === 0) {
+        safeLogger.debug("trainer", "move-deduplicated", {
+          sequence: event.sequence,
+          move: event.move,
+        });
+        return;
+      }
       if (gap > 1 && gap < 0x8000) {
         safeLogger.warn("trainer", "move-sequence-gap", {
           previousSequence: this.lastCubeSequence,

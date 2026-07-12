@@ -1,4 +1,5 @@
 import type { BleConnection, DiscoveredDevice } from "$lib/ble/types";
+import { reliableSnapshotMoveSequence } from "$lib/protocols/gan/sequence";
 import type {
   CubeMoveEvent,
   CubeContinuityEvent,
@@ -286,8 +287,9 @@ class GanV4Session implements SmartCubeSession {
       // reports move counter 0 in those packets. Only the explicitly requested
       // initial snapshot owns the first move baseline. Later state packets may
       // refresh facelets, but must never rewind the live move stream.
-      if (establishesInitialBaseline && snapshot.sequence !== 0) {
-        this.establishMoveBaseline(snapshot.sequence ?? null);
+      const reliableSequence = reliableSnapshotMoveSequence(snapshot.sequence);
+      if (establishesInitialBaseline && reliableSequence !== null) {
+        this.establishMoveBaseline(reliableSequence);
       } else if (establishesInitialBaseline) {
         safeLogger.info("gan-v4", "move-baseline-deferred", {
           reason: "initial-snapshot-zero-counter",

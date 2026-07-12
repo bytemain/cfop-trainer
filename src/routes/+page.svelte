@@ -155,9 +155,18 @@
     trainer.prepareScramble();
   }
 
-  function openCubeConnection(): void {
-    deviceDialogAutoScan = !trainer.connectedDeviceName && !deviceDialogBusy;
-    deviceDialogOpen = true;
+  async function openCubeConnection(): Promise<void> {
+    if (trainer.connectedDeviceName) {
+      deviceDialogAutoScan = false;
+      deviceDialogOpen = true;
+      return;
+    }
+    if (deviceDialogBusy) return;
+    deviceDialogAutoScan = false;
+    await trainer.scanRealDevices();
+    if (trainer.connection !== "ready" && trainer.connection !== "degraded") {
+      deviceDialogOpen = true;
+    }
   }
 
   function closeDeviceDialog(): void {
@@ -284,7 +293,7 @@
         aria-label={connectionLabel}
         title={trainer.connectionMessage}
         disabled={deviceDialogBusy}
-        onclick={openCubeConnection}
+        onclick={() => void openCubeConnection()}
       >
         <StatusPill tone={connectionTone}>
           {#if trainer.connection === "scanning"}

@@ -20,6 +20,13 @@
   onMount(() => {
     void trainer.initialize();
   });
+
+  async function scanAndConnect(): Promise<void> {
+    await trainer.scanRealDevices();
+    if (trainer.connection !== "ready" && trainer.connection !== "degraded") {
+      connectionDialogOpen = true;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -56,7 +63,7 @@
       <p>信号采集页面已经打开，但当前没有可复用的实体魔方会话。可以直接在这里扫描并连接，成功后会原地进入采集实验室。</p>
       <div class="status"><Radio size={17} /> {trainer.connectionMessage}</div>
       <div class="connection-actions">
-        <button class="connect-button" onclick={() => (connectionDialogOpen = true)}>
+        <button class="connect-button" onclick={() => void scanAndConnect()}>
           <BluetoothSearching size={18} /> 扫描并连接魔方
         </button>
         <button class="back-button" onclick={() => void goto("/")}><ArrowLeft size={18} /> 返回训练页</button>
@@ -65,7 +72,7 @@
   {/if}
 
   {#if connectionDialogOpen}
-    <CubeConnectionDialog autoScan onclose={() => (connectionDialogOpen = false)} />
+    <CubeConnectionDialog onclose={() => (connectionDialogOpen = false)} />
   {/if}
 </div>
 
