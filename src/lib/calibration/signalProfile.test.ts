@@ -92,6 +92,27 @@ describe("signal calibration profile", () => {
     expect(summary.passed).toBe(true);
   });
 
+  it("keeps yaw return error as diagnostics when the cube is level on the table", () => {
+    const samples = [{ at: 0, quaternion: { x: 0, y: 0, z: 0, w: 1 } }];
+    let current = samples[0].quaternion;
+    for (const axis of ["x", "y", "z"] as const) {
+      for (let index = 0; index < 30; index += 1) {
+        current = multiplyQuaternions(quaternionFromAxisAngle(axis, 3), current);
+        samples.push({ at: samples.length * 100, quaternion: current });
+      }
+    }
+    const yawDriftedReturn = quaternionFromAxisAngle("y", 49);
+    const summary = summarizeCompoundMotionValidation(
+      samples,
+      { x: 0, y: 0, z: 0, w: 1 },
+      yawDriftedReturn,
+      1.5,
+    );
+    expect(summary.returnToReferenceErrorDeg).toBeCloseTo(49, 1);
+    expect(summary.returnTiltErrorDeg).toBe(1.5);
+    expect(summary.passed).toBe(true);
+  });
+
   it("detects protocol axis and sign from angular velocity", () => {
     const capture = summarizeDynamicAxis(
       "white-yellow",

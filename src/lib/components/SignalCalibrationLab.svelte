@@ -11,7 +11,7 @@
   } from "lucide-svelte";
   import Cube3D from "$lib/components/Cube3D.svelte";
   import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
-  import type { CubeState, StickerPalette } from "$lib/cube/cube";
+  import type { CubeState, Face, StickerPalette } from "$lib/cube/cube";
   import type { GyroCalibration } from "$lib/cube/orientation";
   import type {
     CubeQuaternion,
@@ -39,6 +39,7 @@
     type InMemorySignalFrame,
   } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
+  import { recognizeCubePose } from "$lib/calibration/poseRecognition";
 
   let {
     deviceModel,
@@ -222,6 +223,34 @@
           meanPoseErrorDeg: derivedGyroCalibration.meanPoseErrorDeg,
         }
       : gyroCalibration,
+  );
+  const compoundRecognitionCalibration = $derived(
+    derivedGyroCalibration
+      ? {
+          ...gyroCalibration,
+          enabled: true,
+          zero: derivedGyroCalibration.zero,
+          bodyToModel: derivedGyroCalibration.bodyToModel,
+          relativeOrder: derivedGyroCalibration.relativeOrder,
+        }
+      : previewGyroCalibration,
+  );
+  const centerColors = $derived({
+    U: cube.U[4], R: cube.R[4], F: cube.F[4],
+    D: cube.D[4], L: cube.L[4], B: cube.B[4],
+  } satisfies Record<Face, CubeState[Face][number]>);
+  const recognizedStablePose = $derived(
+    recognizeCubePose(stableAverageQuaternion, compoundRecognitionCalibration, centerColors),
+  );
+  const compoundReturnTiltErrorDeg = $derived(
+    recognizedStablePose?.topColor === "white"
+      ? Math.acos(Math.max(-1, Math.min(1, recognizedStablePose.topAlignment))) * 180 / Math.PI
+      : 180,
+  );
+  const compoundTableMatches = $derived(
+    Boolean(stableAverageQuaternion) &&
+    recognizedStablePose?.topColor === "white" &&
+    compoundReturnTiltErrorDeg <= 12,
   );
   const quaternionRanges = $derived.by(() => {
     orientationSerial;
@@ -451,8 +480,8 @@
   }
 
   function startCompoundCapture(): void {
-    if (!capturedFormulaReference || !formulaGripMatches) {
-      message = "请先回到白色朝上、绿色朝前的桌面基准，稳定后再开始自由旋转。";
+    if (!capturedFormulaReference || !compoundTableMatches) {
+      message = "请先把白色面朝上放稳；绿色朝前按示意摆放。开始门槛只检查桌面倾斜，不再被 yaw 漂移误拦截。";
       return;
     }
     compoundQuaternions = [];
@@ -463,8 +492,8 @@
   }
 
   function confirmCompoundCapture(): void {
-    if (!capturedFormulaReference || !stableAverageQuaternion) {
-      message = "请先把魔方放回白上绿前并保持稳定约 1 秒，再完成验证。";
+    if (!capturedFormulaReference || !stableAverageQuaternion || !compoundTableMatches) {
+      message = "请先把白色面朝上放回桌面并保持稳定约 1 秒；绿色朝前请按实体标记摆放，yaw 漂移不会再阻止确认。";
       return;
     }
     try {
@@ -472,14 +501,15 @@
         compoundQuaternions,
         capturedFormulaReference,
         stableAverageQuaternion,
+        compoundReturnTiltErrorDeg,
       );
       compoundRecording = false;
       if (!compoundCapture.passed) {
-        message = `组合验证未通过：路径 ${compoundCapture.pathRotationDeg}°，三轴覆盖 ${Math.round(compoundCapture.axisCoverage.x * 100)}/${Math.round(compoundCapture.axisCoverage.y * 100)}/${Math.round(compoundCapture.axisCoverage.z * 100)}%，回零误差 ${compoundCapture.returnToReferenceErrorDeg}°。请重新记录。`;
+        message = `组合验证未通过：路径 ${compoundCapture.pathRotationDeg}°，三轴覆盖 ${Math.round(compoundCapture.axisCoverage.x * 100)}/${Math.round(compoundCapture.axisCoverage.y * 100)}/${Math.round(compoundCapture.axisCoverage.z * 100)}%，回桌倾斜 ${compoundCapture.returnTiltErrorDeg}°，绝对姿态差 ${compoundCapture.returnToReferenceErrorDeg}°。请重新记录。`;
         return;
       }
       stage = "moves";
-      message = `组合验证通过，回零误差 ${compoundCapture.returnToReferenceErrorDeg}°。现在验证层转面编号和方向。`;
+      message = `组合验证通过，回桌倾斜 ${compoundCapture.returnTiltErrorDeg}°；绝对姿态差 ${compoundCapture.returnToReferenceErrorDeg}° 作为 yaw/session 漂移诊断保留。现在验证层转面编号和方向。`;
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     }
@@ -732,6 +762,8 @@
           mode="dynamic"
           physicalAxis={currentDynamic.physicalAxis}
           positiveFace={currentDynamic.positiveFace}
+          motionDirection={currentDynamic.motionDirection}
+          targetAngleDeg={currentDynamic.targetAngleDeg}
         />
         <div class="recording-card" class:recording={dynamicRecording}>
           <span></span>
@@ -772,10 +804,14 @@
         <h3>空中全向组合旋转与回零检查</h3>
         <p class="instruction">先把魔方放在桌面上，白色朝上、绿色朝前。开始后拿起整颗魔方，缓慢做上下俯仰、左右偏航和前后翻滚，覆盖所有方向；至少持续 6 秒。最后必须放回同一个白上绿前姿态并保持稳定。</p>
         <CalibrationGuide3D mode="static" top="white" front="green" />
-        <div class="pose-recognition formula-grip" class:matched={formulaGripMatches} class:mismatch={formulaGripDistanceDeg !== null && !formulaGripMatches}>
-          {#if formulaGripDistanceDeg !== null}
-            {#if formulaGripMatches}<Check size={16} />{:else}<Radio size={16} />{/if}
-            <span>{formulaGripMatches ? "已回到桌面基准" : "尚未回到桌面基准"} · 偏差 {formulaGripDistanceDeg.toFixed(1)}°</span>
+        <div class="pose-recognition formula-grip" class:matched={compoundTableMatches} class:mismatch={Boolean(stableAverageQuaternion) && !compoundTableMatches}>
+          {#if stableAverageQuaternion && recognizedStablePose}
+            {#if compoundTableMatches}<Check size={16} />{:else}<Radio size={16} />{/if}
+            <span>
+              {compoundTableMatches ? "已回到白色朝上的桌面平面" : `当前识别为${colorLabels[recognizedStablePose.topColor]}色朝上`}
+              · 倾斜 {compoundReturnTiltErrorDeg.toFixed(1)}°
+              {#if formulaGripDistanceDeg !== null} · 绝对姿态差 {formulaGripDistanceDeg.toFixed(1)}°（含 yaw 漂移，仅诊断）{/if}
+            </span>
           {:else}
             <Radio size={16} /><span>等待白上绿前稳定姿态…</span>
           {/if}
@@ -789,18 +825,19 @@
           <div class="summary-grid">
             <article><strong>{compoundCapture.pathRotationDeg}°</strong><span>累计路径</span></article>
             <article><strong>{Math.round(compoundCapture.axisCoverage.x * 100)}/{Math.round(compoundCapture.axisCoverage.y * 100)}/{Math.round(compoundCapture.axisCoverage.z * 100)}%</strong><span>XYZ 覆盖</span></article>
-            <article><strong>{compoundCapture.returnToReferenceErrorDeg}°</strong><span>回零误差</span></article>
+            <article><strong>{compoundCapture.returnTiltErrorDeg}°</strong><span>回桌倾斜</span></article>
+            <article><strong>{compoundCapture.returnToReferenceErrorDeg}°</strong><span>绝对姿态差</span></article>
             <article><strong>{compoundCapture.passed ? "通过" : "重试"}</strong><span>组合验证</span></article>
           </div>
         {/if}
         {#if compoundRecording}
           <div class="step-actions">
-            <button class="primary" disabled={compoundSampleCount < 40 || !formulaGripMatches} onclick={confirmCompoundCapture}><Check size={18} /> 已回到基准，完成验证</button>
+            <button class="primary" disabled={compoundSampleCount < 40 || !compoundTableMatches} onclick={confirmCompoundCapture}><Check size={18} /> 已水平回桌，完成验证</button>
             <button class="secondary" onclick={() => (compoundRecording = false)}>停止并重来</button>
           </div>
         {:else}
           <div class="step-actions">
-            <button class="primary" disabled={!formulaGripMatches} onclick={startCompoundCapture}><Radio size={18} /> 开始空中全向记录</button>
+            <button class="primary" disabled={!compoundTableMatches} onclick={startCompoundCapture}><Radio size={18} /> 开始空中全向记录</button>
             <button class="secondary" onclick={skipCompoundCapture}>跳过此验证</button>
           </div>
         {/if}

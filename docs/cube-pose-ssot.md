@@ -127,7 +127,7 @@ rigid pose model from a mapping that only happens to work near one grip:
 3. **Free-air compound validation**: start at white-up/green-front, cover pitch,
    yaw, and roll for at least six seconds, then return to the same tabletop
    reference. This trajectory is not fitted. It measures three-axis coverage,
-   composition correctness, and return-to-reference drift.
+   composition correctness, return-to-table tilt, and absolute reference drift.
 
 The discrete solver uses all valid static poses and only the ±90° direction
 evidence. A model is forbidden from becoming active when mean static residual
@@ -136,9 +136,13 @@ remain validation evidence, so the solver cannot improve its score by fitting
 its own test set.
 
 If the physical start and end pose are the same but the sensor quaternion has a
-large return error, the failure is temporal IMU/session drift rather than an
-axis mapping problem. The correct remedy is a session anchor or sensor fusion,
-not a larger static correction matrix.
+large absolute return error, the failure is temporal IMU/session drift rather
+than an axis mapping problem. Compound validation therefore gates completion on
+the cube returning level to the declared top face (≤12° tilt). The full
+quaternion return error, including yaw, remains a diagnostic and must not claim
+that a visibly level cube is off the table. The correct remedy for that yaw
+error is a session anchor or sensor fusion, not a larger static correction
+matrix.
 
 ### Sampling and loss compensation
 

@@ -80,6 +80,7 @@ export interface CompoundMotionValidationCapture {
   pathRotationDeg: number;
   axisCoverage: { x: number; y: number; z: number };
   returnToReferenceErrorDeg: number;
+  returnTiltErrorDeg: number;
   passed: boolean;
 }
 
@@ -329,6 +330,18 @@ export function deriveGyroCalibrationFromSignalProfile(
   if (!zeroCapture) return null;
 
   if (profile.staticPoses.length < 3 || profile.dynamicAxes.length < 3) return null;
+  const independentAxes = ["red-orange", "blue-green", "white-yellow"].map((physicalAxis) =>
+    profile.dynamicAxes.find((capture) =>
+      capture.physicalAxis === physicalAxis && capture.targetAngleDeg !== 180,
+    ),
+  );
+  if (independentAxes.some((capture) => !capture)) return null;
+  const axisVectors = independentAxes.map((capture) => protocolAxisVector(capture!));
+  const axisEvidenceDeterminant = Math.abs(determinant3(axisVectors as Matrix3));
+  // Three captures that collapse onto one plane/axis cannot define a rigid
+  // sensor frame. High-but-independent residuals remain useful diagnostics;
+  // degeneracy is the condition that truly makes the model unknowable.
+  if (axisEvidenceDeterminant < 0.15) return null;
   const reference = quaternionMatrix(zeroCapture.average);
   const discreteCandidates = properAxisRotations().flatMap((bodyToModel) =>
     SENSOR_RELATIVE_ORDERS.map((relativeOrder) => ({
@@ -345,14 +358,17 @@ export function deriveGyroCalibrationFromSignalProfile(
   });
   const candidates = [...discreteCandidates, ...continuousCandidates].sort((left, right) => left.score - right.score);
   const best = candidates[0];
-  if (!best || best.meanDirectionErrorDeg > 1) return null;
+  if (!best) return null;
   const sampleConfidence = [
     ...profile.staticPoses.map((capture) => capture.confidence),
     ...profile.dynamicAxes.map((capture) => capture.confidence),
   ].reduce((sum, value) => sum + value, 0) / (profile.staticPoses.length + profile.dynamicAxes.length);
   const geometricConfidence = Math.max(0, 1 - best.meanPoseErrorDeg / 45);
   return {
-    valid: best.meanPoseErrorDeg <= 10 && best.maxPoseErrorDeg <= 20,
+    valid:
+      best.meanPoseErrorDeg <= 10 &&
+      best.maxPoseErrorDeg <= 20 &&
+      best.meanDirectionErrorDeg <= 15,
     zero: { ...zeroCapture.average },
     bodyToModel: best.bodyToModel,
     relativeOrder: best.relativeOrder,
@@ -607,6 +623,7 @@ export function summarizeCompoundMotionValidation(
   samples: readonly TimedQuaternionSample[],
   reference: CubeQuaternion,
   returnedPose: CubeQuaternion,
+  returnTiltErrorDeg?: number,
 ): CompoundMotionValidationCapture {
   if (samples.length < 20) throw new Error("自由旋转样本不足，请至少持续旋转 6 秒");
   const energy = { x: 0, y: 0, z: 0 };
@@ -630,15 +647,17 @@ export function summarizeCompoundMotionValidation(
     z: Number((energy.z / totalEnergy).toFixed(3)),
   };
   const returnToReferenceErrorDeg = quaternionAngularDistanceDeg(reference, returnedPose);
+  const resolvedTiltErrorDeg = returnTiltErrorDeg ?? returnToReferenceErrorDeg;
   return {
     sampleCount: samples.length,
     pathRotationDeg: Number(pathRotationDeg.toFixed(1)),
     axisCoverage,
     returnToReferenceErrorDeg: Number(returnToReferenceErrorDeg.toFixed(2)),
+    returnTiltErrorDeg: Number(resolvedTiltErrorDeg.toFixed(2)),
     passed:
       pathRotationDeg >= 240 &&
       Math.min(axisCoverage.x, axisCoverage.y, axisCoverage.z) >= 0.12 &&
-      returnToReferenceErrorDeg <= 10,
+      resolvedTiltErrorDeg <= 12,
   };
 }
 
