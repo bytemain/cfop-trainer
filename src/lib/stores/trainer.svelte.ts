@@ -830,6 +830,14 @@ class TrainerStore {
     });
   }
 
+  skipToWholeCubeRotationValidation(): void {
+    if (this.protocolSelfTest.status !== "collecting") return;
+    while (this.currentProtocolValidationStep &&
+      this.currentProtocolValidationStep.kind !== "whole-cube-rotation") {
+      this.skipProtocolValidationStep();
+    }
+  }
+
   resetProgressiveProtocolValidation(): void {
     this.protocolDiagnostics = this.protocolInspector.reset();
     this.protocolSelfTest = { ...EMPTY_PROTOCOL_SELF_TEST };

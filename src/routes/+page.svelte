@@ -884,6 +884,9 @@
 
               <div class="protocol-validation-actions">
                 {#if trainer.protocolSelfTest.status === "collecting"}
+                  {#if trainer.currentProtocolValidationStep?.kind !== "whole-cube-rotation"}
+                    <button class="text-button" onclick={() => trainer.skipToWholeCubeRotationValidation()}>直接跳到整颗旋转</button>
+                  {/if}
                   {#if trainer.currentProtocolValidationStep?.kind === "whole-cube-rotation"}
                     <button class="secondary-button" onclick={() => trainer.anchorCurrentProtocolValidationStep()}>
                       {trainer.protocolSelfTest.captureAnchored ? "重新设定旋转起点" : "以当前姿态为起点"}
