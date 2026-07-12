@@ -202,8 +202,8 @@
     const stateSynced = await trainer.resetAndSyncCubeState();
     quickCalibrationSyncing = false;
     quickCalibrationStatus = stateSynced
-      ? "魔方已完成姿态校准与块状态同步。"
-      : "姿态已校准，但块状态同步失败，请保持连接后重试。";
+      ? "魔方已完成姿态校准，并以实体还原状态重建色块基准。"
+      : "姿态已校准，但色块基准重建失败，请保持连接后重试。";
     if (stateSynced) quickCalibrationOpen = false;
   }
 
@@ -571,7 +571,7 @@
         <div class="state-sync-panel">
           <div>
             <strong>重置魔方状态</strong>
-            <small>实体魔方还原后，读取完整状态并清空当前训练进度。</small>
+            <small>实体魔方还原后，以用户确认的还原态建立新基准，并清空当前训练进度。</small>
           </div>
           <button
             class="primary-button"
@@ -757,18 +757,18 @@
       <div class="quick-calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="quick-calibration-title">
         <span class="eyebrow">Pose + cube state</span>
         <h2 id="quick-calibration-title">快速校准魔方</h2>
-        <p>先把实体魔方完全还原，再稳定放在桌面上：白色中心朝上、绿色中心朝向你、红色自然位于右侧。确认后会同时校准本次会话姿态，并读取六面块状态同步到虚拟魔方。</p>
+        <p>先把实体魔方完全还原，再稳定放在桌面上：白色中心朝上、绿色中心朝向你、红色自然位于右侧。确认后会同时校准本次会话姿态，并把用户确认的还原态作为虚拟魔方色块基准。</p>
         <CalibrationGuide3D mode="static" top="white" front="green" />
         <div class="quick-calibration-readiness" class:ready={quickCalibrationReady}>
           {#if quickCalibrationReady}
-            <Check size={17} /> 姿态流实时且魔方已稳定，可以同步姿态与块状态
+            <Check size={17} /> 姿态流实时且魔方已稳定，可以同步姿态与还原状态
           {:else if !poseStreamFresh}
             <CircleAlert size={17} /> 姿态流已过期，请先转动唤醒魔方；仍无数据时重新连接
           {:else}
             <Activity size={17} /> 请保持魔方静止，当前帧变化 {trainer.poseHealth.lastStepDeg?.toFixed(2) ?? "—"}°
           {/if}
         </div>
-        <small>此操作会清空当前训练进度，并以实体魔方的完整六面快照重建虚拟块状态；设备轴映射仍由完整 Pose Graph 标定负责。</small>
+        <small>此操作会清空当前训练进度，直接以你确认的实体还原态重建虚拟色块；不会再被可能陈旧的 GAN 快照覆盖。设备轴映射仍由完整 Pose Graph 标定负责。</small>
         <div class="quick-calibration-actions">
           <button class="secondary-button" onclick={() => (quickCalibrationOpen = false)}>取消</button>
           {#if !poseStreamFresh}
@@ -838,7 +838,8 @@
   .brand span:last-child { color: var(--color-on-top-bar-muted); font-size: 0.68rem; }
   .top-status { gap: 9px; }
   .top-telemetry { display: flex; min-width: 0; align-items: center; gap: 7px; }
-  .telemetry-compact { display: none; }
+  .telemetry-compact,
+  .telemetry-compact.pose-latency { display: none; }
   .pose-latency { display: inline-block; width: 5ch; font-variant-numeric: tabular-nums; text-align: right; }
   .top-connection {
     min-width: 0;
@@ -1269,6 +1270,7 @@
     .top-telemetry :global(.status-pill) { padding-inline: 7px; }
     .telemetry-full { display: none; }
     .telemetry-compact { display: inline; }
+    .telemetry-compact.pose-latency { display: inline-block; }
     .navigation-rail { display: none; }
     .content { padding: 10px 10px 22px; }
     .calibration-heading { align-items: start; flex-direction: column; }

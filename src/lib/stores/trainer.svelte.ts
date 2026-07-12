@@ -511,48 +511,31 @@ class TrainerStore {
 
     this.stopTimer();
     this.stopDemoPlayback();
-    this.connection = "synchronizing";
-    this.connectionMessage = "正在读取实体魔方的完整状态…";
-    safeLogger.info("trainer", "manual-state-sync-start", {
+    // The user explicitly confirms that the physical cube is solved. That is
+    // stronger evidence than GAN V4's snapshot response, which can be stale or
+    // carry sequence 0 on GAN16ui. Keep the latest observed protocol sequence
+    // so subsequent moves continue from the current stream, but rebuild cubies
+    // from the solved state.
+    this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
+    this.cubeSequence = this.lastCubeSequence ?? null;
+    this.scramble = [];
+    this.scrambleIndex = 0;
+    this.solveMoves = [];
+    this.solveIndex = 0;
+    this.elapsedMs = 0;
+    this.completedMs = 0;
+    this.lastMove = null;
+    this.eventCount = 0;
+    this.hadDesync = false;
+    this.resetSolveTimeline();
+    this.send({ type: "RESET" });
+    this.connection = "ready";
+    this.connectionMessage = `${this.connectedDeviceName} 已以实体还原状态建立新基准。`;
+    safeLogger.info("trainer", "manual-solved-baseline-applied", {
       name: this.connectedDeviceName,
+      sequence: this.lastCubeSequence,
     });
-
-    try {
-      const snapshot = await withTimeout(
-        this.session.requestSnapshot(),
-        12_000,
-        "读取完整魔方状态超时",
-      );
-      this.cube = cubeStateFromFacelets(snapshot.facelets, this.faceColors);
-      this.lastCubeSequence = snapshot.sequence;
-      this.cubeSequence = snapshot.sequence ?? null;
-      this.scramble = [];
-      this.scrambleIndex = 0;
-      this.solveMoves = [];
-      this.solveIndex = 0;
-      this.elapsedMs = 0;
-      this.completedMs = 0;
-      this.lastMove = null;
-      this.eventCount = 0;
-      this.hadDesync = false;
-      this.resetSolveTimeline();
-      this.send({ type: "RESET" });
-      this.connection = "ready";
-      this.connectionMessage = `${this.connectedDeviceName} 的状态已重新同步。`;
-      safeLogger.info("trainer", "manual-state-sync-complete", {
-        name: this.connectedDeviceName,
-        sequence: snapshot.sequence ?? null,
-      });
-      return true;
-    } catch (error) {
-      this.connection = "degraded";
-      this.connectionMessage = `状态同步失败：${error instanceof Error ? error.message : String(error)}`;
-      safeLogger.warn("trainer", "manual-state-sync-failed", {
-        name: this.connectedDeviceName,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-      return false;
-    }
+    return true;
   }
 
   reset(): void {
