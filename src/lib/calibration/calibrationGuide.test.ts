@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createDynamicGuideModel } from "./calibrationGuide";
-import type { CubeColor } from "./signalProfile";
+import {
+  createContinuousPoseGraphEdges,
+  createDynamicGuideModel,
+  POSE_GRAPH_NODE_SEQUENCE,
+} from "./calibrationGuide";
+import { expectedCubePoseMatrix } from "./signalProfile";
+import { rotationDistanceDeg } from "$lib/cube/orientation";
 
 describe("dynamic tabletop calibration guide", () => {
   it("shows red up rotating clockwise around the red-orange tabletop normal", () => {
@@ -40,25 +45,20 @@ describe("dynamic tabletop calibration guide", () => {
     expect(model.cssTurnDeg).toBe(-180);
   });
 
-  it("covers all 24 legal top/front pose nodes from 18 dynamic edges", () => {
-    const tops: CubeColor[] = ["red", "orange", "blue", "green", "white", "yellow"];
-    const motions = [
-      { motionDirection: "clockwise" as const, targetAngleDeg: 90 as const },
-      { motionDirection: "counterclockwise" as const, targetAngleDeg: 90 as const },
-      { motionDirection: "clockwise" as const, targetAngleDeg: 180 as const },
-    ];
-    const poseKeys = new Set<string>();
-    for (const top of tops) {
-      const fronts = new Set<CubeColor>();
-      for (const motion of motions) {
-        const guide = createDynamicGuideModel({ positiveFace: top, ...motion });
-        fronts.add(guide.startFront);
-        fronts.add(guide.endFront);
-        poseKeys.add(`${top}/${guide.startFront}`);
-        poseKeys.add(`${top}/${guide.endFront}`);
-      }
-      expect(fronts.size).toBe(4);
-    }
-    expect(poseKeys.size).toBe(24);
+  it("visits all 24 poses through a continuous air loop that returns to the anchor", () => {
+    const edges = createContinuousPoseGraphEdges();
+    expect(POSE_GRAPH_NODE_SEQUENCE).toHaveLength(24);
+    expect(new Set(POSE_GRAPH_NODE_SEQUENCE.map((pose) => `${pose.top}/${pose.front}`)).size).toBe(24);
+    expect(edges).toHaveLength(24);
+    edges.forEach((edge, index) => {
+      expect(edge.start).toEqual(POSE_GRAPH_NODE_SEQUENCE[index]);
+      expect(edge.end).toEqual(POSE_GRAPH_NODE_SEQUENCE[(index + 1) % POSE_GRAPH_NODE_SEQUENCE.length]);
+      const angle = rotationDistanceDeg(
+        expectedCubePoseMatrix(edge.start.top, edge.start.front),
+        expectedCubePoseMatrix(edge.end.top, edge.end.front),
+      );
+      expect(angle).toBeCloseTo(index === edges.length - 1 ? 180 : 90, 6);
+      expect(edge.targetAngleDeg).toBe(index === edges.length - 1 ? 180 : 90);
+    });
   });
 });

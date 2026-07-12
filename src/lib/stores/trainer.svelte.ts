@@ -679,6 +679,63 @@ class TrainerStore {
     });
   }
 
+  reprocessSavedSignalCalibration(): boolean {
+    const profile = this.signalCalibrationProfile;
+    if (!profile) return false;
+    const derivedCalibration = deriveGyroCalibrationFromSignalProfile(profile);
+    if (!derivedCalibration?.valid) return false;
+    const reprocessedProfile: SignalCalibrationProfile = {
+      ...profile,
+      renderValidation: { confirmed: true },
+      calibrationSolution: {
+        valid: derivedCalibration.valid,
+        solver: derivedCalibration.solver,
+        meanPoseErrorDeg: derivedCalibration.meanPoseErrorDeg,
+        maxPoseErrorDeg: derivedCalibration.maxPoseErrorDeg,
+        meanMotionEdgeErrorDeg: derivedCalibration.meanMotionEdgeErrorDeg,
+        poseResiduals: derivedCalibration.poseResiduals,
+        rejectedPoseKeys: derivedCalibration.rejectedPoseKeys,
+      },
+    };
+    this.signalCalibrationProfile = reprocessedProfile;
+    this.deviceCalibration = {
+      schemaVersion: 3,
+      enabled: this.deviceCalibration.enabled,
+      bodyToModel: derivedCalibration.bodyToModel,
+      relativeOrder: derivedCalibration.relativeOrder,
+      meanPoseErrorDeg: derivedCalibration.meanPoseErrorDeg,
+      maxPoseErrorDeg: derivedCalibration.maxPoseErrorDeg,
+    };
+    // The previous manual offsets/inversions may have been compensating for
+    // the broken axis-summary solver. An explicit reprocess starts from the
+    // calibrated SSOT instead of stacking those historical corrections.
+    this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
+    this.poseSession.configure(this.deviceCalibration, this.viewPreference);
+    this.poseSession.bootstrap(derivedCalibration.zero);
+    this.sessionAnchor = this.poseSession.currentAnchor();
+    this.persistDevicePreferences();
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(
+        GLOBAL_CUBE_PROFILE_KEY + ":signal-calibration",
+        JSON.stringify(reprocessedProfile),
+      );
+      if (this.connectedDeviceId) {
+        localStorage.setItem(
+          "cfop-trainer:cube-profile:" + this.connectedDeviceId + ":signal-calibration",
+          JSON.stringify(reprocessedProfile),
+        );
+      }
+    }
+    safeLogger.info("calibration", "signal-profile-reprocessed", {
+      protocol: profile.protocol,
+      solver: derivedCalibration.solver,
+      meanPoseErrorDeg: derivedCalibration.meanPoseErrorDeg,
+      maxPoseErrorDeg: derivedCalibration.maxPoseErrorDeg,
+      meanMotionEdgeErrorDeg: derivedCalibration.meanMotionEdgeErrorDeg,
+    });
+    return true;
+  }
+
   formatTime(milliseconds = this.elapsedMs): string {
     const safeValue = Math.max(0, Math.floor(milliseconds));
     const minutes = Math.floor(safeValue / 60_000);

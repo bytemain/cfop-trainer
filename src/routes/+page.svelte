@@ -48,6 +48,7 @@
   let deviceDialogOpen = $state(false);
   let deviceDialogAutoScan = $state(false);
   let replayIndex = $state(0);
+  let signalReprocessStatus = $state("");
   const replayCube = $derived(trainer.reconstruction.replayStates[replayIndex] ?? trainer.cube);
 
   const deviceDialogBusy = $derived(
@@ -140,6 +141,12 @@
       `cube-signal-profile-${profile.protocol}.json`,
       serializeSignalCalibrationProfile(profile),
     );
+  }
+
+  function reprocessSavedSignalProfile(): void {
+    signalReprocessStatus = trainer.reprocessSavedSignalCalibration()
+      ? "已用完整 SO(3) Pose Graph 重新求解并应用；旧的手动轴反转和偏移也已清除，无需重新采集。"
+      : "现有档案仍不足以得到可靠模型，请进入采集实验室补充姿态。";
   }
 
   onMount(() => {
@@ -480,7 +487,7 @@
         <div class="state-sync-panel signal-lab-entry">
           <div>
             <strong>魔方信号采集实验室</strong>
-            <small>用动态边的稳定首尾自动生成 24 个姿态节点，再反推出协议轴、方向与动作映射。</small>
+            <small>沿连续空中路径采集 24 个稳定姿态节点，用完整 SO(3) 边关系反推出传感器映射。</small>
           </div>
           <button
             class="primary-button"
@@ -498,12 +505,18 @@
               <small>
                 置信度 {Math.round(trainer.signalCalibrationProfile.overallConfidence * 100)}%
                 · {trainer.signalCalibrationProfile.staticPoses.length}/24 姿态
-                · {trainer.signalCalibrationProfile.dynamicAxes.length}/18 动态边
+                · {trainer.signalCalibrationProfile.dynamicAxes.length}/24 姿态边
               </small>
             </div>
-            <button class="secondary-button" onclick={() => void downloadSavedSignalProfile()}>
-              <Download size={17} /> 重新导出 JSON
-            </button>
+            <div class="profile-actions">
+              <button class="secondary-button" onclick={reprocessSavedSignalProfile}>
+                <RefreshCcw size={17} /> 用新求解器重新应用
+              </button>
+              <button class="secondary-button" onclick={() => void downloadSavedSignalProfile()}>
+                <Download size={17} /> 重新导出 JSON
+              </button>
+              {#if signalReprocessStatus}<small>{signalReprocessStatus}</small>{/if}
+            </div>
           </div>
         {/if}
 
@@ -1003,6 +1016,8 @@
   .saved-profile-panel strong { color: var(--color-text); font-size: 0.84rem; }
   .saved-profile-panel small { color: var(--color-text-muted); font-size: 0.7rem; }
   .saved-profile-panel .secondary-button { flex: 0 0 auto; }
+  .saved-profile-panel .profile-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+  .saved-profile-panel .profile-actions small { max-width: 280px; color: var(--color-primary); text-align: right; }
   .calibration-panel { display: grid; width: 100%; gap: 16px; margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--color-outline-soft); }
   .calibration-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
   .calibration-heading h2 { margin: 4px 0 0; }
@@ -1103,6 +1118,8 @@
     .calibration-heading { align-items: start; flex-direction: column; }
     .state-sync-panel { align-items: stretch; flex-direction: column; }
     .saved-profile-panel { align-items: stretch; flex-direction: column; }
+    .saved-profile-panel .profile-actions { align-items: stretch; flex-direction: column; }
+    .saved-profile-panel .profile-actions small { max-width: none; text-align: left; }
     .face-color-grid { grid-template-columns: repeat(3, 1fr); }
     .palette-heading { align-items: start; flex-direction: column; }
     .sticker-palette-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

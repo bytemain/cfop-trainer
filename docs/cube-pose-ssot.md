@@ -101,11 +101,11 @@ For the current GAN calibration flow it evaluates both:
 Each candidate is scored against:
 
 - all captured static `top/front` poses as complete 3D rotations;
-- all three controlled whole-cube rotations as independent direction checks.
+- all Pose Graph start/end pairs as complete relative rotations.
 
-The three dynamic axes are validation evidence; they are not by themselves a
-complete pose model. A calibration persists its mean/max angular residual so a
-poor capture cannot masquerade as an exact mapping.
+Legacy dynamic-axis summaries are diagnostics; they are not by themselves a
+complete pose model. A calibration persists pose and full-edge angular
+residuals so a poor capture cannot masquerade as an exact mapping.
 
 Every static capture also receives an individual residual. Outliers can be
 recaptured without discarding the remaining profile. Dynamic trajectories
@@ -119,43 +119,45 @@ rigid pose model from a mapping that only happens to work near one grip:
 
 1. **One semantic anchor**: white up, green front. This explicitly binds the
    protocol sensor frame to the user's physical color convention.
-2. **18 tabletop motion edges**: for each of the six top colors, record
-   clockwise 90°, counterclockwise 90°, and clockwise 180°. Every edge owns a
-   stable start window, its motion trajectory, and a stable end window. The
-   start/end windows are first-class pose nodes; they must not be requested
-   again as separate static steps.
+2. **24 continuous free-air pose edges**: visit all 24 legal `top/front` poses
+   exactly once along a Hamiltonian path of 90° whole-cube transitions. Every
+   edge starts at the previous edge's endpoint, so the user never resets to a
+   fixed grip. The cube may be held in the air and follow any natural path;
+   only the stable semantic endpoints are solver evidence. The intermediate
+   quaternion stream is coverage diagnostics, never a claimed body axis. A
+   final 180° edge returns to white-up/green-front and closes the graph.
 3. **Free-air compound validation**: start at white-up/green-front, cover pitch,
-   yaw, and roll for at least six seconds, then return to the same tabletop
-   reference. This trajectory is not fitted. It measures three-axis coverage,
-   composition correctness, return-to-table tilt, and absolute reference drift.
+   yaw, and roll for at least six seconds, then return in-hand to the same
+   semantic pose. This trajectory is not fitted. It measures calibrated
+   cube-body-axis coverage, composition correctness, return tilt, and absolute
+   reference drift.
 
-The deterministic start front plus three endpoints produce all four legal
-front colors for each top color, so the 18 edges cover all 24 legal `top/front`
-nodes. Repeated endpoints are loop-closure observations. Their pairwise
+The continuous sequence covers all 24 legal nodes without repeated setup.
+Optional repeated endpoints are loop-closure observations. Their pairwise
 absolute angular error is persisted as diagnostics, but is not a hard gate
-because yaw/session drift is temporally distinct from the rigid axis mapping.
+because session drift is temporally distinct from the rigid axis mapping.
 
-The discrete solver uses the best observation for every generated pose node
-and only the ±90° direction evidence. A model is forbidden from becoming active when mean static residual
-exceeds 10° or maximum residual exceeds 20°. The 180° and compound trajectory
-remain validation evidence, so the solver cannot improve its score by fitting
-its own test set.
+The solver uses the best observation for every generated pose node and scores
+each dynamic edge as a complete start-to-end SO(3) delta. Legacy dominant-axis
+summaries remain exportable diagnostics but cannot veto an otherwise
+well-constrained Pose Graph: a tabletop turn around gravity can legitimately
+make every raw summary look like the same world axis. A model is forbidden from
+becoming active when mean pose residual exceeds 10°, maximum pose residual
+exceeds 20°, or mean fitted 90° edge error exceeds 15°. The closing 180° edge
+and compound trajectory remain held-out validation evidence, so the solver
+cannot improve its score by fitting its own test set.
 
 If the physical start and end pose are the same but the sensor quaternion has a
 large absolute return error, the failure is temporal IMU/session drift rather
 than an axis mapping problem. Compound validation therefore gates completion on
-the cube returning level to the declared top face (≤12° tilt). The full
-quaternion return error, including yaw, remains a diagnostic and must not claim
-that a visibly level cube is off the table. The correct remedy for that yaw
-error is a session anchor or sensor fusion, not a larger static correction
-matrix.
+the cube returning to the declared white-up/green-front pose. The full
+quaternion return error remains a diagnostic and must not override a correctly
+recognized semantic pose merely because of session drift.
 
-During calibration this tilt is measured directly in protocol space from the
-captured white-yellow dynamic axis: apply the reference-to-current quaternion
-delta to that normalized sensor axis and measure how far the axis moved. A
-rotation around the axis is yaw and contributes 0° tilt; flipping white/yellow
-moves the axis to its negative and contributes 180°. The incomplete
-`bodyToModel` candidate must not be used to guess a top color for this gate.
+During compound validation the already-solved `bodyToModel` maps every
+frame-to-frame quaternion delta into canonical cube-body X/Y/Z before coverage
+is accumulated. Raw protocol x/y/z energy is not meaningful coverage evidence
+until that calibration boundary has been crossed.
 
 ### Sampling and loss compensation
 
@@ -240,7 +242,8 @@ lock down:
 - identity at the captured reference pose;
 - the white-up/green-front semantic anchor;
 - three controlled positive-face clockwise rotations;
-- 18 dynamic edges producing exactly 24 unique legal pose nodes;
+- 24 continuous free-air edges visiting exactly 24 unique legal pose nodes and
+  returning to the semantic anchor;
 - stable edge endpoints and loop-closure error summaries;
 - rejection of any dynamic edge contaminated by a layer move;
 - orthonormality and determinant `+1` for every produced cube pose;

@@ -12,7 +12,8 @@
   import Cube3D from "$lib/components/Cube3D.svelte";
   import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
   import type { CubeState, StickerPalette } from "$lib/cube/cube";
-  import type { GyroCalibration } from "$lib/cube/orientation";
+  import { gyroModelMatrix, type GyroCalibration } from "$lib/cube/orientation";
+  import { recognizeCubePose } from "$lib/calibration/poseRecognition";
   import type {
     CubeQuaternion,
     CubeSignalFrameEvent,
@@ -29,8 +30,6 @@
     summarizeCompoundMotionValidation,
     summarizeMoveValidation,
     summarizeStaticPose,
-    capturedProtocolAxisVector,
-    quaternionAxisTiltDeg,
     validatePoseGraphEdgeEndpoint,
     type CubeColor,
     type DynamicAxisCapture,
@@ -42,7 +41,7 @@
     type InMemorySignalFrame,
   } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
-  import { createDynamicGuideModel } from "$lib/calibration/calibrationGuide";
+  import { createContinuousPoseGraphEdges } from "$lib/calibration/calibrationGuide";
 
   let {
     deviceModel,
@@ -97,26 +96,7 @@
     front: "green",
     title: "白色朝上 · 绿色朝前",
   }];
-  const dynamicSteps: Array<{
-    physicalAxis: DynamicAxisCapture["physicalAxis"];
-    positiveFace: CubeColor;
-    motionDirection: NonNullable<DynamicAxisCapture["motionDirection"]>;
-    targetAngleDeg: NonNullable<DynamicAxisCapture["targetAngleDeg"]>;
-    title: string;
-  }> = ([
-    { physicalAxis: "red-orange", positiveFace: "red", axisLabel: "红—橙" },
-    { physicalAxis: "red-orange", positiveFace: "orange", axisLabel: "橙—红" },
-    { physicalAxis: "blue-green", positiveFace: "blue", axisLabel: "蓝—绿" },
-    { physicalAxis: "blue-green", positiveFace: "green", axisLabel: "绿—蓝" },
-    { physicalAxis: "white-yellow", positiveFace: "white", axisLabel: "白—黄" },
-    { physicalAxis: "white-yellow", positiveFace: "yellow", axisLabel: "黄—白" },
-  ] as const).flatMap((axis) => [
-    { ...axis, motionDirection: "clockwise" as const, targetAngleDeg: 90 as const, title: `${colorLabels[axis.positiveFace]}朝上 · 顺时针 90°` },
-    { ...axis, motionDirection: "counterclockwise" as const, targetAngleDeg: 90 as const, title: `${colorLabels[axis.positiveFace]}朝上 · 逆时针 90°` },
-    { ...axis, motionDirection: "clockwise" as const, targetAngleDeg: 180 as const, title: `${colorLabels[axis.positiveFace]}朝上 · 顺时针 180° 验证` },
-  ]).map(({ physicalAxis, positiveFace, motionDirection, targetAngleDeg, title }) => ({
-    physicalAxis, positiveFace, motionDirection, targetAngleDeg, title,
-  }));
+  const dynamicSteps = createContinuousPoseGraphEdges();
   const expectedMoves = ["R", "U", "R'", "U'"];
 
   let stage = $state<Stage>("static");
@@ -178,11 +158,12 @@
   const currentDynamic = $derived(dynamicSteps[dynamicIndex]);
   const currentDynamicGuide = $derived(
     currentDynamic
-      ? createDynamicGuideModel({
-          positiveFace: currentDynamic.positiveFace,
-          motionDirection: currentDynamic.motionDirection,
-          targetAngleDeg: currentDynamic.targetAngleDeg,
-        })
+      ? {
+          top: currentDynamic.start.top,
+          startFront: currentDynamic.start.front,
+          endTop: currentDynamic.end.top,
+          endFront: currentDynamic.end.front,
+        }
       : null,
   );
   const moveValidation = $derived(summarizeMoveValidation(expectedMoves, observedMoves));
@@ -217,14 +198,6 @@
       ? quaternionAngularDistanceDeg(dynamicStartPose.average, stableAverageQuaternion)
       : null,
   );
-  const dynamicEndpointReady = $derived(
-    Boolean(stableAverageQuaternion) &&
-    dynamicEndpointAngleDeg !== null &&
-    currentDynamic !== undefined &&
-    Math.abs(dynamicEndpointAngleDeg - currentDynamic.targetAngleDeg) <=
-      (currentDynamic.targetAngleDeg === 180 ? 25 : 18) &&
-    dynamicLayerMoves.length === 0,
-  );
   const poseGraphClosureCount = $derived.by(() => {
     const observations = new Map<string, number>();
     for (const capture of dynamicCaptures) {
@@ -254,26 +227,62 @@
         }
       : gyroCalibration,
   );
-  const whiteYellowAxisCapture = $derived(
-    dynamicCaptures.find((capture) =>
-      capture.physicalAxis === "white-yellow" && capture.targetAngleDeg !== 180,
-    ) ?? null,
+  const centerFaceColors = $derived({
+    U: cube.U[4], R: cube.R[4], F: cube.F[4],
+    D: cube.D[4], L: cube.L[4], B: cube.B[4],
+  });
+  const recognizedLivePose = $derived(
+    derivedGyroCalibration?.valid
+      ? recognizeCubePose(orientation, previewGyroCalibration, centerFaceColors)
+      : null,
+  );
+  const dynamicRecognizedEndpointMatches = $derived(
+    Boolean(currentDynamic) &&
+    recognizedLivePose?.topColor === currentDynamic?.end.top &&
+    recognizedLivePose?.frontColor === currentDynamic?.end.front,
+  );
+  const dynamicEndpointReady = $derived(
+    Boolean(stableAverageQuaternion) &&
+    dynamicEndpointAngleDeg !== null &&
+    currentDynamic !== undefined &&
+    Math.abs(dynamicEndpointAngleDeg - currentDynamic.targetAngleDeg) <=
+      (currentDynamic.targetAngleDeg === 180 ? 25 : 18) &&
+    (!recognizedLivePose || dynamicRecognizedEndpointMatches) &&
+    dynamicLayerMoves.length === 0,
+  );
+  const liveCubePoseMatrix = $derived(
+    derivedGyroCalibration?.valid
+      ? gyroModelMatrix(orientation, previewGyroCalibration)
+      : null,
   );
   const compoundReturnTiltErrorDeg = $derived(
-    stableAverageQuaternion && capturedFormulaReference && whiteYellowAxisCapture
-      ? quaternionAxisTiltDeg(
-          capturedFormulaReference,
-          stableAverageQuaternion,
-          capturedProtocolAxisVector(whiteYellowAxisCapture),
-          whiteYellowAxisCapture.quaternionDeltaOrder,
-        )
+    liveCubePoseMatrix
+      ? Math.acos(Math.max(-1, Math.min(1, liveCubePoseMatrix[1][1]))) * 180 / Math.PI
       : 180,
   );
   const compoundTableMatches = $derived(
     Boolean(stableAverageQuaternion) &&
-    Boolean(whiteYellowAxisCapture) &&
-    compoundReturnTiltErrorDeg <= 12,
+    Boolean(recognizedLivePose?.confident) &&
+    recognizedLivePose?.topColor === "white" &&
+    recognizedLivePose?.frontColor === "green",
   );
+  const compoundLiveCapture = $derived.by(() => {
+    orientationSerial;
+    if (!compoundRecording || compoundQuaternions.length < 20 ||
+      !capturedFormulaReference || !orientation || !derivedGyroCalibration) return null;
+    try {
+      return summarizeCompoundMotionValidation(
+        compoundQuaternions,
+        capturedFormulaReference,
+        orientation,
+        compoundReturnTiltErrorDeg,
+        derivedGyroCalibration,
+      );
+    } catch {
+      return null;
+    }
+  });
+  const displayedCompoundCapture = $derived(compoundLiveCapture ?? compoundCapture);
   const quaternionRanges = $derived.by(() => {
     orientationSerial;
     const samples = dynamicRecording && dynamicQuaternions.length > 0
@@ -450,10 +459,10 @@
     step: (typeof dynamicSteps)[number],
     capture: DynamicAxisCapture,
   ): boolean {
-    return capture.physicalAxis === step.physicalAxis &&
-      capture.positiveFace === step.positiveFace &&
-      capture.motionDirection === step.motionDirection &&
-      capture.targetAngleDeg === step.targetAngleDeg;
+    return capture.startPose?.top === step.start.top &&
+      capture.startPose.front === step.start.front &&
+      capture.endPose?.top === step.end.top &&
+      capture.endPose.front === step.end.front;
   }
 
   function dynamicStepTouchesPose(
@@ -461,8 +470,8 @@
     top: CubeColor,
     front: CubeColor,
   ): boolean {
-    const guide = createDynamicGuideModel(step);
-    return guide.top === top && (guide.startFront === front || guide.endFront === front);
+    return (step.start.top === top && step.start.front === front) ||
+      (step.end.top === top && step.end.front === front);
   }
 
   function removeDynamicStepCapture(step: (typeof dynamicSteps)[number]): void {
@@ -514,7 +523,7 @@
     diagnosticJson = "";
     diagnosticCopyStatus = "";
     dynamicRecording = true;
-    message = `起点 ${colorLabels[currentDynamicGuide.top]}上/${colorLabels[currentDynamicGuide.startFront]}前已自动记录。现在保持贴桌面，从正上方看${currentDynamic.motionDirection === "counterclockwise" ? "逆时针" : "顺时针"}转 ${currentDynamic.targetAngleDeg}°，停稳到 ${colorLabels[currentDynamicGuide.endFront]}色朝前。`;
+    message = `起点 ${colorLabels[currentDynamicGuide.top]}上/${colorLabels[currentDynamicGuide.startFront]}前已自动记录。现在拿在空中自然转动整颗魔方，到 ${colorLabels[currentDynamicGuide.endTop]}上/${colorLabels[currentDynamicGuide.endFront]}前后停稳；不要拧任何单独一层。`;
   }
 
   function skipInitialAnchor(): void {
@@ -533,7 +542,7 @@
       message = "已跳过最后一条动态边，继续做空中全向组合验证。";
     } else {
       dynamicIndex += 1;
-      message = "已跳过上一动态轴；可以继续采集下一条轴。";
+      message = "已跳过上一条姿态边；下一条会从它声明的起点继续。";
     }
   }
 
@@ -554,7 +563,7 @@
     if (!currentDynamic || !currentDynamicGuide || !dynamicStartPose) return;
     try {
       const endPose = recentPoseCapture(
-        currentDynamicGuide.top,
+        currentDynamicGuide.endTop,
         currentDynamicGuide.endFront,
       );
       const { endpointAngleDeg: endpointAngle } = validatePoseGraphEdgeEndpoint({
@@ -575,7 +584,7 @@
         ...axisCapture,
         startPose: dynamicStartPose,
         endPose,
-        expectedEnd: { top: currentDynamicGuide.top, front: currentDynamicGuide.endFront },
+        expectedEnd: { top: currentDynamicGuide.endTop, front: currentDynamicGuide.endFront },
         layerMovesObserved: [],
       };
       dynamicRecording = false;
@@ -586,7 +595,7 @@
         ...dynamicSignalFrames.map((frame) => ({ ...frame, bytes: frame.bytes.slice() })),
       ];
       dynamicStartPose = null;
-      message = `边与终点已记录：${colorLabels[currentDynamicGuide.top]}上/${colorLabels[currentDynamicGuide.endFront]}前，端点 ${endpointAngle.toFixed(1)}°；协议 ${capture.protocolAxis.toUpperCase()} 轴，主导度 ${Math.round(capture.dominance * 100)}%。当前已有 ${staticCaptures.length} 个唯一姿态节点。`;
+      message = `边与终点已记录：${colorLabels[currentDynamicGuide.endTop]}上/${colorLabels[currentDynamicGuide.endFront]}前，端点 ${endpointAngle.toFixed(1)}°。下一条会直接从当前姿态继续；当前已有 ${staticCaptures.length} 个唯一姿态节点。`;
       if (dynamicIndex + 1 >= dynamicSteps.length) {
         stage = "compound";
         message = "单轴采集完成。接下来做空中全向组合旋转，并回到白上绿前测量漂移。";
@@ -600,19 +609,19 @@
 
   function startCompoundCapture(): void {
     if (!capturedFormulaReference || !compoundTableMatches) {
-      message = "请先把白色面朝上放稳；绿色朝前按示意摆放。开始门槛只检查桌面倾斜，不再被 yaw 漂移误拦截。";
+      message = "请先在手中对准白色朝上、绿色朝前，并等待实时 3D 与姿态文字都显示匹配。";
       return;
     }
     compoundQuaternions = [];
     compoundSampleCount = 0;
     compoundCapture = null;
     compoundRecording = true;
-    message = "正在记录：拿起整颗魔方，缓慢覆盖上下、左右、翻滚等多个方向；至少旋转 6 秒，最后放回白上绿前。";
+    message = "正在记录：在空中缓慢覆盖绕红橙、白黄、绿蓝三个本体轴的旋转；实时覆盖条会告诉你还缺哪个方向，最后回到白上绿前。";
   }
 
   function confirmCompoundCapture(): void {
     if (!capturedFormulaReference || !stableAverageQuaternion || !compoundTableMatches) {
-      message = "请先把白色面朝上放回桌面并保持稳定约 1 秒；绿色朝前请按实体标记摆放，yaw 漂移不会再阻止确认。";
+      message = "请在手中回到白上绿前并保持稳定约 1 秒；以实时 3D 和识别文字为准。";
       return;
     }
     try {
@@ -621,14 +630,15 @@
         capturedFormulaReference,
         stableAverageQuaternion,
         compoundReturnTiltErrorDeg,
+        derivedGyroCalibration ?? undefined,
       );
       compoundRecording = false;
       if (!compoundCapture.passed) {
-        message = `组合验证未通过：路径 ${compoundCapture.pathRotationDeg}°，三轴覆盖 ${Math.round(compoundCapture.axisCoverage.x * 100)}/${Math.round(compoundCapture.axisCoverage.y * 100)}/${Math.round(compoundCapture.axisCoverage.z * 100)}%，回桌倾斜 ${compoundCapture.returnTiltErrorDeg}°，绝对姿态差 ${compoundCapture.returnToReferenceErrorDeg}°。请重新记录。`;
+        message = `组合验证未通过：路径 ${compoundCapture.pathRotationDeg}°，本体三轴覆盖 ${Math.round(compoundCapture.axisCoverage.x * 100)}/${Math.round(compoundCapture.axisCoverage.y * 100)}/${Math.round(compoundCapture.axisCoverage.z * 100)}%，回到白上姿态的倾斜 ${compoundCapture.returnTiltErrorDeg}°，绝对姿态差 ${compoundCapture.returnToReferenceErrorDeg}°。请继续补足较弱方向。`;
         return;
       }
       stage = "moves";
-      message = `组合验证通过，回桌倾斜 ${compoundCapture.returnTiltErrorDeg}°；绝对姿态差 ${compoundCapture.returnToReferenceErrorDeg}° 作为 yaw/session 漂移诊断保留。现在验证层转面编号和方向。`;
+      message = `组合验证通过，回到白上姿态的倾斜 ${compoundCapture.returnTiltErrorDeg}°；绝对姿态差 ${compoundCapture.returnToReferenceErrorDeg}° 作为 session 漂移诊断保留。现在验证层转面编号和方向。`;
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     }
@@ -768,11 +778,9 @@
       detectedRotationDeg: Number(displayedRotationDeg.toFixed(3)),
       dynamicSampleCount,
       compoundReturn: stage === "compound" ? {
-        physicalAxis: whiteYellowAxisCapture?.physicalAxis ?? null,
-        sensorAxisVector: whiteYellowAxisCapture
-          ? capturedProtocolAxisVector(whiteYellowAxisCapture)
-          : null,
-        deltaOrder: whiteYellowAxisCapture?.quaternionDeltaOrder ?? null,
+        model: derivedGyroCalibration?.solver ?? null,
+        bodyToModel: derivedGyroCalibration?.bodyToModel ?? null,
+        relativeOrder: derivedGyroCalibration?.relativeOrder ?? null,
         tiltErrorDeg: Number(compoundReturnTiltErrorDeg.toFixed(3)),
         absoluteErrorDeg: formulaGripDistanceDeg === null
           ? null
@@ -870,7 +878,7 @@
         <div class="instruction-icon"><Radio size={34} /></div>
         <span class="stage-label">初始人工锚点</span>
         <h3>{currentStatic.title}</h3>
-        <p class="instruction">把魔方稳定放在桌面上，白色中心朝上、绿色中心朝向你并保持至少 1 秒。只需人工确认这一个语义锚点；后续完整 24 姿态会由 18 条动态边的稳定首尾自动生成。</p>
+        <p class="instruction">手持或放置都可以：白色中心朝上、绿色中心朝向你并保持至少 1 秒。只需人工确认这一个语义锚点；后续会沿一条连续的空中路径依次访问全部 24 个姿态，不需要反复回到固定起点。</p>
         <CalibrationGuide3D mode="static" top={currentStatic.top} front={currentStatic.front} />
         <div class="live-samples"><span class:ready={recentQuaternionCount >= 8}></span>最近窗口 {recentQuaternionCount} 个姿态样本</div>
         <div class="confirm-pose-row">
@@ -889,16 +897,17 @@
         <button class="skip-all" onclick={skipInitialAnchor}>跳过初始锚点（仅协议调试）</button>
       {:else if stage === "dynamic" && currentDynamic}
         <div class="instruction-icon"><Rotate3D size={34} /></div>
-        <span class="stage-label">桌面转盘验证 {dynamicIndex + 1}/{dynamicSteps.length}</span>
-        <h3>{currentDynamic.title}</h3>
-        <p class="instruction">让目标颜色朝上，把魔方稳定放在桌面上。开始记录后，保持魔方贴住桌面，像转盘一样从正上方看{currentDynamic.motionDirection === "counterclockwise" ? "逆时针" : "顺时针"}转动整颗魔方 {currentDynamic.targetAngleDeg}°；不要抬起、翻滚或拧任何单独一层。</p>
-        <CalibrationGuide3D
-          mode="dynamic"
-          physicalAxis={currentDynamic.physicalAxis}
-          positiveFace={currentDynamic.positiveFace}
-          motionDirection={currentDynamic.motionDirection}
-          targetAngleDeg={currentDynamic.targetAngleDeg}
-        />
+        <span class="stage-label">连续空中姿态边 {dynamicIndex + 1}/{dynamicSteps.length}</span>
+        <h3>
+          {colorLabels[currentDynamic.start.top]}上/{colorLabels[currentDynamic.start.front]}前
+          → {colorLabels[currentDynamic.end.top]}上/{colorLabels[currentDynamic.end.front]}前
+        </h3>
+        <p class="instruction">不需要放在桌上，也不需要回到固定初始姿态。先按左侧起点稳定，开始后拿在空中用任意自然路径转动整颗魔方，最后对准右侧终点并停稳约 1 秒。只能转整颗魔方，不要拧任何单独一层。</p>
+        <div class="pose-transition-guides">
+          <div><strong>当前起点</strong><CalibrationGuide3D mode="static" top={currentDynamic.start.top} front={currentDynamic.start.front} /></div>
+          <span class="transition-arrow">→</span>
+          <div><strong>目标终点</strong><CalibrationGuide3D mode="static" top={currentDynamic.end.top} front={currentDynamic.end.front} /></div>
+        </div>
         <div class="recording-card" class:recording={dynamicRecording}>
           <span></span>
           <strong>{dynamicRecording ? "正在采集姿态与角速度" : "等待开始"}</strong>
@@ -914,6 +923,20 @@
               </span>
             </div>
           {/if}
+          {#if derivedGyroCalibration?.valid}
+            <div class="dynamic-live-pose">
+              <div class="cube-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} /></div>
+              <div class="pose-recognition" class:matched={dynamicRecognizedEndpointMatches}>
+                {#if recognizedLivePose}
+                  {#if dynamicRecognizedEndpointMatches}<Check size={16} />{:else}<Rotate3D size={16} />{/if}
+                  <span>
+                    实时识别 {colorLabels[recognizedLivePose.topColor]}上/{colorLabels[recognizedLivePose.frontColor]}前
+                    · 目标 {colorLabels[currentDynamic.end.top]}上/{colorLabels[currentDynamic.end.front]}前
+                  </span>
+                {/if}
+              </div>
+            </div>
+          {/if}
           <div class="rotation-meter" class:ready={dynamicEndpointReady}>
             <span style={`width:${Math.min(100, detectedRotationDeg / currentDynamic.targetAngleDeg * 100)}%`}></span>
           </div>
@@ -922,17 +945,17 @@
               已检测到层转，当前边不能保存
             {:else if !stableAverageQuaternion}
               {detectedRotationDeg >= currentDynamic.targetAngleDeg * 0.8
-                ? `已经到达目标角度，请停稳到 ${colorLabels[currentDynamicGuide?.endFront ?? "green"]}色朝前`
-                : `请保持贴桌面转动整颗魔方，目标 ${currentDynamic.targetAngleDeg}°`}
+                ? `已经接近目标姿态，请停稳到 ${colorLabels[currentDynamicGuide?.endTop ?? "white"]}上/${colorLabels[currentDynamicGuide?.endFront ?? "green"]}前`
+                : `请在空中转动整颗魔方，目标姿态差约 ${currentDynamic.targetAngleDeg}°`}
             {:else if dynamicEndpointReady && dynamicEndpointAngleDeg !== null}
               终点稳定 · 实测 {dynamicEndpointAngleDeg.toFixed(1)}° · 可以确认
             {:else if dynamicEndpointAngleDeg !== null}
-              终点已稳定，但实测 {dynamicEndpointAngleDeg.toFixed(1)}°；请调整到 {colorLabels[currentDynamicGuide?.endFront ?? "green"]}色朝前
+              终点已稳定，但实测 {dynamicEndpointAngleDeg.toFixed(1)}°；请调整到 {colorLabels[currentDynamicGuide?.endTop ?? "white"]}上/{colorLabels[currentDynamicGuide?.endFront ?? "green"]}前
             {/if}
           </small>
           {#if dynamicLayerMoves.length > 0}
             <div class="layer-move-warning">
-              检测到层转 {dynamicLayerMoves.join(" ")}，这条动态边已污染。请不要拧任何一层；停止本轮后，让整颗魔方在桌面上转动。
+              检测到层转 {dynamicLayerMoves.join(" ")}，这条姿态边已污染。请停止本轮，复原层状态后只旋转整颗魔方。
             </div>
           {:else if dynamicSampleCount >= 80 && detectedRotationDeg < 2}
             <div class="gyro-still-warning">
@@ -955,14 +978,32 @@
       {:else if stage === "compound"}
         <div class="instruction-icon"><Rotate3D size={34} /></div>
         <span class="stage-label">Held-out validation</span>
-        <h3>空中全向组合旋转与回零检查</h3>
-        <p class="instruction">先把魔方放在桌面上，白色朝上、绿色朝前。开始后拿起整颗魔方，缓慢做上下俯仰、左右偏航和前后翻滚，覆盖所有方向；至少持续 6 秒。最后必须放回同一个白上绿前姿态并保持稳定。</p>
-        <CalibrationGuide3D mode="static" top="white" front="green" />
+        <h3>空中全向覆盖与实时姿态检查</h3>
+        <p class="instruction">全程拿在空中即可。开始前对准白上绿前；记录时分别绕红—橙、白—黄、绿—蓝三个本体轴大幅旋转，观察实时 3D 是否与手中一致，并把三个覆盖条都推过最低线。最后回到白上绿前并停稳。</p>
+        <div class="compound-pose-board">
+          <div>
+            <strong>目标基准</strong>
+            <CalibrationGuide3D mode="static" top="white" front="green" />
+          </div>
+          <div>
+            <strong>实时识别</strong>
+            <div class="cube-preview compound-preview"><Cube3D {cube} {orientation} gyroCalibration={previewGyroCalibration} {stickerPalette} /></div>
+            <span class="live-pose-label">
+              {#if recognizedLivePose}
+                当前 {colorLabels[recognizedLivePose.topColor]}上 / {colorLabels[recognizedLivePose.frontColor]}前
+                · 上 {Math.round(recognizedLivePose.topAlignment * 100)}%
+                · 前 {Math.round(recognizedLivePose.frontAlignment * 100)}%
+              {:else}
+                标定模型尚未可用；请返回重采异常姿态边
+              {/if}
+            </span>
+          </div>
+        </div>
         <div class="pose-recognition formula-grip" class:matched={compoundTableMatches} class:mismatch={Boolean(stableAverageQuaternion) && !compoundTableMatches}>
-          {#if stableAverageQuaternion && whiteYellowAxisCapture}
+          {#if stableAverageQuaternion && recognizedLivePose}
             {#if compoundTableMatches}<Check size={16} />{:else}<Radio size={16} />{/if}
             <span>
-              {compoundTableMatches ? "已回到白色朝上的桌面平面" : "尚未回到白—黄轴竖直的桌面平面"}
+              {compoundTableMatches ? "实时 3D 已对齐白上绿前" : `当前识别为 ${colorLabels[recognizedLivePose.topColor]}上/${colorLabels[recognizedLivePose.frontColor]}前`}
               · 倾斜 {compoundReturnTiltErrorDeg.toFixed(1)}°
               {#if formulaGripDistanceDeg !== null} · 绝对姿态差 {formulaGripDistanceDeg.toFixed(1)}°（含 yaw 漂移，仅诊断）{/if}
             </span>
@@ -975,18 +1016,18 @@
           <strong>{compoundRecording ? "正在采集全向轨迹" : "等待开始"}</strong>
           <small>{compoundSampleCount} samples</small>
         </div>
-        {#if compoundCapture}
+        {#if displayedCompoundCapture}
           <div class="summary-grid">
-            <article><strong>{compoundCapture.pathRotationDeg}°</strong><span>累计路径</span></article>
-            <article><strong>{Math.round(compoundCapture.axisCoverage.x * 100)}/{Math.round(compoundCapture.axisCoverage.y * 100)}/{Math.round(compoundCapture.axisCoverage.z * 100)}%</strong><span>XYZ 覆盖</span></article>
-            <article><strong>{compoundCapture.returnTiltErrorDeg}°</strong><span>回桌倾斜</span></article>
-            <article><strong>{compoundCapture.returnToReferenceErrorDeg}°</strong><span>绝对姿态差</span></article>
-            <article><strong>{compoundCapture.passed ? "通过" : "重试"}</strong><span>组合验证</span></article>
+            <article><strong>{displayedCompoundCapture.pathRotationDeg}°</strong><span>累计路径</span></article>
+            <article><strong>{Math.round(displayedCompoundCapture.axisCoverage.x * 100)}%</strong><span>红—橙轴 X</span></article>
+            <article><strong>{Math.round(displayedCompoundCapture.axisCoverage.y * 100)}%</strong><span>白—黄轴 Y</span></article>
+            <article><strong>{Math.round(displayedCompoundCapture.axisCoverage.z * 100)}%</strong><span>绿—蓝轴 Z</span></article>
+            <article><strong>{displayedCompoundCapture.passed ? "覆盖完成" : "继续旋转"}</strong><span>实时状态</span></article>
           </div>
         {/if}
         {#if compoundRecording}
           <div class="step-actions">
-            <button class="primary" disabled={compoundSampleCount < 40 || !compoundTableMatches} onclick={confirmCompoundCapture}><Check size={18} /> 已水平回桌，完成验证</button>
+            <button class="primary" disabled={compoundSampleCount < 40 || !compoundTableMatches || !compoundLiveCapture?.passed} onclick={confirmCompoundCapture}><Check size={18} /> 已回到白上绿前，完成验证</button>
             <button class="secondary" onclick={() => (compoundRecording = false)}>停止并重来</button>
           </div>
         {:else}
@@ -1057,6 +1098,7 @@
               {derivedGyroCalibration.valid ? "刚体姿态模型可用" : "标定残差过大，禁止启用"}
               · 平均 {derivedGyroCalibration.meanPoseErrorDeg.toFixed(1)}°
               · 最大 {derivedGyroCalibration.maxPoseErrorDeg.toFixed(1)}°
+              · 边误差 {derivedGyroCalibration.meanMotionEdgeErrorDeg.toFixed(1)}°
               · 置信度 {Math.round(derivedGyroCalibration.confidence * 100)}%
               · {derivedGyroCalibration.solver === "wahba-kabsch" ? "连续 SO(3)" : "24 轴离散"}
             </span>
@@ -1081,7 +1123,7 @@
         <div class="instruction-icon success"><ShieldCheck size={38} /></div>
         <span class="stage-label">采集完成</span>
         <h3>标定档案已生成</h3>
-        <p class="instruction">已用 1 个人工语义锚点和 18 条桌面动态边自动生成完整姿态节点，并保存闭环误差、全向组合摘要、动作差异、字段候选位置和渲染确认。原始 BLE 帧与连续四元数没有写入 JSONL。</p>
+        <p class="instruction">已用 1 个人工语义锚点和 24 条连续空中姿态边访问完整 24 个姿态节点，最后一条边回到白上绿前形成闭环；同时保存完整 SO(3) 边误差、全向覆盖摘要、动作差异、字段候选位置和渲染确认。原始 BLE 帧与连续四元数没有写入 JSONL。</p>
         <div class="summary-grid">
           <article><strong>{staticCaptures.length}/24</strong><span>Pose Nodes</span></article>
           <article><strong>{dynamicCaptures.length}/{dynamicSteps.length}</strong><span>Motion Edges</span></article>
@@ -1226,6 +1268,21 @@
   .live-samples span { width: 8px; height: 8px; border-radius: 50%; background: var(--color-warning); }
   .live-samples span.ready { background: #50d69c; box-shadow: 0 0 9px #50d69c; }
   .confirm-pose-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 9px; }
+  .pose-transition-guides { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); width: 100%; align-items: center; gap: 10px; }
+  .pose-transition-guides > div { display: grid; min-width: 0; justify-items: center; gap: 7px; color: var(--color-text-muted); font-size: 0.72rem; }
+  .pose-transition-guides :global(.guide-card-3d) { width: 100%; padding-right: 4px; padding-left: 4px; overflow: hidden; }
+  .pose-transition-guides :global(.guide-scene) { transform: scale(0.82); margin: -22px -28px; }
+  .transition-arrow { color: var(--color-primary); font-size: 1.7rem; font-weight: 900; }
+  .compound-pose-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; align-items: stretch; gap: 10px; }
+  .compound-pose-board > div { display: grid; min-width: 0; justify-items: center; align-content: start; gap: 8px; padding: 10px; border: 1px solid var(--color-outline-soft); border-radius: 16px; background: var(--color-surface-highest); color: var(--color-text-muted); font-size: 0.72rem; }
+  .compound-pose-board :global(.guide-card-3d) { width: 100%; padding-right: 4px; padding-left: 4px; overflow: hidden; }
+  .compound-pose-board :global(.guide-scene) { transform: scale(0.82); margin: -22px -28px; }
+  .compound-preview { max-height: 286px; }
+  .compound-preview :global(.cube-3d-wrap) { min-height: 270px; }
+  .live-pose-label { color: var(--color-primary); font-weight: 750; }
+  .dynamic-live-pose { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, auto); width: 100%; align-items: center; gap: 10px; }
+  .dynamic-live-pose .cube-preview { max-height: 260px; }
+  .dynamic-live-pose .cube-preview :global(.cube-3d-wrap) { min-height: 250px; }
   .pose-recognition { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid var(--color-outline); border-radius: 11px; color: var(--color-text-muted); background: var(--color-surface-highest); font-size: 0.72rem; }
   .pose-recognition.matched { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 42%, transparent); background: color-mix(in srgb, var(--color-success) 8%, var(--color-surface-highest)); }
   .pose-recognition.mismatch { color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 38%, transparent); }
@@ -1320,5 +1377,9 @@
     .signal-stream { padding: 18px 12px 24px; }
     .summary-grid { grid-template-columns: repeat(2, 1fr); }
     .notation-guide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pose-transition-guides { grid-template-columns: 1fr; }
+    .transition-arrow { transform: rotate(90deg); }
+    .compound-pose-board { grid-template-columns: 1fr; }
+    .dynamic-live-pose { grid-template-columns: 1fr; }
   }
 </style>

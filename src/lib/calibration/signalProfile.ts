@@ -120,6 +120,7 @@ export interface SignalCalibrationProfile {
     solver: DerivedGyroCalibration["solver"];
     meanPoseErrorDeg: number;
     maxPoseErrorDeg: number;
+    meanMotionEdgeErrorDeg: number;
     poseResiduals: DerivedGyroCalibration["poseResiduals"];
     rejectedPoseKeys: string[];
   };
@@ -153,6 +154,7 @@ export interface DerivedGyroCalibration {
   relativeOrder: SensorRelativeOrder;
   meanPoseErrorDeg: number;
   maxPoseErrorDeg: number;
+  meanMotionEdgeErrorDeg: number;
   confidence: number;
   solver: "signed-axis" | "wahba-kabsch";
   poseResiduals: Array<{ top: CubeColor; front: CubeColor; errorDeg: number; confidence: number }>;
@@ -291,16 +293,56 @@ function scoreCalibrationCandidate(
   const meanPoseErrorDeg = poseResiduals.reduce(
     (sum, item) => sum + item.errorDeg * Math.max(0.05, item.confidence), 0,
   ) / totalWeight;
-  const directionErrors = profile.dynamicAxes.filter((capture) => capture.targetAngleDeg !== 180).map((capture) => {
-    let sensorAxis = protocolAxisVector(capture);
-    const captureOrder = capturedRelativeOrder(capture);
-    if (captureOrder && captureOrder !== relativeOrder) sensorAxis = sensorAxis.map((value) => -value) as [number, number, number];
-    const mapped = applyMatrix3(bodyToModel, sensorAxis);
-    const expectedSign = capture.motionDirection === "counterclockwise" ? 1 : -1;
-    const expected = MODEL_VECTOR_FOR_POSITIVE_FACE[capture.positiveFace].map((value) => value * expectedSign);
-    const dot = Math.max(-1, Math.min(1, mapped.reduce((sum, value, index) => sum + value * expected[index], 0)));
-    return Math.acos(dot) * 180 / Math.PI;
-  });
+  const poseGraphEdges = profile.dynamicAxes.filter((capture) =>
+    capture.targetAngleDeg !== 180 && capture.startPose && capture.endPose,
+  );
+  const directionErrors = poseGraphEdges.length > 0
+    ? poseGraphEdges.map((capture) => {
+        const sensorReference = reference;
+        const sensorStart = quaternionMatrix(capture.startPose!.average);
+        const sensorEnd = quaternionMatrix(capture.endPose!.average);
+        const predictedStart = multiplyMatrix3(
+          multiplyMatrix3(
+            bodyToModel,
+            relativeSensorMatrix(sensorReference, sensorStart, relativeOrder),
+          ),
+          transposeMatrix3(bodyToModel),
+        );
+        const predictedEnd = multiplyMatrix3(
+          multiplyMatrix3(
+            bodyToModel,
+            relativeSensorMatrix(sensorReference, sensorEnd, relativeOrder),
+          ),
+          transposeMatrix3(bodyToModel),
+        );
+        const predictedDelta = multiplyMatrix3(predictedEnd, transposeMatrix3(predictedStart));
+        const expectedStart = expectedCubePoseMatrix(
+          capture.startPose!.top,
+          capture.startPose!.front,
+        );
+        const expectedEnd = expectedCubePoseMatrix(
+          capture.endPose!.top,
+          capture.endPose!.front,
+        );
+        const expectedDelta = multiplyMatrix3(expectedEnd, transposeMatrix3(expectedStart));
+        return rotationDistanceDeg(predictedDelta, expectedDelta);
+      })
+    : profile.dynamicAxes.filter((capture) => capture.targetAngleDeg !== 180).map((capture) => {
+        let sensorAxis = protocolAxisVector(capture);
+        const captureOrder = capturedRelativeOrder(capture);
+        if (captureOrder && captureOrder !== relativeOrder) {
+          sensorAxis = sensorAxis.map((value) => -value) as [number, number, number];
+        }
+        const mapped = applyMatrix3(bodyToModel, sensorAxis);
+        const expectedSign = capture.motionDirection === "counterclockwise" ? 1 : -1;
+        const expected = MODEL_VECTOR_FOR_POSITIVE_FACE[capture.positiveFace]
+          .map((value) => value * expectedSign);
+        const dot = Math.max(-1, Math.min(1, mapped.reduce(
+          (sum, value, index) => sum + value * expected[index],
+          0,
+        )));
+        return Math.acos(dot) * 180 / Math.PI;
+    });
   const meanDirectionErrorDeg = directionErrors.length
     ? directionErrors.reduce((sum, value) => sum + value, 0) / directionErrors.length
     : 180;
@@ -373,19 +415,24 @@ export function deriveGyroCalibrationFromSignalProfile(
   );
   if (!zeroCapture) return null;
 
-  if (profile.staticPoses.length < 3 || profile.dynamicAxes.length < 3) return null;
-  const independentAxes = ["red-orange", "blue-green", "white-yellow"].map((physicalAxis) =>
-    profile.dynamicAxes.find((capture) =>
-      capture.physicalAxis === physicalAxis && capture.targetAngleDeg !== 180,
-    ),
+  if (profile.staticPoses.length < 3) return null;
+  const hasPoseGraphEdges = profile.dynamicAxes.some((capture) =>
+    capture.targetAngleDeg !== 180 && capture.startPose && capture.endPose,
   );
-  if (independentAxes.some((capture) => !capture)) return null;
-  const axisVectors = independentAxes.map((capture) => protocolAxisVector(capture!));
-  const axisEvidenceDeterminant = Math.abs(determinant3(axisVectors as Matrix3));
-  // Three captures that collapse onto one plane/axis cannot define a rigid
-  // sensor frame. High-but-independent residuals remain useful diagnostics;
-  // degeneracy is the condition that truly makes the model unknowable.
-  if (axisEvidenceDeterminant < 0.15) return null;
+  if (!hasPoseGraphEdges) {
+    if (profile.dynamicAxes.length < 3) return null;
+    const independentAxes = ["red-orange", "blue-green", "white-yellow"].map((physicalAxis) =>
+      profile.dynamicAxes.find((capture) =>
+        capture.physicalAxis === physicalAxis && capture.targetAngleDeg !== 180,
+      ),
+    );
+    if (independentAxes.some((capture) => !capture)) return null;
+    const axisVectors = independentAxes.map((capture) => protocolAxisVector(capture!));
+    const axisEvidenceDeterminant = Math.abs(determinant3(axisVectors as Matrix3));
+    // Legacy axis-only profiles still need three independent vectors. Pose
+    // Graph profiles use the complete start/end SO(3) deltas instead.
+    if (axisEvidenceDeterminant < 0.15) return null;
+  }
   const reference = quaternionMatrix(zeroCapture.average);
   const discreteCandidates = properAxisRotations().flatMap((bodyToModel) =>
     SENSOR_RELATIVE_ORDERS.map((relativeOrder) => ({
@@ -418,6 +465,7 @@ export function deriveGyroCalibrationFromSignalProfile(
     relativeOrder: best.relativeOrder,
     meanPoseErrorDeg: Number(best.meanPoseErrorDeg.toFixed(3)),
     maxPoseErrorDeg: Number(best.maxPoseErrorDeg.toFixed(3)),
+    meanMotionEdgeErrorDeg: Number(best.meanDirectionErrorDeg.toFixed(3)),
     confidence: Number((sampleConfidence * 0.35 + geometricConfidence * 0.65).toFixed(3)),
     solver: best.solver,
     poseResiduals: best.poseResiduals.map((item) => ({ ...item, errorDeg: Number(item.errorDeg.toFixed(3)) })),
@@ -688,6 +736,7 @@ export function summarizeCompoundMotionValidation(
   reference: CubeQuaternion,
   returnedPose: CubeQuaternion,
   returnTiltErrorDeg?: number,
+  calibration?: Pick<DerivedGyroCalibration, "bodyToModel" | "relativeOrder">,
 ): CompoundMotionValidationCapture {
   if (samples.length < 20) throw new Error("自由旋转样本不足，请至少持续旋转 6 秒");
   const energy = { x: 0, y: 0, z: 0 };
@@ -695,14 +744,19 @@ export function summarizeCompoundMotionValidation(
   for (let index = 1; index < samples.length; index += 1) {
     const previous = normalizeQuaternion(samples[index - 1].quaternion);
     const current = alignedTo(previous, samples[index].quaternion);
-    const delta = multiplyRaw(current, conjugate(previous));
+    const delta = calibration?.relativeOrder === "reference-current-inverse"
+      ? multiplyRaw(previous, conjugate(current))
+      : multiplyRaw(current, conjugate(previous));
     const angle = quaternionAngularDistanceDeg(previous, current);
     const gapMs = samples[index].at - samples[index - 1].at;
     if (gapMs <= 0 || gapMs > 500 || angle < 0.05 || angle > 75) continue;
     pathRotationDeg += angle;
-    energy.x += Math.abs(delta.x);
-    energy.y += Math.abs(delta.y);
-    energy.z += Math.abs(delta.z);
+    const vector = calibration
+      ? applyMatrix3(calibration.bodyToModel, [delta.x, delta.y, delta.z])
+      : [delta.x, delta.y, delta.z];
+    energy.x += Math.abs(vector[0]);
+    energy.y += Math.abs(vector[1]);
+    energy.z += Math.abs(vector[2]);
   }
   const totalEnergy = energy.x + energy.y + energy.z || 1;
   const axisCoverage = {
@@ -863,6 +917,7 @@ export function createSignalCalibrationProfile(input: {
       solver: calibration.solver,
       meanPoseErrorDeg: calibration.meanPoseErrorDeg,
       maxPoseErrorDeg: calibration.maxPoseErrorDeg,
+      meanMotionEdgeErrorDeg: calibration.meanMotionEdgeErrorDeg,
       poseResiduals: calibration.poseResiduals,
       rejectedPoseKeys: calibration.rejectedPoseKeys,
     } : undefined,

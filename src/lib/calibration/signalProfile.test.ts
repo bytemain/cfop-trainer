@@ -24,6 +24,7 @@ import {
   type Matrix3,
 } from "$lib/cube/orientation";
 import { Euler, Matrix4, Quaternion } from "three";
+import { createContinuousPoseGraphEdges, POSE_GRAPH_NODE_SEQUENCE } from "./calibrationGuide";
 
 function quaternionFromMatrix(matrix: Matrix3) {
   const value = new Quaternion().setFromRotationMatrix(new Matrix4().set(
@@ -266,6 +267,41 @@ describe("signal calibration profile", () => {
         { physicalAxis: "white-yellow", positiveFace: "white", protocolAxis: "z", sign: 1, sampleCount: 20, activeSampleCount: 10, dominance: 1, confidence: 1, signalSource: "quaternion-delta" },
       ],
     })).toBeNull();
+  });
+
+  it("solves pose-graph endpoints even when every legacy axis summary collapses to protocol Z", () => {
+    const staticPoses = POSE_GRAPH_NODE_SEQUENCE.map((pose) => ({
+      ...pose,
+      average: quaternionFromMatrix(expectedCubePoseMatrix(pose.top, pose.front)),
+      sampleCount: 12,
+      maxAngularDeviationDeg: 0.2,
+      confidence: 0.98,
+    }));
+    const poseByKey = new Map(staticPoses.map((pose) => [`${pose.top}/${pose.front}`, pose]));
+    const dynamicAxes = createContinuousPoseGraphEdges().map((edge) => ({
+      physicalAxis: edge.physicalAxis,
+      positiveFace: edge.positiveFace,
+      motionDirection: edge.motionDirection,
+      targetAngleDeg: edge.targetAngleDeg,
+      protocolAxis: "z" as const,
+      sign: 1 as const,
+      axisVector: [0, 0, 1] as [number, number, number],
+      sampleCount: 16,
+      activeSampleCount: 10,
+      dominance: 1,
+      confidence: 0.95,
+      signalSource: "quaternion-delta" as const,
+      quaternionDeltaOrder: "current-previous-inverse" as const,
+      startPose: poseByKey.get(`${edge.start.top}/${edge.start.front}`)!,
+      endPose: poseByKey.get(`${edge.end.top}/${edge.end.front}`)!,
+      expectedEnd: edge.end,
+      layerMovesObserved: [],
+    }));
+    const derived = deriveGyroCalibrationFromSignalProfile({ staticPoses, dynamicAxes });
+    expect(derived?.valid).toBe(true);
+    expect(derived?.meanPoseErrorDeg).toBeLessThan(0.001);
+    expect(derived?.maxPoseErrorDeg).toBeLessThan(0.001);
+    expect(derived?.bodyToModel).toEqual([[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
   });
 
   it("solves a non-axis-aligned sensor mounting with weighted Wahba/Kabsch", () => {
