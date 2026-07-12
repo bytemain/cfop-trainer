@@ -25,6 +25,8 @@ import {
   type GanV4Packet,
 } from "./parser";
 
+const SOLVED_FACELETS = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
+
 export const GAN_V4_SERVICE = "00000010-0000-fff7-fff6-fff5fff4fff0";
 export const GAN_V4_READ = "0000fff6-0000-1000-8000-00805f9b34fb";
 export const GAN_V4_WRITE = "0000fff5-0000-1000-8000-00805f9b34fb";
@@ -78,8 +80,66 @@ class GanV4Session implements SmartCubeSession {
     await this.calibrateCipher();
   }
 
-  initialSnapshot(): Promise<CubeSnapshot> {
-    return this.requestSnapshot();
+  async initialSnapshot(): Promise<CubeSnapshot> {
+    const first = await this.requestSnapshot();
+    await new Promise((resolve) => setTimeout(resolve, 90));
+
+    let chosen = first;
+    try {
+      const second = await this.requestSnapshot();
+      chosen = second;
+      let consistent = first.facelets === second.facelets;
+      let confirmations = 2;
+
+      if (!consistent) {
+        await new Promise((resolve) => setTimeout(resolve, 90));
+        try {
+          const third = await this.requestSnapshot();
+          confirmations = 3;
+          if (third.facelets === second.facelets) {
+            chosen = second;
+            consistent = true;
+          } else if (third.facelets === first.facelets) {
+            chosen = first;
+            consistent = true;
+          } else {
+            // The cube may genuinely be moving during startup. In that case
+            // the newest complete state is safer than a queued first frame.
+            chosen = third;
+          }
+        } catch (error) {
+          safeLogger.warn("gan-v4", "initial-snapshot-third-confirmation-failed", {
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      safeLogger.info("gan-v4", "initial-snapshot-confirmed", {
+        confirmations,
+        consistent,
+        firstSolved: first.facelets === SOLVED_FACELETS,
+        chosenSolved: chosen.facelets === SOLVED_FACELETS,
+        firstSequence: first.sequence ?? null,
+        chosenSequence: chosen.sequence ?? null,
+      });
+    } catch (error) {
+      safeLogger.warn("gan-v4", "initial-snapshot-confirmation-failed", {
+        fallbackSolved: first.facelets === SOLVED_FACELETS,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (this.lastEmittedSequence === null) {
+      const reliableSequence = reliableSnapshotMoveSequence(chosen.sequence);
+      if (reliableSequence !== null) {
+        this.establishMoveBaseline(reliableSequence);
+      } else {
+        safeLogger.info("gan-v4", "move-baseline-deferred", {
+          reason: "initial-snapshot-zero-counter",
+        });
+      }
+    }
+    return chosen;
   }
 
   moves(listener: (event: CubeMoveEvent) => void): Promise<() => Promise<void>> {
@@ -272,29 +332,20 @@ class GanV4Session implements SmartCubeSession {
   private dispatch(packet: GanV4Packet): void {
     if (packet.type === "snapshot") {
       const requested = this.pendingSnapshots.length > 0;
-      const establishesInitialBaseline = requested && this.lastEmittedSequence === null;
-      safeLogger.info("gan-v4", "snapshot-received", {
-        sequence: packet.sequence,
-        requested,
-        establishesInitialBaseline,
-      });
+      if (requested || this.notifications <= 3 || this.notifications % 120 === 0) {
+        safeLogger.info("gan-v4", "snapshot-received", {
+          sequence: packet.sequence,
+          requested,
+          solved: packet.facelets === SOLVED_FACELETS,
+        });
+      }
       const snapshot: CubeSnapshot = {
         facelets: packet.facelets,
         sequence: packet.sequence,
         receivedAt: Date.now(),
       };
-      // GAN16ui broadcasts 0xED state packets periodically, and some firmware
-      // reports move counter 0 in those packets. Only the explicitly requested
-      // initial snapshot owns the first move baseline. Later state packets may
-      // refresh facelets, but must never rewind the live move stream.
-      const reliableSequence = reliableSnapshotMoveSequence(snapshot.sequence);
-      if (establishesInitialBaseline && reliableSequence !== null) {
-        this.establishMoveBaseline(reliableSequence);
-      } else if (establishesInitialBaseline) {
-        safeLogger.info("gan-v4", "move-baseline-deferred", {
-          reason: "initial-snapshot-zero-counter",
-        });
-      }
+      // Request/response ownership is handled by initialSnapshot and recovery.
+      // Periodic 0xED broadcasts must never rewind the live move baseline.
       this.resolveNext(this.pendingSnapshots, snapshot);
       return;
     }

@@ -17,6 +17,10 @@ function setBits(data: Uint8Array, start: number, length: number, value: number)
   }
 }
 
+function fromHex(hex: string): Uint8Array {
+  return Uint8Array.from(hex.match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? []);
+}
+
 function solvedSnapshot(sequence: number): Uint8Array {
   const packet = new Uint8Array(20);
   packet.set([0xed, 0x12, sequence & 0xff, sequence >> 8]);
@@ -102,6 +106,45 @@ describe("GAN V4 session", () => {
 
     await session.disconnect();
     expect(connection.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("uses a freshly confirmed state instead of the first queued snapshot", async () => {
+    const device: DiscoveredDevice = {
+      id: "queued-state-device",
+      name: "GAN16ui_QUEUED_STATE",
+      serviceUuids: [],
+      manufacturerData: { 1: [9, 9, 9, 0, 1, 2, 3, 4, 5] },
+    };
+    const cipher = new GanV2Cipher(deriveGanV2CipherMaterial(extractGanHardwareAddress(device.manufacturerData)!));
+    let notify: ((data: Uint8Array) => void) | undefined;
+    let snapshotRequests = 0;
+    const queuedScrambledState = fromHex("ed0e930011f5ab5492280cdd133c4e1800005727");
+    const connection: BleConnection = {
+      device,
+      disconnect: vi.fn(async () => undefined),
+      read: vi.fn(async () => new Uint8Array()),
+      subscribe: vi.fn(async (_service, _characteristic, listener) => {
+        notify = listener;
+        return async () => undefined;
+      }),
+      write: vi.fn(async (_service, _characteristic, encrypted) => {
+        const request = cipher.decode(encrypted);
+        if (request[0] !== 0xdd || request[3] !== 0xed) return;
+        snapshotRequests += 1;
+        const response = snapshotRequests === 1
+          ? queuedScrambledState
+          : solvedSnapshot(0x1234);
+        queueMicrotask(() => notify?.(cipher.encode(response)));
+      }),
+    };
+
+    const session = await new GanV4Protocol().open(connection);
+    await expect(session.initialSnapshot()).resolves.toMatchObject({
+      sequence: 0x1234,
+      facelets: "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB",
+    });
+    expect(snapshotRequests).toBe(3);
+    await session.disconnect();
   });
 
   it("emits the first real move when the initial snapshot and move both use sequence zero", async () => {
