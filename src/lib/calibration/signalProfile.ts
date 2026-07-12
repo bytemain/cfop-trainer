@@ -455,8 +455,10 @@ export function deriveGyroCalibrationFromSignalProfile(
     ...profile.dynamicAxes.map((capture) => capture.confidence),
   ].reduce((sum, value) => sum + value, 0) / (profile.staticPoses.length + profile.dynamicAxes.length);
   const geometricConfidence = Math.max(0, 1 - best.meanPoseErrorDeg / 45);
+  const coveredTopColorCount = new Set(profile.staticPoses.map((capture) => capture.top)).size;
   return {
     valid:
+      coveredTopColorCount === 6 &&
       best.meanPoseErrorDeg <= 10 &&
       best.maxPoseErrorDeg <= 20 &&
       best.meanDirectionErrorDeg <= 15,

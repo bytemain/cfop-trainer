@@ -247,7 +247,6 @@
     currentDynamic !== undefined &&
     Math.abs(dynamicEndpointAngleDeg - currentDynamic.targetAngleDeg) <=
       (currentDynamic.targetAngleDeg === 180 ? 25 : 18) &&
-    (!recognizedLivePose || dynamicRecognizedEndpointMatches) &&
     dynamicLayerMoves.length === 0,
   );
   const liveCubePoseMatrix = $derived(
@@ -930,8 +929,9 @@
                 {#if recognizedLivePose}
                   {#if dynamicRecognizedEndpointMatches}<Check size={16} />{:else}<Rotate3D size={16} />{/if}
                   <span>
-                    实时识别 {colorLabels[recognizedLivePose.topColor]}上/{colorLabels[recognizedLivePose.frontColor]}前
+                    临时模型预览 {colorLabels[recognizedLivePose.topColor]}上/{colorLabels[recognizedLivePose.frontColor]}前
                     · 目标 {colorLabels[currentDynamic.end.top]}上/{colorLabels[currentDynamic.end.front]}前
+                    · 仅供观察，不作为采集门槛
                   </span>
                 {/if}
               </div>

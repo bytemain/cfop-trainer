@@ -16,10 +16,12 @@ import {
 } from "./signalProfile";
 import {
   applyMatrix3,
+  gyroModelMatrix,
   multiplyMatrix3,
   multiplyQuaternions,
   quaternionFromAxisAngle,
   quaternionMatrix,
+  rotationDistanceDeg,
   transposeMatrix3,
   type Matrix3,
 } from "$lib/cube/orientation";
@@ -302,6 +304,73 @@ describe("signal calibration profile", () => {
     expect(derived?.meanPoseErrorDeg).toBeLessThan(0.001);
     expect(derived?.maxPoseErrorDeg).toBeLessThan(0.001);
     expect(derived?.bodyToModel).toEqual([[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+  });
+
+  it("keeps a one-top provisional graph invalid until all six top colors are observable", () => {
+    const nodes = POSE_GRAPH_NODE_SEQUENCE.slice(0, 4).map((pose) => ({
+      ...pose,
+      average: quaternionFromMatrix(expectedCubePoseMatrix(pose.top, pose.front)),
+      sampleCount: 12,
+      maxAngularDeviationDeg: 0.1,
+      confidence: 0.99,
+    }));
+    const edges = createContinuousPoseGraphEdges().slice(0, 3).map((edge, index) => ({
+      physicalAxis: edge.physicalAxis,
+      positiveFace: edge.positiveFace,
+      motionDirection: edge.motionDirection,
+      targetAngleDeg: edge.targetAngleDeg,
+      protocolAxis: "z" as const,
+      sign: 1 as const,
+      sampleCount: 12,
+      activeSampleCount: 8,
+      dominance: 1,
+      confidence: 0.99,
+      signalSource: "quaternion-delta" as const,
+      startPose: nodes[index],
+      endPose: nodes[index + 1],
+      expectedEnd: edge.end,
+    }));
+    expect(deriveGyroCalibrationFromSignalProfile({
+      staticPoses: nodes,
+      dynamicAxes: edges,
+    })?.valid).toBe(false);
+  });
+
+  it("renders the captured white-up clockwise turn toward red front, not orange front", () => {
+    const zero = {
+      w: 0.9993332657990872,
+      x: -0.004150536615186018,
+      y: -0.0008570656386597229,
+      z: -0.036263788434578975,
+    };
+    const whiteRed = {
+      w: 0.6727177654164442,
+      x: -0.0010554525889308484,
+      y: -0.0008163849498205118,
+      z: -0.7398979846090623,
+    };
+    const matrix = gyroModelMatrix(whiteRed, {
+      modelVersion: 2,
+      enabled: true,
+      zero,
+      referencePose: null,
+      bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+      relativeOrder: "reference-current-inverse",
+      meanPoseErrorDeg: 3.956,
+      maxPoseErrorDeg: 12.339,
+      offsetX: 0,
+      offsetY: 0,
+      offsetZ: 0,
+      invertX: false,
+      invertY: false,
+      invertZ: false,
+    });
+    expect(matrix).not.toBeNull();
+    const redWorld = applyMatrix3(matrix!, [1, 0, 0]);
+    const greenWorld = applyMatrix3(matrix!, [0, 0, 1]);
+    expect(redWorld[2]).toBeGreaterThan(0.99);
+    expect(greenWorld[0]).toBeLessThan(-0.99);
+    expect(rotationDistanceDeg(matrix!, expectedCubePoseMatrix("white", "red"))).toBeLessThan(1.5);
   });
 
   it("solves a non-axis-aligned sensor mounting with weighted Wahba/Kabsch", () => {
