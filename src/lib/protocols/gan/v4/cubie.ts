@@ -55,6 +55,16 @@ export interface GanCubieState {
   edges: Uint8Array;
 }
 
+function permutationParity(permutation: number[]): number {
+  let inversions = 0;
+  for (let left = 0; left < permutation.length; left += 1) {
+    for (let right = left + 1; right < permutation.length; right += 1) {
+      if (permutation[left] > permutation[right]) inversions += 1;
+    }
+  }
+  return inversions & 1;
+}
+
 export function verifyCubieState({ corners, edges }: GanCubieState): boolean {
   if (corners.length !== 8 || edges.length !== 12) return false;
 
@@ -69,7 +79,9 @@ export function verifyCubieState({ corners, edges }: GanCubieState): boolean {
 
   const cornerOrientation = [...corners].reduce((sum, value) => sum + (value >> 3), 0);
   const edgeOrientation = [...edges].reduce((sum, value) => sum + (value & 1), 0);
-  return cornerOrientation % 3 === 0 && edgeOrientation % 2 === 0;
+  return cornerOrientation % 3 === 0 &&
+    edgeOrientation % 2 === 0 &&
+    permutationParity(cornerPermutations) === permutationParity(edgePermutations);
 }
 
 export function cubieStateToFacelets(state: GanCubieState): string {

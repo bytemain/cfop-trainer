@@ -166,6 +166,19 @@ test("opens signal calibration as a dedicated page", async ({ page }, testInfo) 
   await expect(page.getByRole("dialog", { name: "选择蓝牙魔方" })).toBeVisible();
 });
 
+test("exposes progressive GAN V4 validation safely while offline", async ({ page }, testInfo) => {
+  const isMobile = testInfo.project.name === "mobile-chromium";
+  const navigation = isMobile
+    ? page.locator(".bottom-navigation")
+    : page.locator(".navigation-rail");
+  await navigation.getByRole("button", { name: "设置" }).click();
+
+  const panel = page.getByRole("region", { name: "GAN V4 渐进式协议验收" });
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText("当前六面、12 个单层方向");
+  await expect(panel.getByRole("button", { name: "开始渐进式验收" })).toBeDisabled();
+});
+
 test("browses, filters and prepares an OLL or PLL case", async ({ page }, testInfo) => {
   const isMobile = testInfo.project.name === "mobile-chromium";
   const navigation = isMobile ? page.locator(".bottom-navigation") : page.locator(".navigation-rail");

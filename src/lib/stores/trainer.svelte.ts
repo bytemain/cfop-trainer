@@ -55,11 +55,99 @@ import { MoveTimeline, type MoveTimelineItem } from "$lib/timeline/moveTimeline"
 import { PoseSession, type PoseHealth } from "$lib/pose/poseSession";
 import { reconstructSolve } from "$lib/analysis/solveReconstruction";
 import { solveCrossOptimal } from "$lib/analysis/crossSolver";
+import {
+  createEmptyGanV4ProtocolDiagnostics,
+  GanV4ProtocolDiagnostics,
+  type GanV4ProtocolDiagnosticSnapshot,
+} from "$lib/protocols/gan/v4/diagnostics";
 
 const SCRAMBLE_FACES = ["U", "R", "F", "D", "L", "B"] as const;
 const SCRAMBLE_SUFFIXES = ["", "'", "2"] as const;
 const SOLVED_FACELETS = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 const GLOBAL_CUBE_PROFILE_KEY = "cfop-trainer:cube-profile:default";
+
+export interface ProtocolValidationStep {
+  id: string;
+  kind: "baseline" | "layer-move" | "whole-cube-rotation";
+  title: string;
+  instruction: string;
+  expectedMove?: string;
+  expectedAxis?: "x" | "y" | "z";
+  expectedDirection?: "positive" | "negative";
+}
+
+export interface ProtocolValidationStepResult {
+  stepId: string;
+  status: "passed" | "mismatch" | "skipped";
+  expectedMove?: string;
+  observedMoves: string[];
+  startSequence: number | null;
+  endSequence: number | null;
+  gyroSampleCount: number;
+  maxGyroDeltaDeg: number;
+  startQuaternion: CubeQuaternion | null;
+  endQuaternion: CubeQuaternion | null;
+  derivedRotationAxis?: { x: number; y: number; z: number };
+  derivedRotationDeg?: number;
+  derivedDominantAxis?: "x" | "y" | "z";
+  derivedDirection?: "positive" | "negative";
+  packetCountDelta: Partial<Record<CubeSignalFrameEvent["packetType"], number>>;
+  issueCodes: string[];
+  snapshotFacelets?: string;
+  snapshotSequence?: number | null;
+  batteryLevel?: number | null;
+  completedAt: number;
+}
+
+export interface ProtocolSelfTestState {
+  status: "idle" | "preparing" | "collecting" | "complete" | "failed";
+  message: string;
+  startedAt: number | null;
+  stepIndex: number;
+  observedMoves: string[];
+  gyroSampleCount: number;
+  maxGyroDeltaDeg: number;
+  results: ProtocolValidationStepResult[];
+}
+
+export const GAN_V4_VALIDATION_STEPS: ProtocolValidationStep[] = [
+  {
+    id: "baseline",
+    kind: "baseline",
+    title: "静止基准与当前六面",
+    instruction: "保持白色中心朝上、绿色中心朝向你，不需要复原；静止后完成本步。",
+  },
+  ...(["R", "R'", "U", "U'", "F", "F'", "L", "L'", "D", "D'", "B", "B'"] as const).map((move) => ({
+    id: `move-${move.replace("'", "-prime").toLowerCase()}`,
+    kind: "layer-move" as const,
+    title: `单层动作 ${move}`,
+    instruction: `只执行一次 ${move}，完成后不要做其他动作，再确认本步。`,
+    expectedMove: move,
+  })),
+  ...([
+    ["x", "positive", "红—橙", "红", "逆时针"], ["x", "negative", "红—橙", "红", "顺时针"],
+    ["y", "positive", "白—黄", "白", "逆时针"], ["y", "negative", "白—黄", "白", "顺时针"],
+    ["z", "positive", "绿—蓝", "绿", "逆时针"], ["z", "negative", "绿—蓝", "绿", "顺时针"],
+  ] as const).map(([axis, direction, colorAxis, viewpoint, turn]) => ({
+    id: `rotation-${axis}-${direction}`,
+    kind: "whole-cube-rotation" as const,
+    title: `整颗绕${colorAxis}轴 · ${turn} 90°`,
+    instruction: `不要拧任何单层。让${viewpoint}色中心朝向你，从${viewpoint}色面看，把整颗魔方${turn}旋转约 90°，然后确认本步。`,
+    expectedAxis: axis,
+    expectedDirection: direction,
+  })),
+];
+
+const EMPTY_PROTOCOL_SELF_TEST: ProtocolSelfTestState = {
+  status: "idle",
+  message: "尚未开始渐进式真机协议验收",
+  startedAt: null,
+  stepIndex: 0,
+  observedMoves: [],
+  gyroSampleCount: 0,
+  maxGyroDeltaDeg: 0,
+  results: [],
+};
 
 function generateScramble(length = 20): string[] {
   const moves: string[] = [];
@@ -90,6 +178,46 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       },
     );
   });
+}
+
+function quaternionDelta(
+  start: CubeQuaternion | null,
+  end: CubeQuaternion | null,
+): {
+  axis: { x: number; y: number; z: number };
+  angleDeg: number;
+  dominantAxis: "x" | "y" | "z";
+  direction: "positive" | "negative";
+} | null {
+  if (!start || !end) return null;
+  const startNorm = Math.hypot(start.x, start.y, start.z, start.w);
+  const endNorm = Math.hypot(end.x, end.y, end.z, end.w);
+  if (startNorm < 1e-6 || endNorm < 1e-6) return null;
+  const a = { x: start.x / startNorm, y: start.y / startNorm, z: start.z / startNorm, w: start.w / startNorm };
+  const b = { x: end.x / endNorm, y: end.y / endNorm, z: end.z / endNorm, w: end.w / endNorm };
+  const inverseA = { x: -a.x, y: -a.y, z: -a.z, w: a.w };
+  let delta = {
+    x: b.w * inverseA.x + b.x * inverseA.w + b.y * inverseA.z - b.z * inverseA.y,
+    y: b.w * inverseA.y - b.x * inverseA.z + b.y * inverseA.w + b.z * inverseA.x,
+    z: b.w * inverseA.z + b.x * inverseA.y - b.y * inverseA.x + b.z * inverseA.w,
+    w: b.w * inverseA.w - b.x * inverseA.x - b.y * inverseA.y - b.z * inverseA.z,
+  };
+  if (delta.w < 0) delta = { x: -delta.x, y: -delta.y, z: -delta.z, w: -delta.w };
+  const angleRad = 2 * Math.acos(Math.max(-1, Math.min(1, delta.w)));
+  const sinHalf = Math.sin(angleRad / 2);
+  const axis = Math.abs(sinHalf) < 1e-6
+    ? { x: 0, y: 0, z: 0 }
+    : { x: delta.x / sinHalf, y: delta.y / sinHalf, z: delta.z / sinHalf };
+  const axes: Array<"x" | "y" | "z"> = ["x", "y", "z"];
+  const dominantAxis = axes.sort((left, right) =>
+    Math.abs(axis[right]) - Math.abs(axis[left])
+  )[0];
+  return {
+    axis,
+    angleDeg: angleRad * 180 / Math.PI,
+    dominantAxis,
+    direction: axis[dominantAxis] >= 0 ? "positive" : "negative",
+  };
 }
 
 export const CONNECTION_LABELS: Record<CubeConnectionState, string> = {
@@ -159,6 +287,8 @@ class TrainerStore {
   lastProtocolMove = $state<string | null>(null);
   signalFrameSerial = $state(0);
   lastSignalFrame = $state<CubeSignalFrameEvent | null>(null);
+  protocolDiagnostics = $state<GanV4ProtocolDiagnosticSnapshot>(createEmptyGanV4ProtocolDiagnostics());
+  protocolSelfTest = $state<ProtocolSelfTestState>({ ...EMPTY_PROTOCOL_SELF_TEST });
   signalCalibrationProfile = $state<SignalCalibrationProfile | null>(null);
   timelineItems = $state<readonly MoveTimelineItem[]>([]);
   timelineContinuous = $state(true);
@@ -204,6 +334,12 @@ class TrainerStore {
   private latestCubeClockSample: CubeClockSample | null = null;
   private poseSession = new PoseSession(this.deviceCalibration, this.viewPreference);
   private batteryRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private protocolInspector = new GanV4ProtocolDiagnostics();
+  private protocolSelfTestStartQuaternion: CubeQuaternion | null = null;
+  private protocolSelfTestStartSequence: number | null = null;
+  private protocolSelfTestStartDiagnostics = createEmptyGanV4ProtocolDiagnostics();
+  private protocolSelfTestSnapshot: { facelets: string; sequence: number | null } | null = null;
+  private protocolSelfTestBattery: number | null = null;
 
   constructor() {
     registerBuiltInGanProtocols();
@@ -564,6 +700,229 @@ class TrainerStore {
     return true;
   }
 
+  get currentProtocolValidationStep(): ProtocolValidationStep | null {
+    return GAN_V4_VALIDATION_STEPS[this.protocolSelfTest.stepIndex] ?? null;
+  }
+
+  async startProgressiveProtocolValidation(): Promise<void> {
+    if (!this.session || this.connectedProtocol !== "v4") {
+      this.protocolSelfTest = {
+        ...EMPTY_PROTOCOL_SELF_TEST,
+        status: "failed",
+        message: "请先连接 GAN V4 魔方再开始协议验收。",
+      };
+      return;
+    }
+
+    this.protocolDiagnostics = this.protocolInspector.reset();
+    this.protocolSelfTest = {
+      ...EMPTY_PROTOCOL_SELF_TEST,
+      status: "preparing",
+      message: "正在请求当前六面与电量，建立静止基准…",
+      startedAt: Date.now(),
+    };
+    this.beginProtocolValidationStep();
+
+    try {
+      const snapshot = await withTimeout(this.session.requestSnapshot(), 8_000, "当前六面请求超时");
+      this.protocolSelfTestSnapshot = {
+        facelets: snapshot.facelets,
+        sequence: snapshot.sequence ?? null,
+      };
+      const battery = await withTimeout(this.session.batteryLevel(), 8_000, "电量请求超时");
+      this.protocolSelfTestBattery = battery ?? null;
+      this.protocolSelfTest = {
+        ...this.protocolSelfTest,
+        status: "collecting",
+        message: GAN_V4_VALIDATION_STEPS[0].instruction,
+      };
+    } catch (error) {
+      this.protocolSelfTest = {
+        ...this.protocolSelfTest,
+        status: "failed",
+        message: `基准请求失败：${error instanceof Error ? error.message : String(error)}。仍可下载当前诊断。`,
+      };
+    }
+  }
+
+  completeProtocolValidationStep(forceMismatch = false): "passed" | "mismatch" | null {
+    if (this.protocolSelfTest.status !== "collecting") return null;
+    const step = this.currentProtocolValidationStep;
+    if (!step) return null;
+
+    const diagnosticsNow = this.protocolInspector.current();
+    const packetCountDelta = Object.fromEntries(
+      Object.entries(diagnosticsNow.packetCounts).map(([type, count]) => [
+        type,
+        count - (this.protocolSelfTestStartDiagnostics.packetCounts[type as CubeSignalFrameEvent["packetType"]] ?? 0),
+      ]),
+    ) as Partial<Record<CubeSignalFrameEvent["packetType"], number>>;
+    const newIssueCodes = diagnosticsNow.issues
+      .filter((issue) => !this.protocolSelfTestStartDiagnostics.issues.some((startIssue) =>
+        startIssue.code === issue.code && startIssue.count === issue.count
+      ))
+      .map((issue) => issue.code);
+    const endQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
+    const rotation = quaternionDelta(this.protocolSelfTestStartQuaternion, endQuaternion);
+    const observedMoves = [...this.protocolSelfTest.observedMoves];
+
+    let passed = false;
+    if (step.kind === "baseline") {
+      passed = Boolean(this.protocolSelfTestSnapshot) &&
+        this.protocolSelfTestBattery !== null &&
+        this.protocolSelfTest.gyroSampleCount > 0 &&
+        (packetCountDelta.invalid ?? 0) === 0;
+    } else if (step.kind === "layer-move") {
+      passed = observedMoves.length === 1 && observedMoves[0] === step.expectedMove;
+    } else {
+      passed = observedMoves.length === 0 &&
+        Boolean(rotation) &&
+        (rotation?.angleDeg ?? 0) >= 45 &&
+        rotation?.dominantAxis === step.expectedAxis &&
+        rotation?.direction === step.expectedDirection;
+    }
+    if (forceMismatch) passed = false;
+
+    const resultStatus: "passed" | "mismatch" = passed ? "passed" : "mismatch";
+    const result: ProtocolValidationStepResult = {
+      stepId: step.id,
+      status: resultStatus,
+      expectedMove: step.expectedMove,
+      observedMoves,
+      startSequence: this.protocolSelfTestStartSequence,
+      endSequence: this.cubeSequence,
+      gyroSampleCount: this.protocolSelfTest.gyroSampleCount,
+      maxGyroDeltaDeg: this.protocolSelfTest.maxGyroDeltaDeg,
+      startQuaternion: this.protocolSelfTestStartQuaternion ? { ...this.protocolSelfTestStartQuaternion } : null,
+      endQuaternion,
+      derivedRotationAxis: rotation?.axis,
+      derivedRotationDeg: rotation?.angleDeg,
+      derivedDominantAxis: rotation?.dominantAxis,
+      derivedDirection: rotation?.direction,
+      packetCountDelta,
+      issueCodes: newIssueCodes,
+      snapshotFacelets: step.kind === "baseline" ? this.protocolSelfTestSnapshot?.facelets : undefined,
+      snapshotSequence: step.kind === "baseline" ? this.protocolSelfTestSnapshot?.sequence : undefined,
+      batteryLevel: step.kind === "baseline" ? this.protocolSelfTestBattery : undefined,
+      completedAt: Date.now(),
+    };
+    this.advanceProtocolValidation(result);
+    return resultStatus;
+  }
+
+  skipProtocolValidationStep(): void {
+    if (this.protocolSelfTest.status !== "collecting") return;
+    const step = this.currentProtocolValidationStep;
+    if (!step) return;
+    this.advanceProtocolValidation({
+      stepId: step.id,
+      status: "skipped",
+      expectedMove: step.expectedMove,
+      observedMoves: [...this.protocolSelfTest.observedMoves],
+      startSequence: this.protocolSelfTestStartSequence,
+      endSequence: this.cubeSequence,
+      gyroSampleCount: this.protocolSelfTest.gyroSampleCount,
+      maxGyroDeltaDeg: this.protocolSelfTest.maxGyroDeltaDeg,
+      startQuaternion: this.protocolSelfTestStartQuaternion ? { ...this.protocolSelfTestStartQuaternion } : null,
+      endQuaternion: this.gyroQuaternion ? { ...this.gyroQuaternion } : null,
+      packetCountDelta: {},
+      issueCodes: [],
+      completedAt: Date.now(),
+    });
+  }
+
+  resetProgressiveProtocolValidation(): void {
+    this.protocolDiagnostics = this.protocolInspector.reset();
+    this.protocolSelfTest = { ...EMPTY_PROTOCOL_SELF_TEST };
+    this.protocolSelfTestStartQuaternion = null;
+    this.protocolSelfTestStartSequence = null;
+    this.protocolSelfTestSnapshot = null;
+    this.protocolSelfTestBattery = null;
+  }
+
+  protocolValidationReport(): Record<string, unknown> {
+    const currentStep = this.currentProtocolValidationStep;
+    const currentEndQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
+    const currentRotation = quaternionDelta(this.protocolSelfTestStartQuaternion, currentEndQuaternion);
+    return {
+      schemaVersion: 1,
+      kind: "gan-v4-progressive-protocol-validation",
+      createdAt: new Date().toISOString(),
+      protocol: this.connectedProtocol,
+      firmwareVersion: this.firmwareVersion,
+      hardwareVersion: this.hardwareVersion,
+      diagnostics: this.protocolInspector.current(),
+      steps: GAN_V4_VALIDATION_STEPS,
+      results: this.protocolSelfTest.results,
+      activeStepEvidence: currentStep ? {
+        stepId: currentStep.id,
+        expectedMove: currentStep.expectedMove,
+        expectedAxis: currentStep.expectedAxis,
+        expectedDirection: currentStep.expectedDirection,
+        observedMoves: [...this.protocolSelfTest.observedMoves],
+        startSequence: this.protocolSelfTestStartSequence,
+        currentSequence: this.cubeSequence,
+        gyroSampleCount: this.protocolSelfTest.gyroSampleCount,
+        maxGyroDeltaDeg: this.protocolSelfTest.maxGyroDeltaDeg,
+        startQuaternion: this.protocolSelfTestStartQuaternion
+          ? { ...this.protocolSelfTestStartQuaternion }
+          : null,
+        currentQuaternion: currentEndQuaternion,
+        derivedRotationAxis: currentRotation?.axis,
+        derivedRotationDeg: currentRotation?.angleDeg,
+        derivedDominantAxis: currentRotation?.dominantAxis,
+        derivedDirection: currentRotation?.direction,
+        snapshotFacelets: currentStep.kind === "baseline" ? this.protocolSelfTestSnapshot?.facelets : undefined,
+        snapshotSequence: currentStep.kind === "baseline" ? this.protocolSelfTestSnapshot?.sequence : undefined,
+        batteryLevel: currentStep.kind === "baseline" ? this.protocolSelfTestBattery : undefined,
+      } : null,
+      currentStepIndex: this.protocolSelfTest.stepIndex,
+      currentStatus: this.protocolSelfTest.status,
+      privacy: {
+        containsRawBleBytes: false,
+        containsMacAddress: false,
+        containsCipherMaterial: false,
+        containsContinuousQuaternionStream: false,
+      },
+    };
+  }
+
+  private beginProtocolValidationStep(): void {
+    this.protocolSelfTestStartQuaternion = this.gyroQuaternion ? { ...this.gyroQuaternion } : null;
+    this.protocolSelfTestStartSequence = this.cubeSequence;
+    this.protocolSelfTestStartDiagnostics = this.protocolInspector.current();
+    this.protocolSelfTestSnapshot = null;
+    this.protocolSelfTestBattery = null;
+    this.protocolSelfTest = {
+      ...this.protocolSelfTest,
+      observedMoves: [],
+      gyroSampleCount: 0,
+      maxGyroDeltaDeg: 0,
+    };
+  }
+
+  private advanceProtocolValidation(result: ProtocolValidationStepResult): void {
+    const results = [...this.protocolSelfTest.results, result];
+    const nextIndex = this.protocolSelfTest.stepIndex + 1;
+    if (nextIndex >= GAN_V4_VALIDATION_STEPS.length) {
+      this.protocolSelfTest = {
+        ...this.protocolSelfTest,
+        status: "complete",
+        message: `协议验收完成：${results.filter((item) => item.status === "passed").length} 通过，${results.filter((item) => item.status === "mismatch").length} 不一致，${results.filter((item) => item.status === "skipped").length} 跳过。请下载 JSON 发给 Codex。`,
+        stepIndex: nextIndex,
+        results,
+      };
+      return;
+    }
+    this.protocolSelfTest = {
+      ...this.protocolSelfTest,
+      stepIndex: nextIndex,
+      results,
+      message: GAN_V4_VALIDATION_STEPS[nextIndex].instruction,
+    };
+    this.beginProtocolValidationStep();
+  }
+
   private applyCubeStateBaseline(cube: CubeState): void {
     this.stopTimer();
     this.stopDemoPlayback();
@@ -835,6 +1194,12 @@ class TrainerStore {
     this.lastCubeSequence = event.sequence;
     this.cubeSequence = event.sequence;
     const move = normalizeMove(event.move);
+    if (this.protocolSelfTest.status === "collecting") {
+      this.protocolSelfTest = {
+        ...this.protocolSelfTest,
+        observedMoves: [...this.protocolSelfTest.observedMoves, move],
+      };
+    }
     const clockSample = event.cubeTimestamp === undefined
       ? null
       : this.cubeClock.observe(event.cubeTimestamp, event.receivedAt);
@@ -1023,6 +1388,14 @@ class TrainerStore {
     this.gyroQuaternion = observation.quaternion;
     this.gyroVelocity = event.velocity ?? null;
     this.gyroEventSerial += 1;
+    if (this.protocolSelfTest.status === "collecting") {
+      const rotation = quaternionDelta(this.protocolSelfTestStartQuaternion, observation.quaternion);
+      this.protocolSelfTest = {
+        ...this.protocolSelfTest,
+        gyroSampleCount: this.protocolSelfTest.gyroSampleCount + 1,
+        maxGyroDeltaDeg: Math.max(this.protocolSelfTest.maxGyroDeltaDeg, rotation?.angleDeg ?? 0),
+      };
+    }
   }
 
   private handleSignalFrame(event: CubeSignalFrameEvent): void {
@@ -1033,6 +1406,9 @@ class TrainerStore {
       bytes: event.bytes.slice(),
     };
     this.signalFrameSerial += 1;
+    if (event.protocol === "v4") {
+      this.protocolDiagnostics = this.protocolInspector.observe(event);
+    }
   }
 
   private loadDevicePreferences(deviceId: string): void {

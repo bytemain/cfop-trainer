@@ -50,7 +50,7 @@ export interface CubeOrientationEvent {
 export interface CubeSignalFrameEvent {
   bytes: Uint8Array;
   layer: "decrypted" | "encrypted";
-  packetType: "gyro" | "move" | "move-history" | "snapshot" | "battery" | "hardware" | "unknown";
+  packetType: "gyro" | "move" | "move-history" | "snapshot" | "battery" | "hardware" | "unknown" | "invalid";
   receivedAt: number;
   protocol: GanProtocolVersion;
 }

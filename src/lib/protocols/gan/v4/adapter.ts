@@ -220,9 +220,10 @@ class GanV4Session implements SmartCubeSession {
 
   private handleNotification(encrypted: Uint8Array): void {
     this.notifications += 1;
+    let decoded: Uint8Array | null = null;
     try {
       if (!this.cipher) return;
-      const decoded = this.cipher.decode(encrypted);
+      decoded = this.cipher.decode(encrypted);
       const packet = parseGanV4Packet(decoded);
       const packetType = packet.type === "move-history" ? "move-history" : packet.type;
       const signal: CubeSignalFrameEvent = {
@@ -243,6 +244,17 @@ class GanV4Session implements SmartCubeSession {
       this.dispatch(packet);
     } catch (error) {
       this.parseFailures += 1;
+      // Invalid packet bytes are exposed only through the in-memory signal
+      // listener for the live protocol inspector. They are never persisted by
+      // the adapter or TrainerStore.
+      const invalidSignal: CubeSignalFrameEvent = {
+        bytes: (decoded ?? encrypted).slice(),
+        layer: decoded ? "decrypted" : "encrypted",
+        packetType: "invalid",
+        receivedAt: Date.now(),
+        protocol: "v4",
+      };
+      for (const listener of this.signalListeners) listener(invalidSignal);
       if (this.parseFailures <= 3 || this.parseFailures % 100 === 0) {
         safeLogger.warn("gan-v4", "packet-rejected", {
           notifications: this.notifications,

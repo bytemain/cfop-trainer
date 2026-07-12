@@ -33,7 +33,12 @@
   import CubeConnectionDialog from "$lib/components/CubeConnectionDialog.svelte";
   import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
   import CaseLibrary from "$lib/components/CaseLibrary.svelte";
-  import { CONNECTION_LABELS, PHASE_LABELS, trainer } from "$lib/stores/trainer.svelte";
+  import {
+    CONNECTION_LABELS,
+    GAN_V4_VALIDATION_STEPS,
+    PHASE_LABELS,
+    trainer,
+  } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
   import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
@@ -188,6 +193,18 @@
     signalReprocessStatus = trainer.reprocessSavedSignalCalibration()
       ? "已用完整 SO(3) Pose Graph 重新求解并应用；旧的手动轴反转和偏移也已清除，无需重新采集。"
       : "现有档案仍不足以得到可靠模型，请进入采集实验室补充姿态。";
+  }
+
+  async function downloadProtocolValidationReport(): Promise<void> {
+    await exportJsonFile(
+      `gan-v4-protocol-validation-${Date.now()}.json`,
+      JSON.stringify(trainer.protocolValidationReport(), null, 2),
+    );
+  }
+
+  async function completeProtocolValidationStep(forceMismatch = false): Promise<void> {
+    const result = trainer.completeProtocolValidationStep(forceMismatch);
+    if (result === "mismatch") await downloadProtocolValidationReport();
   }
 
   async function confirmQuickCalibration(): Promise<void> {
@@ -746,6 +763,86 @@
             <article><span>Session anchor</span><strong>{trainer.sessionAnchor?.reason ?? "等待首帧"}</strong><code>{trainer.sessionAnchor ? new Date(trainer.sessionAnchor.establishedAt).toLocaleTimeString() : "—"}</code></article>
             <article><span>Timeline</span><strong>{trainer.timelineContinuous ? "连续" : "已截断"}</strong><code>{trainer.timelineItems.length} events</code></article>
           </div>
+
+          <section class="protocol-validation-panel" aria-labelledby="protocol-validation-title">
+            <div class="protocol-validation-heading">
+              <div>
+                <span class="eyebrow">Ground-truth validation</span>
+                <h3 id="protocol-validation-title">GAN V4 渐进式协议验收</h3>
+              </div>
+              <StatusPill tone={trainer.protocolDiagnostics.invalidFrames > 0 ? "error" : trainer.protocolDiagnostics.issues.length > 0 ? "warning" : "success"}>
+                {trainer.protocolDiagnostics.invalidFrames > 0
+                  ? `${trainer.protocolDiagnostics.invalidFrames} 个异常包`
+                  : trainer.protocolDiagnostics.issues.length > 0
+                    ? `${trainer.protocolDiagnostics.issues.length} 类警告`
+                    : `${trainer.protocolDiagnostics.parsedFrames} 个包正常`}
+              </StatusPill>
+            </div>
+
+            {#if trainer.protocolSelfTest.status === "idle"}
+              <p>逐步验证当前六面、12 个单层方向，以及红—橙 / 白—黄 / 绿—蓝三条整颗旋转轴。每一步只采集解析字段、统计量与四元数起止检查点。</p>
+              <button class="primary-button" disabled={!trainer.connectedDeviceName || trainer.connectedProtocol !== "v4"} onclick={() => void trainer.startProgressiveProtocolValidation()}>
+                <ScanSearch size={17} /> 开始渐进式验收
+              </button>
+            {:else}
+              <div class="protocol-validation-progress">
+                <span>进度 {Math.min(trainer.protocolSelfTest.stepIndex + 1, GAN_V4_VALIDATION_STEPS.length)} / {GAN_V4_VALIDATION_STEPS.length}</span>
+                <progress value={trainer.protocolSelfTest.stepIndex} max={GAN_V4_VALIDATION_STEPS.length}></progress>
+              </div>
+
+              {#if trainer.currentProtocolValidationStep}
+                <article class="protocol-current-step">
+                  <span>{trainer.currentProtocolValidationStep.kind === "baseline" ? "基准" : trainer.currentProtocolValidationStep.kind === "layer-move" ? "单层动作" : "整颗旋转"}</span>
+                  <h4>{trainer.currentProtocolValidationStep.title}</h4>
+                  <p>{trainer.protocolSelfTest.message}</p>
+                </article>
+              {:else}
+                <p class="protocol-complete-message">{trainer.protocolSelfTest.message}</p>
+              {/if}
+
+              <div class="protocol-live-grid">
+                <article><span>实际动作</span><strong>{trainer.protocolSelfTest.observedMoves.join(" ") || "—"}</strong></article>
+                <article><span>Sequence</span><strong>{trainer.cubeSequence ?? "—"}</strong></article>
+                <article><span>陀螺仪采样</span><strong>{trainer.protocolSelfTest.gyroSampleCount}</strong></article>
+                <article><span>最大姿态变化</span><strong>{trainer.protocolSelfTest.maxGyroDeltaDeg.toFixed(1)}°</strong></article>
+                <article><span>包总数</span><strong>{trainer.protocolDiagnostics.totalFrames}</strong></article>
+                <article><span>0xED counter=0</span><strong>{trainer.protocolDiagnostics.snapshotZeroCounters}</strong></article>
+                <article><span>Sequence gap</span><strong>{trainer.protocolDiagnostics.moveSequenceGaps}</strong></article>
+                <article><span>Unknown / invalid</span><strong>{trainer.protocolDiagnostics.unknownFrames} / {trainer.protocolDiagnostics.invalidFrames}</strong></article>
+              </div>
+
+              {#if trainer.protocolDiagnostics.issues.length > 0}
+                <div class="protocol-issue-list">
+                  {#each trainer.protocolDiagnostics.issues.slice(0, 6) as issue}
+                    <div class:error={issue.severity === "error"}>
+                      <strong>{issue.code}</strong>
+                      <span>{issue.message} · ×{issue.count}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+
+              {#if trainer.protocolSelfTest.results.length > 0}
+                <div class="protocol-result-list">
+                  {#each trainer.protocolSelfTest.results.slice(-6) as result}
+                    <span class:passed={result.status === "passed"} class:mismatch={result.status === "mismatch"}>
+                      {result.stepId} · {result.status === "passed" ? "通过" : result.status === "mismatch" ? "不一致" : "跳过"}
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+
+              <div class="protocol-validation-actions">
+                {#if trainer.protocolSelfTest.status === "collecting"}
+                  <button class="text-button" onclick={() => trainer.skipProtocolValidationStep()}>跳过本步</button>
+                  <button class="secondary-button" onclick={() => void completeProtocolValidationStep(true)}>标记不一致并保存 JSON</button>
+                  <button class="primary-button" onclick={() => void completeProtocolValidationStep()}><Check size={17} /> 完成本步并判断</button>
+                {/if}
+                <button class="secondary-button" onclick={() => void downloadProtocolValidationReport()}><Download size={17} /> 下载诊断 JSON</button>
+                <button class="text-button" onclick={() => trainer.resetProgressiveProtocolValidation()}>重新开始</button>
+              </div>
+            {/if}
+          </section>
         </div>
       </section>
     {/if}
@@ -1266,6 +1363,30 @@
   .protocol-debug span { color: var(--color-text-muted); font-size: 0.68rem; }
   .protocol-debug strong { font-size: 1.1rem; }
   .protocol-debug code { overflow: hidden; color: var(--color-info); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
+  .protocol-validation-panel { display: grid; width: 100%; gap: 14px; padding: 16px; border: 1px solid rgb(92 185 150 / 0.3); border-radius: 18px; background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface-high)); }
+  .protocol-validation-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .protocol-validation-heading h3 { margin: 3px 0 0; }
+  .protocol-validation-panel > p { margin: 0; color: var(--color-text-muted); font-size: 0.76rem; line-height: 1.55; }
+  .protocol-validation-progress { display: grid; grid-template-columns: auto minmax(120px, 1fr); align-items: center; gap: 12px; color: var(--color-text-muted); font-size: 0.72rem; }
+  .protocol-validation-progress progress { width: 100%; height: 8px; overflow: hidden; border: 0; border-radius: 999px; accent-color: var(--color-primary); }
+  .protocol-current-step { display: grid; gap: 5px; padding: 14px; border-left: 3px solid var(--color-primary); border-radius: 12px; background: var(--color-surface-highest); }
+  .protocol-current-step > span { color: var(--color-primary); font-size: 0.66rem; text-transform: uppercase; }
+  .protocol-current-step h4, .protocol-current-step p { margin: 0; }
+  .protocol-current-step p, .protocol-complete-message { color: var(--color-text-muted); font-size: 0.76rem; line-height: 1.55; }
+  .protocol-live-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .protocol-live-grid article { display: grid; min-width: 0; gap: 4px; padding: 10px; border-radius: 11px; background: var(--color-surface-high); }
+  .protocol-live-grid span { color: var(--color-text-muted); font-size: 0.64rem; }
+  .protocol-live-grid strong { overflow: hidden; font-size: 0.84rem; text-overflow: ellipsis; white-space: nowrap; }
+  .protocol-issue-list { display: grid; gap: 6px; }
+  .protocol-issue-list div { display: grid; gap: 2px; padding: 9px 11px; border-radius: 10px; color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 8%, transparent); }
+  .protocol-issue-list div.error { color: var(--color-error); background: color-mix(in srgb, var(--color-error) 8%, transparent); }
+  .protocol-issue-list strong { font-size: 0.7rem; }
+  .protocol-issue-list span { font-size: 0.66rem; line-height: 1.4; }
+  .protocol-result-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .protocol-result-list span { padding: 5px 8px; border-radius: 999px; color: var(--color-text-muted); background: var(--color-surface-highest); font-size: 0.64rem; }
+  .protocol-result-list span.passed { color: var(--color-success); }
+  .protocol-result-list span.mismatch { color: var(--color-error); }
+  .protocol-validation-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
   .bottom-navigation { display: none; }
 
@@ -1308,6 +1429,9 @@
     .sticker-palette-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .gyro-offsets { grid-template-columns: 1fr; }
     .protocol-debug { grid-template-columns: 1fr; }
+    .protocol-validation-heading { align-items: flex-start; flex-direction: column; }
+    .protocol-live-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .protocol-validation-actions { align-items: stretch; flex-direction: column; }
     .training-layout { gap: 10px; }
     .workspace-card { border-radius: 20px; }
     .cube-workspace { padding: 14px 10px; }
