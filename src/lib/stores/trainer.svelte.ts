@@ -618,7 +618,10 @@ class TrainerStore {
   }
 
   quickCalibrateWhiteUpGreenFront(): boolean {
-    if (!this.gyroQuaternion || !this.deviceCalibration.enabled) return false;
+    const poseAgeMs = this.poseHealth.lastAcceptedAt === null
+      ? Number.POSITIVE_INFINITY
+      : Date.now() - this.poseHealth.lastAcceptedAt;
+    if (!this.gyroQuaternion || !this.deviceCalibration.enabled || poseAgeMs > 1_500) return false;
     // Quick calibration owns only the current session anchor. The persisted
     // sensor-to-cube mapping still comes from the full Pose Graph solver.
     this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };

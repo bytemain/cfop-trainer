@@ -52,11 +52,19 @@
   let signalReprocessStatus = $state("");
   let quickCalibrationOpen = $state(false);
   let quickCalibrationStatus = $state("");
+  let poseClockNow = $state(Date.now());
   const replayCube = $derived(trainer.reconstruction.replayStates[replayIndex] ?? trainer.cube);
+  const poseStreamAgeMs = $derived(
+    trainer.poseHealth.lastAcceptedAt === null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, poseClockNow - trainer.poseHealth.lastAcceptedAt),
+  );
+  const poseStreamFresh = $derived(poseStreamAgeMs <= 1_500);
   const quickCalibrationReady = $derived(
     Boolean(trainer.connectedDeviceName) &&
     Boolean(trainer.gyroQuaternion) &&
     trainer.gyroCalibration.enabled &&
+    poseStreamFresh &&
     trainer.poseHealth.lastStepDeg !== null &&
     trainer.poseHealth.lastStepDeg <= 1.5,
   );
@@ -169,6 +177,7 @@
 
   onMount(() => {
     void trainer.initialize();
+    const poseClock = window.setInterval(() => (poseClockNow = Date.now()), 400);
     const handleKeydown = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
 
@@ -183,7 +192,10 @@
     };
 
     window.addEventListener("keydown", handleKeydown);
-    return () => window.removeEventListener("keydown", handleKeydown);
+    return () => {
+      window.clearInterval(poseClock);
+      window.removeEventListener("keydown", handleKeydown);
+    };
   });
 </script>
 
@@ -288,6 +300,17 @@
               </aside>
             {/if}
           </div>
+
+          {#if trainer.connectedDeviceName && trainer.gyroCalibration.enabled}
+            <div class="pose-stream-status" class:live={poseStreamFresh} class:stale={!poseStreamFresh}>
+              <span></span>
+              {#if poseStreamFresh}
+                实时姿态跟随中 · 最近一帧 {Math.round(poseStreamAgeMs)} ms 前
+              {:else}
+                姿态流已过期 · {Number.isFinite(poseStreamAgeMs) ? `${(poseStreamAgeMs / 1_000).toFixed(1)} 秒未收到新帧` : "尚未收到姿态帧"}
+              {/if}
+            </div>
+          {/if}
 
           <div class="timer-panel">
             <TimerDisplay value={trainer.formatTime()} state={sessionLabel} />
@@ -695,11 +718,23 @@
         <p>把实体魔方稳定放在桌面上：白色中心朝上、绿色中心朝向你、红色自然位于右侧。保持约 1 秒，稳定后把当前传感器姿态定义为本次会话的白上绿前。</p>
         <CalibrationGuide3D mode="static" top="white" front="green" />
         <div class="quick-calibration-readiness" class:ready={quickCalibrationReady}>
-          {#if quickCalibrationReady}<Check size={17} /> 姿态已稳定，可以校准{:else}<Activity size={17} /> 请保持魔方静止，当前帧变化 {trainer.poseHealth.lastStepDeg?.toFixed(2) ?? "—"}°{/if}
+          {#if quickCalibrationReady}
+            <Check size={17} /> 姿态流实时且魔方已稳定，可以校准
+          {:else if !poseStreamFresh}
+            <CircleAlert size={17} /> 姿态流已过期，请先转动唤醒魔方；仍无数据时重新连接
+          {:else}
+            <Activity size={17} /> 请保持魔方静止，当前帧变化 {trainer.poseHealth.lastStepDeg?.toFixed(2) ?? "—"}°
+          {/if}
         </div>
         <small>快速校准只重建当前会话姿态基准，不修改贴纸状态，也不替代完整 Pose Graph 设备标定。</small>
         <div class="quick-calibration-actions">
           <button class="secondary-button" onclick={() => (quickCalibrationOpen = false)}>取消</button>
+          {#if !poseStreamFresh}
+            <button class="secondary-button" onclick={() => {
+              quickCalibrationOpen = false;
+              openCubeConnection();
+            }}><BluetoothSearching size={17} /> 打开连接面板</button>
+          {/if}
           <button class="primary-button" disabled={!quickCalibrationReady} onclick={confirmQuickCalibration}>
             <Check size={17} /> 确认白上绿前
           </button>
@@ -866,6 +901,11 @@
   .secondary-button:disabled { cursor: not-allowed; opacity: 0.42; }
   .section-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .quick-calibration-status { margin: -4px 0 4px; color: var(--color-primary); font-size: 0.72rem; text-align: center; }
+  .pose-stream-status { display: inline-flex; align-items: center; gap: 7px; margin: -7px 0 2px; padding: 7px 10px; border-radius: 999px; color: var(--color-text-muted); background: var(--color-surface-highest); font-size: 0.68rem; }
+  .pose-stream-status span { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pose-stream-status.live { color: var(--color-success); }
+  .pose-stream-status.live span { box-shadow: 0 0 8px currentColor; }
+  .pose-stream-status.stale { color: var(--color-warning); }
   .quick-calibration-backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 20px; background: rgb(5 8 8 / 0.74); backdrop-filter: blur(10px); }
   .quick-calibration-dialog { display: grid; width: min(560px, 100%); max-height: calc(100vh - 40px); justify-items: center; gap: 13px; overflow: auto; padding: 24px; border: 1px solid var(--color-outline); border-radius: 22px; background: var(--color-surface); box-shadow: 0 28px 90px rgb(0 0 0 / 0.5); text-align: center; }
   .quick-calibration-dialog h2 { margin: 0; }
