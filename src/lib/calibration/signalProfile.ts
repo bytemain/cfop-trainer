@@ -305,6 +305,33 @@ function protocolAxisVector(capture: DynamicAxisCapture): [number, number, numbe
   return vector;
 }
 
+export function capturedProtocolAxisVector(
+  capture: DynamicAxisCapture,
+): [number, number, number] {
+  return protocolAxisVector(capture);
+}
+
+export function quaternionAxisTiltDeg(
+  reference: CubeQuaternion,
+  current: CubeQuaternion,
+  sensorAxis: [number, number, number],
+  deltaOrder: DynamicAxisCapture["quaternionDeltaOrder"] = "current-previous-inverse",
+): number {
+  const referenceMatrix = quaternionMatrix(reference);
+  const currentMatrix = quaternionMatrix(current);
+  const relative = deltaOrder === "previous-inverse-current"
+    ? multiplyMatrix3(transposeMatrix3(referenceMatrix), currentMatrix)
+    : multiplyMatrix3(currentMatrix, transposeMatrix3(referenceMatrix));
+  const length = Math.hypot(...sensorAxis) || 1;
+  const axis = sensorAxis.map((value) => value / length) as [number, number, number];
+  const moved = applyMatrix3(relative, axis);
+  const dot = Math.max(-1, Math.min(1, axis.reduce(
+    (sum, value, index) => sum + value * moved[index],
+    0,
+  )));
+  return Math.acos(dot) * 180 / Math.PI;
+}
+
 function capturedRelativeOrder(capture: DynamicAxisCapture): SensorRelativeOrder | null {
   if (capture.quaternionDeltaOrder === "current-previous-inverse") {
     return "current-reference-inverse";

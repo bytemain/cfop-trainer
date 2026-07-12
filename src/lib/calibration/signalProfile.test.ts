@@ -5,6 +5,7 @@ import {
   deriveGyroCalibrationFromSignalProfile,
   expectedCubePoseMatrix,
   quaternionAngularDistanceDeg,
+  quaternionAxisTiltDeg,
   serializeSignalCalibrationProfile,
   summarizeCompoundMotionValidation,
   summarizeDynamicAxis,
@@ -111,6 +112,15 @@ describe("signal calibration profile", () => {
     expect(summary.returnToReferenceErrorDeg).toBeCloseTo(49, 1);
     expect(summary.returnTiltErrorDeg).toBe(1.5);
     expect(summary.passed).toBe(true);
+  });
+
+  it("measures table tilt around the captured physical axis instead of guessing a color face", () => {
+    const reference = { x: 0, y: 0, z: 0, w: 1 };
+    const yawOnly = quaternionFromAxisAngle("z", 49);
+    expect(quaternionAxisTiltDeg(reference, yawOnly, [0, 0, 1])).toBeCloseTo(0, 6);
+    expect(quaternionAxisTiltDeg(reference, yawOnly, [0, 1, 0])).toBeCloseTo(49, 6);
+    const flipped = quaternionFromAxisAngle("x", 180);
+    expect(quaternionAxisTiltDeg(reference, flipped, [0, 0, 1])).toBeCloseTo(180, 6);
   });
 
   it("detects protocol axis and sign from angular velocity", () => {

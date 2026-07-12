@@ -144,6 +144,13 @@ that a visibly level cube is off the table. The correct remedy for that yaw
 error is a session anchor or sensor fusion, not a larger static correction
 matrix.
 
+During calibration this tilt is measured directly in protocol space from the
+captured white-yellow dynamic axis: apply the reference-to-current quaternion
+delta to that normalized sensor axis and measure how far the axis moved. A
+rotation around the axis is yaw and contributes 0° tilt; flipping white/yellow
+moves the axis to its negative and contributes 180°. The incomplete
+`bodyToModel` candidate must not be used to guess a top color for this gate.
+
 ### Sampling and loss compensation
 
 GAN16 V4 orientation notifications are typically about 11.4 Hz. They are

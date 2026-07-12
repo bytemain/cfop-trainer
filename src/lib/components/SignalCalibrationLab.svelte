@@ -11,7 +11,7 @@
   } from "lucide-svelte";
   import Cube3D from "$lib/components/Cube3D.svelte";
   import CalibrationGuide3D from "$lib/components/CalibrationGuide3D.svelte";
-  import type { CubeState, Face, StickerPalette } from "$lib/cube/cube";
+  import type { CubeState, StickerPalette } from "$lib/cube/cube";
   import type { GyroCalibration } from "$lib/cube/orientation";
   import type {
     CubeQuaternion,
@@ -29,6 +29,8 @@
     summarizeCompoundMotionValidation,
     summarizeMoveValidation,
     summarizeStaticPose,
+    capturedProtocolAxisVector,
+    quaternionAxisTiltDeg,
     type CubeColor,
     type DynamicAxisCapture,
     type CompoundMotionValidationCapture,
@@ -39,7 +41,6 @@
     type InMemorySignalFrame,
   } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
-  import { recognizeCubePose } from "$lib/calibration/poseRecognition";
 
   let {
     deviceModel,
@@ -224,32 +225,24 @@
         }
       : gyroCalibration,
   );
-  const compoundRecognitionCalibration = $derived(
-    derivedGyroCalibration
-      ? {
-          ...gyroCalibration,
-          enabled: true,
-          zero: derivedGyroCalibration.zero,
-          bodyToModel: derivedGyroCalibration.bodyToModel,
-          relativeOrder: derivedGyroCalibration.relativeOrder,
-        }
-      : previewGyroCalibration,
-  );
-  const centerColors = $derived({
-    U: cube.U[4], R: cube.R[4], F: cube.F[4],
-    D: cube.D[4], L: cube.L[4], B: cube.B[4],
-  } satisfies Record<Face, CubeState[Face][number]>);
-  const recognizedStablePose = $derived(
-    recognizeCubePose(stableAverageQuaternion, compoundRecognitionCalibration, centerColors),
+  const whiteYellowAxisCapture = $derived(
+    dynamicCaptures.find((capture) =>
+      capture.physicalAxis === "white-yellow" && capture.targetAngleDeg !== 180,
+    ) ?? null,
   );
   const compoundReturnTiltErrorDeg = $derived(
-    recognizedStablePose?.topColor === "white"
-      ? Math.acos(Math.max(-1, Math.min(1, recognizedStablePose.topAlignment))) * 180 / Math.PI
+    stableAverageQuaternion && capturedFormulaReference && whiteYellowAxisCapture
+      ? quaternionAxisTiltDeg(
+          capturedFormulaReference,
+          stableAverageQuaternion,
+          capturedProtocolAxisVector(whiteYellowAxisCapture),
+          whiteYellowAxisCapture.quaternionDeltaOrder,
+        )
       : 180,
   );
   const compoundTableMatches = $derived(
     Boolean(stableAverageQuaternion) &&
-    recognizedStablePose?.topColor === "white" &&
+    Boolean(whiteYellowAxisCapture) &&
     compoundReturnTiltErrorDeg <= 12,
   );
   const quaternionRanges = $derived.by(() => {
@@ -805,10 +798,10 @@
         <p class="instruction">先把魔方放在桌面上，白色朝上、绿色朝前。开始后拿起整颗魔方，缓慢做上下俯仰、左右偏航和前后翻滚，覆盖所有方向；至少持续 6 秒。最后必须放回同一个白上绿前姿态并保持稳定。</p>
         <CalibrationGuide3D mode="static" top="white" front="green" />
         <div class="pose-recognition formula-grip" class:matched={compoundTableMatches} class:mismatch={Boolean(stableAverageQuaternion) && !compoundTableMatches}>
-          {#if stableAverageQuaternion && recognizedStablePose}
+          {#if stableAverageQuaternion && whiteYellowAxisCapture}
             {#if compoundTableMatches}<Check size={16} />{:else}<Radio size={16} />{/if}
             <span>
-              {compoundTableMatches ? "已回到白色朝上的桌面平面" : `当前识别为${colorLabels[recognizedStablePose.topColor]}色朝上`}
+              {compoundTableMatches ? "已回到白色朝上的桌面平面" : "尚未回到白—黄轴竖直的桌面平面"}
               · 倾斜 {compoundReturnTiltErrorDeg.toFixed(1)}°
               {#if formulaGripDistanceDeg !== null} · 绝对姿态差 {formulaGripDistanceDeg.toFixed(1)}°（含 yaw 漂移，仅诊断）{/if}
             </span>
