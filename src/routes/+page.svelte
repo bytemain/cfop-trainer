@@ -218,7 +218,12 @@
     }
   }
 
-  async function confirmQuickCalibration(): Promise<void> {
+  function openQuickCalibration(): void {
+    quickCalibrationStatus = "";
+    quickCalibrationOpen = true;
+  }
+
+  async function runQuickCalibration(stateMode: "read-device" | "write-solved"): Promise<void> {
     if (!quickCalibrationReady || quickCalibrationSyncing) return;
     quickCalibrationSyncing = true;
     if (!trainer.quickCalibrateWhiteUpGreenFront()) {
@@ -227,27 +232,18 @@
       return;
     }
 
-    const stateSynced = await trainer.resetAndSyncCubeState();
+    const stateSynced = stateMode === "write-solved"
+      ? await trainer.assumeSolvedCubeState()
+      : await trainer.resetAndSyncCubeState();
     quickCalibrationSyncing = false;
     quickCalibrationStatus = stateSynced
-      ? "魔方已完成姿态校准，并从 GAN 同步当前完整六面。"
-      : "姿态已校准，但当前六面读取失败，请保持连接后重试。";
+      ? stateMode === "write-solved"
+        ? "姿态已校准，复原 cubie state 已写入 GAN 并通过 0xED 回读校验。"
+        : "姿态已校准，并从 GAN 同步当前完整六面。"
+      : stateMode === "write-solved"
+        ? "姿态已校准，但 GAN 复原状态写入或回读校验失败。"
+        : "姿态已校准，但当前六面读取失败，请保持连接后重试。";
     if (stateSynced) quickCalibrationOpen = false;
-  }
-
-  async function confirmQuickSolvedCalibration(): Promise<void> {
-    if (!quickCalibrationReady || quickCalibrationSyncing) return;
-    if (!trainer.quickCalibrateWhiteUpGreenFront()) {
-      quickCalibrationStatus = "姿态校准失败，请确认魔方已连接、稳定且陀螺仪跟随已开启。";
-      return;
-    }
-    quickCalibrationSyncing = true;
-    const solvedApplied = await trainer.assumeSolvedCubeState();
-    quickCalibrationSyncing = false;
-    quickCalibrationStatus = solvedApplied
-      ? "魔方已完成姿态校准，并按你的确认设置为还原态。"
-      : "姿态已校准，但还原态设置失败，请保持连接后重试。";
-    if (solvedApplied) quickCalibrationOpen = false;
   }
 
   onMount(() => {
@@ -367,10 +363,7 @@
               <button
                 class="secondary-button"
                 disabled={!trainer.connectedDeviceName || !trainer.gyroQuaternion}
-                onclick={() => {
-                  quickCalibrationStatus = "";
-                  quickCalibrationOpen = true;
-                }}
+                onclick={openQuickCalibration}
               ><RefreshCcw size={16} /> 快速校准魔方</button>
               <button
                 class="secondary-button"
@@ -613,24 +606,14 @@
 
         <div class="state-sync-panel">
           <div>
-            <strong>同步魔方状态</strong>
-            <small>“同步当前六面”只读取 GAN 内部状态；实体确实还原但设备状态错误时，使用“实体已还原”按 CubeStation 协议写回复原 cubie state。</small>
+            <strong>快速校准魔方</strong>
+            <small>姿态校准、读取当前六面，以及实体已还原时写回设备，统一使用首页同一个快速校准流程。</small>
           </div>
-          <div class="state-sync-actions">
-            <button
-              class="primary-button"
-              disabled={!trainer.connectedDeviceName || trainer.connection === "synchronizing"}
-              onclick={() => void trainer.resetAndSyncCubeState()}
-            >
-              <RefreshCcw size={17} />
-              {trainer.connection === "synchronizing" ? "正在读取六面" : "同步当前六面"}
-            </button>
-            <button
-              class="secondary-button"
-              disabled={!trainer.connectedDeviceName || trainer.connection === "synchronizing"}
-              onclick={() => void trainer.assumeSolvedCubeState()}
-            >实体已还原</button>
-          </div>
+          <button
+            class="primary-button"
+            disabled={!trainer.connectedDeviceName || !trainer.gyroQuaternion}
+            onclick={openQuickCalibration}
+          ><RefreshCcw size={17} /> 打开快速校准</button>
         </div>
 
         <div class="state-sync-panel signal-lab-entry">
@@ -956,11 +939,11 @@
               openCubeConnection();
             }}><BluetoothSearching size={17} /> 打开连接面板</button>
           {/if}
-          <button class="secondary-button" disabled={!quickCalibrationReady || quickCalibrationSyncing} onclick={confirmQuickSolvedCalibration}>
-            实体已还原
+          <button class="secondary-button" disabled={!quickCalibrationReady || quickCalibrationSyncing} onclick={() => void runQuickCalibration("write-solved")}>
+            实体已还原 · 校准并写回设备
           </button>
-          <button class="primary-button" disabled={!quickCalibrationReady || quickCalibrationSyncing} onclick={() => void confirmQuickCalibration()}>
-            <Check size={17} /> {quickCalibrationSyncing ? "正在读取当前六面" : "校准并读取当前六面"}
+          <button class="primary-button" disabled={!quickCalibrationReady || quickCalibrationSyncing} onclick={() => void runQuickCalibration("read-device")}>
+            <Check size={17} /> {quickCalibrationSyncing ? "正在处理" : "校准并读取设备状态"}
           </button>
         </div>
       </div>
@@ -1338,7 +1321,6 @@
     background: var(--color-surface-high);
   }
   .state-sync-panel > div { display: grid; gap: 4px; }
-  .state-sync-panel > .state-sync-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .state-sync-panel strong { color: var(--color-text); font-size: 0.86rem; }
   .state-sync-panel small { color: var(--color-text-muted); font-size: 0.7rem; line-height: 1.45; }
   .state-sync-panel .primary-button { flex: 0 0 auto; }
@@ -1492,7 +1474,6 @@
     .content { padding: 10px 10px 22px; }
     .calibration-heading { align-items: start; flex-direction: column; }
     .state-sync-panel { align-items: stretch; flex-direction: column; }
-    .state-sync-panel > .state-sync-actions { align-items: stretch; flex-direction: column; }
     .saved-profile-panel { align-items: stretch; flex-direction: column; }
     .saved-profile-panel .profile-actions { align-items: stretch; flex-direction: column; }
     .saved-profile-panel .profile-actions small { max-width: none; text-align: left; }

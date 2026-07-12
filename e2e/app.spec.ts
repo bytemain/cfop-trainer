@@ -134,8 +134,9 @@ test("uses and customizes the full-bright sticker palette", async ({ page }, tes
     : page.locator(".navigation-rail");
   await navigation.getByRole("button", { name: "设置" }).click();
 
-  await expect(page.getByRole("button", { name: "同步当前六面" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "实体已还原" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "打开快速校准" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "同步当前六面" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "实体已还原" })).toHaveCount(0);
   const white = page.getByLabel("白色贴纸");
   await expect(white).toHaveValue("#ffffff");
   await white.fill("#f0f0f0");
