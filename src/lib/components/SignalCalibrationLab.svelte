@@ -632,6 +632,18 @@
       velocity,
       detectedRotationDeg: Number(displayedRotationDeg.toFixed(3)),
       dynamicSampleCount,
+      compoundReturn: stage === "compound" ? {
+        physicalAxis: whiteYellowAxisCapture?.physicalAxis ?? null,
+        sensorAxisVector: whiteYellowAxisCapture
+          ? capturedProtocolAxisVector(whiteYellowAxisCapture)
+          : null,
+        deltaOrder: whiteYellowAxisCapture?.quaternionDeltaOrder ?? null,
+        tiltErrorDeg: Number(compoundReturnTiltErrorDeg.toFixed(3)),
+        absoluteErrorDeg: formulaGripDistanceDeg === null
+          ? null
+          : Number(formulaGripDistanceDeg.toFixed(3)),
+        tableMatched: compoundTableMatches,
+      } : null,
       packetType: signalFrame?.packetType ?? null,
       packetLayer: signalFrame?.layer ?? null,
       packetLength: signalFrame?.bytes.length ?? 0,
