@@ -230,27 +230,6 @@ window, and binds the current sensor quaternion to canonical identity. It may
 clear view offsets/inversions, but it must not replace `bodyToModel`, mutate
 stickers, or claim to have rerun the Pose Graph.
 
-### Legacy CSS/debug serialization
-
-CSS coordinates use positive Y down, while the canonical cube uses positive Y
-up. The DOM cube geometry consequently represents canonical cube vectors in
-CSS coordinates through:
-
-```text
-S_cube_to_css = diag(1, -1, 1)
-```
-
-If a debug surface or non-WebGL fallback serializes a canonical pose to CSS, it
-must convert it only at that boundary:
-
-```text
-R_css = S_cube_to_css · R_cube_pose · S_cube_to_css
-```
-
-`matrix3d(...)` is serialized in column-major order, as required by CSS
-Transforms. Camera/view dragging is CSS-native UI state and is composed
-separately from `R_cube_pose`; it must never be written back into calibration.
-
 ## 6. Ownership boundaries
 
 ```text
@@ -258,7 +237,7 @@ BLE packet
   → GAN parser: normalized sensor quaternion
   → pose calibration: canonical CubePose
   → trainer store: latest CubePose SSOT
-  → renderer adapter: CSS matrix3d
+  → WebGL renderer: Three.js poseGroup.quaternion
 ```
 
 The following are prohibited outside the named owner:
@@ -266,7 +245,6 @@ The following are prohibited outside the named owner:
 - packet component reorder: GAN parser only;
 - quaternion relative order: pose calibration only;
 - sensor/cube axis mapping: pose calibration only;
-- CSS Y reflection and column-major serialization: renderer adapter only;
 - manual camera drag: `Cube3D` view state only.
 
 ## 7. Required tests
@@ -277,26 +255,18 @@ lock down:
 - quaternion normalization and composition order;
 - identity at the captured reference pose;
 - the white-up/green-front semantic anchor;
+- the unanchored absolute pose from the identity-grip model constant;
+- world-axis turns staying on their world axis for arbitrary connection grips;
 - three controlled positive-face clockwise rotations;
 - 24 continuous free-air edges visiting exactly 24 unique legal pose nodes and
   returning to the semantic anchor;
 - stable edge endpoints and loop-closure error summaries;
 - rejection of any dynamic edge contaminated by a layer move;
 - orthonormality and determinant `+1` for every produced cube pose;
-- canonical cube-to-CSS Y reflection;
-- CSS `matrix3d` column-major serialization;
 - persisted calibration reload for the same physical device.
 
 ## References
 
-- CSS Transforms Module Level 2 — `matrix3d` is a 4×4 homogeneous matrix in
-  column-major order; transform functions are post-multiplied:
-  <https://drafts.csswg.org/css-transforms-2/>
-- MDN transform functions — CSS Cartesian coordinates have the origin at the
-  top-left and positive coordinates go down and right:
-  <https://developer.mozilla.org/en-US/docs/Web/CSS/transform-function>
-- MDN `matrix3d()` — 16 values are specified in column-major order:
-  <https://developer.mozilla.org/en-US/docs/Web/CSS/transform-function/matrix3d>
 - ROS 2 tf2 quaternion fundamentals — inversion, multiplication order, and
   relative rotation:
   <https://docs.ros.org/en/rolling/Tutorials/Intermediate/Tf2/Quaternion-Fundamentals.html>

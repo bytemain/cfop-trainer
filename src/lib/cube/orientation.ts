@@ -227,42 +227,6 @@ export function rotationDistanceDeg(left: Matrix3, right: Matrix3): number {
   return (Math.acos(cosine) * 180) / Math.PI;
 }
 
-function matrixCssTransform(model: number[][]): string {
-  const values = new Matrix4().set(
-    model[0][0], model[0][1], model[0][2], 0,
-    model[1][0], model[1][1], model[1][2], 0,
-    model[2][0], model[2][1], model[2][2], 0,
-    0, 0, 0, 1,
-  ).elements.map((value) => Math.abs(value) < 1e-8 ? 0 : Number(value.toFixed(7)));
-  return `matrix3d(${values.join(",")})`;
-}
-
-// Canonical cube space is right-handed: +X red, +Y white, +Z green.
-// CSS uses +Y down, and the DOM cube's U face therefore has normal -Y.
-// Convert both the input and output bases at the renderer boundary; protocol
-// and calibration code must never know about this reflection.
-const CUBE_TO_CSS_FRAME: Matrix3 = [[1, 0, 0], [0, -1, 0], [0, 0, 1]];
-
-export function cubePoseToCssMatrix(cubePose: Matrix3): Matrix3 {
-  return multiplyMatrix3(
-    multiplyMatrix3(CUBE_TO_CSS_FRAME, cubePose),
-    CUBE_TO_CSS_FRAME,
-  );
-}
-
-export function quaternionCssTransform(quaternion: CubeQuaternion): string {
-  return matrixCssTransform(quaternionMatrix(quaternion));
-}
-
-export function gyroCssTransform(
-  quaternion: CubeQuaternion | null,
-  calibration: GyroCalibration,
-): string {
-  const model = gyroModelMatrix(quaternion, calibration);
-  if (!model) return "";
-  return `${matrixCssTransform(cubePoseToCssMatrix(model))} rotateX(${calibration.offsetX}deg) rotateY(${calibration.offsetY}deg) rotateZ(${calibration.offsetZ}deg)`;
-}
-
 export function gyroModelMatrix(
   quaternion: CubeQuaternion | null,
   calibration: GyroCalibration,

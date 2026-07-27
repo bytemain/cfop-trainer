@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Matrix4, Quaternion } from "three";
 import {
   applyMatrix3,
-  cubePoseToCssMatrix,
   DEFAULT_GYRO_CALIBRATION,
-  gyroCssTransform,
   gyroModelMatrix,
   multiplyMatrix3,
   quaternionMatrix,
@@ -21,10 +19,13 @@ import {
 } from "./orientation";
 import type { CubeQuaternion } from "$lib/protocols/gan/types";
 
-function matrixValues(transform: string): number[] {
-  const match = /^matrix3d\(([^)]+)\)/.exec(transform);
-  if (!match) throw new Error(`Expected matrix3d transform, received: ${transform}`);
-  return match[1].split(",").map(Number);
+function expectIdentity(model: Matrix3): void {
+  const identity: Matrix3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let row = 0; row < 3; row += 1) {
+    for (let column = 0; column < 3; column += 1) {
+      expect(model[row][column]).toBeCloseTo(identity[row][column], 6);
+    }
+  }
 }
 
 describe("GAN orientation mapping", () => {
@@ -69,36 +70,25 @@ describe("GAN orientation mapping", () => {
   };
 
   it("maps controlled white/green and yellow/blue captures to a model X half-turn", () => {
-    const values = matrixValues(
-      gyroCssTransform(yellowUpBlueFrontFixture, {
-        ...DEFAULT_GYRO_CALIBRATION,
-        zero: whiteUpGreenFrontFixture,
-        bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
-      }),
-    );
-    expect(values[0]).toBeGreaterThan(0.98);
-    expect(values[5]).toBeLessThan(-0.98);
-    expect(values[10]).toBeLessThan(-0.98);
+    const model = gyroModelMatrix(yellowUpBlueFrontFixture, {
+      ...DEFAULT_GYRO_CALIBRATION,
+      zero: whiteUpGreenFrontFixture,
+      bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+    })!;
+    expect(model[0][0]).toBeGreaterThan(0.98);
+    expect(model[1][1]).toBeLessThan(-0.98);
+    expect(model[2][2]).toBeLessThan(-0.98);
   });
 
   it("derives the absolute canonical pose from the fixed contract without an anchor", () => {
     // No session anchor: the identity-grip model constant is the reference,
     // so the real-device white-up/green-front reading renders as identity...
-    const identityValues = matrixValues(
-      gyroCssTransform(whiteUpGreenFrontFixture, DEFAULT_GYRO_CALIBRATION),
-    );
-    expect(identityValues.slice(0, 12)).toEqual([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-    ]);
+    expectIdentity(gyroModelMatrix(whiteUpGreenFrontFixture, DEFAULT_GYRO_CALIBRATION)!);
     // ...and a yellow-up/blue-front reading renders as a model X half-turn.
-    const halfTurnValues = matrixValues(
-      gyroCssTransform(yellowUpBlueFrontFixture, DEFAULT_GYRO_CALIBRATION),
-    );
-    expect(halfTurnValues[0]).toBeGreaterThan(0.98);
-    expect(halfTurnValues[5]).toBeLessThan(-0.98);
-    expect(halfTurnValues[10]).toBeLessThan(-0.98);
+    const halfTurn = gyroModelMatrix(yellowUpBlueFrontFixture, DEFAULT_GYRO_CALIBRATION)!;
+    expect(halfTurn[0][0]).toBeGreaterThan(0.98);
+    expect(halfTurn[1][1]).toBeLessThan(-0.98);
+    expect(halfTurn[2][2]).toBeLessThan(-0.98);
   });
 
   it("keeps world-axis turns on their world axis for arbitrary connection grips", () => {
@@ -150,17 +140,12 @@ describe("GAN orientation mapping", () => {
   });
 
   it("uses the calibration pose as an identity orientation", () => {
-    const values = matrixValues(
-      gyroCssTransform(whiteUpGreenFrontFixture, {
+    expectIdentity(
+      gyroModelMatrix(whiteUpGreenFrontFixture, {
         ...DEFAULT_GYRO_CALIBRATION,
         zero: whiteUpGreenFrontFixture,
-      }),
+      })!,
     );
-    expect(values.slice(0, 12)).toEqual([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-    ]);
   });
 
   it("maps the captured red-orange whole-cube turn to the model X axis", () => {
@@ -176,16 +161,14 @@ describe("GAN orientation mapping", () => {
       z: -0.3562425611133152,
       w: 0.2522965178380688,
     };
-    const values = matrixValues(
-      gyroCssTransform(end, {
-        ...DEFAULT_GYRO_CALIBRATION,
-        zero: start,
-        bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
-      }),
-    );
-    expect(values[0]).toBeGreaterThan(0.9);
-    expect(Math.abs(values[1])).toBeLessThan(0.4);
-    expect(Math.abs(values[2])).toBeLessThan(0.4);
+    const model = gyroModelMatrix(end, {
+      ...DEFAULT_GYRO_CALIBRATION,
+      zero: start,
+      bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+    })!;
+    expect(model[0][0]).toBeGreaterThan(0.9);
+    expect(Math.abs(model[1][0])).toBeLessThan(0.4);
+    expect(Math.abs(model[2][0])).toBeLessThan(0.4);
   });
 
   it("preserves positive whole-cube rotation direction on all three canonical axes", () => {
@@ -242,13 +225,4 @@ describe("GAN orientation mapping", () => {
     expect(referenceCurrent?.[1][2]).toBeCloseTo(0.5, 6);
   });
 
-  it("converts canonical cube Y-up rotations only at the CSS renderer boundary", () => {
-    const cubePitch = quaternionMatrix(quaternionFromAxisAngle("x", 30));
-    const cssPitch = cubePoseToCssMatrix(cubePitch);
-    expect(cssPitch[2][1]).toBeCloseTo(-0.5, 6);
-    expect(cssPitch[1][2]).toBeCloseTo(0.5, 6);
-
-    const cubeYaw = quaternionMatrix(quaternionFromAxisAngle("y", 30));
-    expect(cubePoseToCssMatrix(cubeYaw)).toEqual(cubeYaw);
-  });
 });

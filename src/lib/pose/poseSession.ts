@@ -1,7 +1,6 @@
 import {
   gyroModelMatrix,
   normalizeQuaternion,
-  quaternionMatrix,
   type DeviceCalibration,
   type Matrix3,
   type SessionAnchor,
@@ -186,8 +185,4 @@ export class PoseSession {
     this.health = { ...this.health, status, message };
     return { accepted, quaternion, anchor: this.anchor, health: { ...this.health } };
   }
-}
-
-export function quaternionAsMatrix(value: CubeQuaternion): Matrix3 {
-  return quaternionMatrix(value);
 }
