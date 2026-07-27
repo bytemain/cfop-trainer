@@ -12,9 +12,9 @@ describe("relative body rotation", () => {
       { w: -0.4422212397238603, x: 0.03094633106142128, y: 0.02325552689231067, z: 0.8960702428938759 },
     );
     expect(rotation?.angleDeg).toBeCloseTo(88.8789, 3);
-    expect(rotation?.axis.x).toBeCloseTo(-0.00522, 3);
-    expect(rotation?.axis.y).toBeCloseTo(0.99962, 3);
-    expect(rotation?.axis.z).toBeCloseTo(0.02710, 3);
+    expect(rotation?.axis.x).toBeCloseTo(0.00522, 3);
+    expect(rotation?.axis.y).toBeCloseTo(-0.99962, 3);
+    expect(rotation?.axis.z).toBeCloseTo(-0.02710, 3);
   });
 
   it("recognizes opposite directions on the same learned body axis", () => {

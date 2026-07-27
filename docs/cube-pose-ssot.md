@@ -77,16 +77,18 @@ Rcube  = bodyToModel · Rdelta · bodyToModelᵀ
    calibration. `GAN_V4_IDENTITY_SENSOR_POSE` ships this constant from the
    same deidentified GAN16ui real-device capture that anchors the tests.
 
-`Rdelta` is a world-frame delta: it left-multiplies the reference pose.
+Because the sensor quaternion is passive, `Rcube` is a body-frame delta and
+right-multiplies the reference pose:
 
 ```text
-Rdisplayed = Rcube · Rreference
+Rdisplayed = Rreference · Rcube
 ```
 
-Right-multiplying expresses the delta in the cube body frame; every
-world-axis turn then appears rotated by the reference pose (a physical X
-turn rendering as Y whenever the session starts away from the identity
-grip). This was the root cause of the legacy axis-confusion bug.
+With the identity-grip fallback reference this composes to the exact
+absolute pose for any connection grip: `P_ref · (P_ref⁻¹ · P_cur) = P_cur`.
+Left-multiplying would conjugate every turn by the reference pose. (The
+legacy axis-confusion bug was a separate fault: the no-anchor fallback
+formula predated this contract entirely.)
 
 Runtime state is split into three independent records:
 
@@ -100,11 +102,15 @@ background gap is checked before the next quaternion is accepted. If the
 sensor frame appears to have reset, the new sensor reference is anchored to
 the last accepted canonical pose so the renderer cannot jump arbitrarily.
 
-The multiplication order is data, not an implementation detail. ROS tf2 also
-defines a relative rotation that takes `q1` to `q2` as
-`q_relative = q2 × inverse(q1)` and explicitly warns that order matters.
-GAN V4 uses that forward order: `current-reference-inverse`. Reversing it
-preserves the apparent axis but renders every whole-cube turn backward.
+The multiplication order is data, not an implementation detail. The GAN V4
+sensor quaternion is passive (it rotates world-frame vectors into cube-body
+frame), so the normalized relative rotation is `reference · current⁻¹`
+(`reference-current-inverse`). The ROS tf2 forward order
+`q_relative = q2 × inverse(q1)` applies to active quaternions; using it here
+(`current-reference-inverse`) preserves the apparent axis but renders every
+whole-cube turn backward — that was the direction bug. Note that 180°
+fixtures cannot distinguish the two orders, so direction evidence must come
+from controlled sub-180° turns.
 
 Legacy fallbacks that predate this contract (a hard-coded GAN-world-to-UI
 matrix, transposed quaternions, or renderer-side axis swaps) are removed.

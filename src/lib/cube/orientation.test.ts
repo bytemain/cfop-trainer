@@ -98,9 +98,9 @@ describe("GAN orientation mapping", () => {
     const bodyToModel = GAN_V4_BODY_TO_MODEL;
     const identitySensor = quaternionMatrix(GAN_V4_IDENTITY_SENSOR_POSE);
     const sensorReadingAt = (pose: Matrix3): CubeQuaternion => {
-      // Invert R = B * q * Q0^-1 * B^T for q.
+      // Invert R = B * Q0 * q^-1 * B^T for q.
       const matrix = multiplyMatrix3(
-        multiplyMatrix3(transposeMatrix3(bodyToModel), pose),
+        multiplyMatrix3(transposeMatrix3(bodyToModel), transposeMatrix3(pose)),
         multiplyMatrix3(bodyToModel, identitySensor),
       );
       const three = new Quaternion().setFromRotationMatrix(
@@ -178,9 +178,13 @@ describe("GAN orientation mapping", () => {
       bodyToModel: GAN_V4_BODY_TO_MODEL,
       relativeOrder: GAN_V4_RELATIVE_ORDER,
     };
-    const redAxis = gyroModelMatrix(quaternionFromAxisAngle("y", -30), calibration);
-    const whiteAxis = gyroModelMatrix(quaternionFromAxisAngle("z", -30), calibration);
-    const greenAxis = gyroModelMatrix(quaternionFromAxisAngle("x", 30), calibration);
+    // The GAN quaternion is passive (world -> body), so a sensor reading
+    // that is +30 degrees around a sensor axis renders as the negative
+    // model-frame turn around the mapped axis; pick sensor inputs that
+    // produce positive canonical rotations.
+    const redAxis = gyroModelMatrix(quaternionFromAxisAngle("y", 30), calibration);
+    const whiteAxis = gyroModelMatrix(quaternionFromAxisAngle("z", 30), calibration);
+    const greenAxis = gyroModelMatrix(quaternionFromAxisAngle("x", -30), calibration);
 
     // +X/red sends +Y/white toward +Z/green.
     expect(applyMatrix3(redAxis!, [0, 1, 0])[2]).toBeCloseTo(0.5, 6);

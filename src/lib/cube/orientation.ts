@@ -62,7 +62,7 @@ export type Matrix3 = [
 // csTimer-compatible packet semantics and controlled GAN16ui rotations.
 // Canonical cube space is +X red, +Y white, +Z green.
 export const GAN_V4_BODY_TO_MODEL: Matrix3 = [[0, -1, 0], [0, 0, -1], [1, 0, 0]];
-export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "current-reference-inverse";
+export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "reference-current-inverse";
 export const GAN_V4_POSE_CONTRACT_VERSION = 1;
 
 // Model-constant sensor reading at the canonical identity grip (white up,
@@ -248,12 +248,13 @@ export function gyroModelMatrix(
     multiplyMatrix3(bodyToModel as Matrix3, relative),
     transposeMatrix3(bodyToModel as Matrix3),
   );
-  // relativePose is the world-frame delta since the reference sensor pose, so
-  // it must left-multiply the reference pose. Right-multiplying would express
-  // the delta in the cube body frame and every world-axis turn would appear
-  // rotated by the reference pose (e.g. a physical X turn rendered as Y).
+  // The GAN quaternion is passive, so this relative pose is a body-frame
+  // delta: it right-multiplies the reference pose. (Left-multiplying would
+  // conjugate every turn by the reference pose.) With the identity-grip
+  // fallback reference, session-start anchoring composes to the exact
+  // absolute pose: P_ref · (P_ref^-1 · P_cur) = P_cur.
   let model = calibration.referencePose
-    ? multiplyMatrix3(relativePose, calibration.referencePose)
+    ? multiplyMatrix3(calibration.referencePose, relativePose)
     : relativePose;
   const signs = [calibration.invertX ? -1 : 1, calibration.invertY ? -1 : 1, calibration.invertZ ? -1 : 1];
   const inversion = [[signs[0], 0, 0], [0, signs[1], 0], [0, 0, signs[2]]];
