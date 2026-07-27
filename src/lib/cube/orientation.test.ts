@@ -1,18 +1,25 @@
 import { describe, expect, it } from "vitest";
+import { Matrix4, Quaternion } from "three";
 import {
   applyMatrix3,
   cubePoseToCssMatrix,
   DEFAULT_GYRO_CALIBRATION,
   gyroCssTransform,
   gyroModelMatrix,
+  multiplyMatrix3,
   quaternionMatrix,
   quaternionFromAxisAngle,
+  rotationDistanceDeg,
+  transposeMatrix3,
   DEFAULT_DEVICE_CALIBRATION,
   GAN_V4_BODY_TO_MODEL,
+  GAN_V4_IDENTITY_SENSOR_POSE,
   GAN_V4_POSE_CONTRACT_VERSION,
   GAN_V4_RELATIVE_ORDER,
   migrateGanV4ViewPreference,
+  type Matrix3,
 } from "./orientation";
+import type { CubeQuaternion } from "$lib/protocols/gan/types";
 
 function matrixValues(transform: string): number[] {
   const match = /^matrix3d\(([^)]+)\)/.exec(transform);
@@ -53,12 +60,7 @@ describe("GAN orientation mapping", () => {
     });
   });
 
-  const whiteUpGreenFrontFixture = {
-    w: -0.5278115896786351,
-    x: -0.07567134227142988,
-    y: 0.018830564884244807,
-    z: 0.8457743100768033,
-  };
+  const whiteUpGreenFrontFixture = GAN_V4_IDENTITY_SENSOR_POSE;
   const yellowUpBlueFrontFixture = {
     w: -0.07250381914004346,
     x: 0.843315264867377,
@@ -77,6 +79,74 @@ describe("GAN orientation mapping", () => {
     expect(values[0]).toBeGreaterThan(0.98);
     expect(values[5]).toBeLessThan(-0.98);
     expect(values[10]).toBeLessThan(-0.98);
+  });
+
+  it("derives the absolute canonical pose from the fixed contract without an anchor", () => {
+    // No session anchor: the identity-grip model constant is the reference,
+    // so the real-device white-up/green-front reading renders as identity...
+    const identityValues = matrixValues(
+      gyroCssTransform(whiteUpGreenFrontFixture, DEFAULT_GYRO_CALIBRATION),
+    );
+    expect(identityValues.slice(0, 12)).toEqual([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+    ]);
+    // ...and a yellow-up/blue-front reading renders as a model X half-turn.
+    const halfTurnValues = matrixValues(
+      gyroCssTransform(yellowUpBlueFrontFixture, DEFAULT_GYRO_CALIBRATION),
+    );
+    expect(halfTurnValues[0]).toBeGreaterThan(0.98);
+    expect(halfTurnValues[5]).toBeLessThan(-0.98);
+    expect(halfTurnValues[10]).toBeLessThan(-0.98);
+  });
+
+  it("keeps world-axis turns on their world axis for arbitrary connection grips", () => {
+    // Regression: composing the reference pose on the left (reference * delta)
+    // expressed deltas in the body frame, so a physical X turn rendered as Y
+    // whenever the session started away from the identity grip.
+    const bodyToModel = GAN_V4_BODY_TO_MODEL;
+    const identitySensor = quaternionMatrix(GAN_V4_IDENTITY_SENSOR_POSE);
+    const sensorReadingAt = (pose: Matrix3): CubeQuaternion => {
+      // Invert R = B * q * Q0^-1 * B^T for q.
+      const matrix = multiplyMatrix3(
+        multiplyMatrix3(transposeMatrix3(bodyToModel), pose),
+        multiplyMatrix3(bodyToModel, identitySensor),
+      );
+      const three = new Quaternion().setFromRotationMatrix(
+        new Matrix4().set(
+          matrix[0][0], matrix[0][1], matrix[0][2], 0,
+          matrix[1][0], matrix[1][1], matrix[1][2], 0,
+          matrix[2][0], matrix[2][1], matrix[2][2], 0,
+          0, 0, 0, 1,
+        ),
+      );
+      return { x: three.x, y: three.y, z: three.z, w: three.w };
+    };
+
+    // Connect while holding the cube yawed 40 degrees, then physically turn
+    // the whole cube +30 degrees around the world X (red-orange) axis.
+    const connectionPose = quaternionMatrix(quaternionFromAxisAngle("y", 40));
+    const worldXTurn = quaternionMatrix(quaternionFromAxisAngle("x", 30));
+    const turnedPose = multiplyMatrix3(worldXTurn, connectionPose);
+    const calibration = {
+      ...DEFAULT_GYRO_CALIBRATION,
+      zero: sensorReadingAt(connectionPose),
+      referencePose: connectionPose,
+      bodyToModel,
+      relativeOrder: GAN_V4_RELATIVE_ORDER,
+    };
+
+    const model = gyroModelMatrix(sensorReadingAt(turnedPose), calibration)!;
+    expect(rotationDistanceDeg(model, turnedPose)).toBeLessThan(1e-6);
+
+    // The on-screen delta since connection is a pure world-X rotation.
+    const delta = multiplyMatrix3(model, transposeMatrix3(connectionPose));
+    expect(delta[0][0]).toBeCloseTo(1, 6);
+    expect(delta[1][1]).toBeCloseTo(Math.cos(Math.PI / 6), 6);
+    expect(delta[2][2]).toBeCloseTo(Math.cos(Math.PI / 6), 6);
+    expect(delta[2][1]).toBeCloseTo(0.5, 6);
+    expect(delta[1][2]).toBeCloseTo(-0.5, 6);
   });
 
   it("uses the calibration pose as an identity orientation", () => {

@@ -70,6 +70,24 @@ Rdelta = relativeOrder(reference, current)
 Rcube  = bodyToModel · Rdelta · bodyToModelᵀ
 ```
 
+3. `identitySensorPose`, the model-constant sensor reading at the canonical
+   identity grip (white up, green front). When no session anchor exists yet,
+   it is the reference, so the fixed contract alone yields the absolute
+   canonical pose: the identity grip renders as identity before any user
+   calibration. `GAN_V4_IDENTITY_SENSOR_POSE` ships this constant from the
+   same deidentified GAN16ui real-device capture that anchors the tests.
+
+`Rdelta` is a world-frame delta: it left-multiplies the reference pose.
+
+```text
+Rdisplayed = Rcube · Rreference
+```
+
+Right-multiplying expresses the delta in the cube body frame; every
+world-axis turn then appears rotated by the reference pose (a physical X
+turn rendering as Y whenever the session starts away from the identity
+grip). This was the root cause of the legacy axis-confusion bug.
+
 Runtime state is split into three independent records:
 
 - `DeviceCalibration`: persistent sensor-to-cube mapping, relative order and residuals;
@@ -87,6 +105,11 @@ defines a relative rotation that takes `q1` to `q2` as
 `q_relative = q2 × inverse(q1)` and explicitly warns that order matters.
 GAN V4 uses that forward order: `current-reference-inverse`. Reversing it
 preserves the apparent axis but renders every whole-cube turn backward.
+
+Legacy fallbacks that predate this contract (a hard-coded GAN-world-to-UI
+matrix, transposed quaternions, or renderer-side axis swaps) are removed.
+There is exactly one absolute-pose formula and it lives in
+`gyroModelMatrix`.
 
 ## 4. Calibration solver
 

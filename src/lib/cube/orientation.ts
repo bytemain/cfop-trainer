@@ -65,6 +65,18 @@ export const GAN_V4_BODY_TO_MODEL: Matrix3 = [[0, -1, 0], [0, 0, -1], [1, 0, 0]]
 export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "current-reference-inverse";
 export const GAN_V4_POSE_CONTRACT_VERSION = 1;
 
+// Model-constant sensor reading at the canonical identity grip (white up,
+// green front), from the same deidentified GAN16ui real-device capture that
+// anchors orientation.test.ts. It lets the fixed contract produce an absolute
+// pose before any user anchor exists; with it, connecting while holding the
+// cube upright renders upright, and world-axis turns stay world-axis turns.
+export const GAN_V4_IDENTITY_SENSOR_POSE: CubeQuaternion = {
+  x: -0.07567134227142988,
+  y: 0.018830564884244807,
+  z: 0.8457743100768033,
+  w: -0.5278115896786351,
+};
+
 export const GAN_V4_SENSOR_AXES: Record<"x" | "y" | "z", [number, number, number]> = {
   x: [0, -1, 0],
   y: [0, 0, -1],
@@ -261,27 +273,24 @@ export function gyroModelMatrix(
   // physical cube. Until calibration is complete, retain the protocol's
   // conservative legacy fallback so gyro rendering remains usable.
   const bodyToModel = calibration.bodyToModel ?? GAN_V4_BODY_TO_MODEL;
-  const ganWorldToUiWorld: Matrix3 = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
-  let model: Matrix3;
-  if (calibration.zero) {
-    const reference = quaternionMatrix(calibration.zero);
-    const relative = calibration.relativeOrder === "current-reference-inverse"
-      ? multiplyMatrix3(current, transposeMatrix3(reference))
-      : multiplyMatrix3(reference, transposeMatrix3(current));
-    const relativePose = multiplyMatrix3(
-      multiplyMatrix3(bodyToModel as Matrix3, relative),
-      transposeMatrix3(bodyToModel as Matrix3),
-    );
-    model = calibration.referencePose
-      ? multiplyMatrix3(calibration.referencePose, relativePose)
-      : relativePose;
-  } else {
-    // UI model body -> GAN body -> GAN world -> UI world.
-    model = multiplyMatrix3(
-      multiplyMatrix3(ganWorldToUiWorld, transposeMatrix3(current)),
-      transposeMatrix3(bodyToModel as Matrix3),
-    );
-  }
+  // Without a session anchor, the model-constant identity-grip reading is the
+  // reference: the fixed contract alone then yields the absolute canonical
+  // pose (white up / green front renders as identity).
+  const reference = quaternionMatrix(calibration.zero ?? GAN_V4_IDENTITY_SENSOR_POSE);
+  const relative = calibration.relativeOrder === "current-reference-inverse"
+    ? multiplyMatrix3(current, transposeMatrix3(reference))
+    : multiplyMatrix3(reference, transposeMatrix3(current));
+  const relativePose = multiplyMatrix3(
+    multiplyMatrix3(bodyToModel as Matrix3, relative),
+    transposeMatrix3(bodyToModel as Matrix3),
+  );
+  // relativePose is the world-frame delta since the reference sensor pose, so
+  // it must left-multiply the reference pose. Right-multiplying would express
+  // the delta in the cube body frame and every world-axis turn would appear
+  // rotated by the reference pose (e.g. a physical X turn rendered as Y).
+  let model = calibration.referencePose
+    ? multiplyMatrix3(relativePose, calibration.referencePose)
+    : relativePose;
   const signs = [calibration.invertX ? -1 : 1, calibration.invertY ? -1 : 1, calibration.invertZ ? -1 : 1];
   const inversion = [[signs[0], 0, 0], [0, signs[1], 0], [0, 0, signs[2]]];
   model = multiplyMatrix3(multiplyMatrix3(inversion as Matrix3, model), inversion as Matrix3);

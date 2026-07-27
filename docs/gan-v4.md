@@ -75,7 +75,11 @@ bodyToModel =
 [ 1  0  0 ]
 
 relativeOrder = current * inverse(reference)
+
+identitySensorPose = (x -0.07567134, y 0.01883056, z 0.84577431, w -0.52781159)
 ```
+
+`identitySensorPose` 是白上绿前标准握持下的传感器读数（与 `orientation.test.ts` 同源的真机 fixture）。没有会话锚点时它充当 reference，使固定契约直接给出绝对姿态：白上绿前渲染为单位姿态，世界轴转动始终显示为世界轴转动。会话锚点建立后的显示姿态按 `Rdisplayed = Rdelta · Rreference` 合成——delta 左乘参考姿态（世界系增量）；右乘会把增量退到物体坐标系，表现为“物理绕 X 转、画面绕 Y 转”的轴错位。
 
 应用连接 GAN V4 时必须覆盖历史本地 axis calibration，不能要求普通用户重复三轴采集。首个姿态帧经固定契约转换成绝对 `CubePose` 后建立 session anchor；anchor 只负责掉线/传感器重启后的连续性，不得把首帧强制归零成 identity。
 
