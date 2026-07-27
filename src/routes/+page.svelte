@@ -381,6 +381,8 @@
               gyroCalibration={trainer.gyroCalibration}
               stickerPalette={trainer.stickerPalette}
               interactive={!trainer.connectedDeviceName || !trainer.gyroCalibration.enabled}
+              moveSerial={trainer.eventCount}
+              lastMove={trainer.lastMove}
             />
             {#if show2dOverlay}
               <aside class="cube-net-overlay" aria-label="3D 视图的 2D 辅助图">
@@ -514,7 +516,7 @@
         </aside>
       </div>
     {:else if activeSection === "cases"}
-      <CaseLibrary />
+      <CaseLibrary stickerPalette={trainer.stickerPalette} />
     {:else if activeSection === "history"}
       <section class="placeholder-page reconstruction-page">
         <BarChart3 size={42} />

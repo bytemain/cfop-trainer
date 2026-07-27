@@ -1,16 +1,14 @@
 import {
   FACES,
   applyMove,
-  applyMoves,
   cloneCube,
-  createSolvedCube,
   derivePhaseFacts,
   deriveF2lSlotFacts,
-  invertAlgorithm,
   rotateCube,
   type CubeState,
   type StickerColor,
 } from "$lib/cube/cube";
+import { CASE_LIBRARY, algorithmMoves, type CfopCase } from "$lib/cases/caseLibrary";
 import type { MoveTimelineEntry, MoveTimelineItem } from "$lib/timeline/moveTimeline";
 import { compareAlgorithms } from "./algorithmNormalization";
 
@@ -61,14 +59,24 @@ export interface SolveReconstruction {
   replayStates: CubeState[];
 }
 
-const KNOWN_CASE_ALGORITHMS: Array<{ kind: "oll" | "pll"; id: string; name: string; algorithm: string[] }> = [
-  { kind: "oll", id: "oll-21", name: "H", algorithm: "R U2 R' U' R U R' U' R U' R'".split(" ") },
-  { kind: "oll", id: "oll-22", name: "Pi", algorithm: "R U2 R2 U' R2 U' R2 U2 R".split(" ") },
-  { kind: "oll", id: "oll-26", name: "Anti-Sune", algorithm: "R U2 R' U' R U' R'".split(" ") },
-  { kind: "oll", id: "oll-27", name: "Sune", algorithm: "R U R' U R U2 R'".split(" ") },
-  { kind: "pll", id: "pll-t", name: "T Perm", algorithm: "R U R' U' R' F R2 U' R' U' R U R' F'".split(" ") },
-  { kind: "pll", id: "pll-y", name: "Y Perm", algorithm: "F R U' R' U' R U R' F' R U R' U' R' F R F'".split(" ") },
-];
+// Recognition runs against the full case library. Device moves are plain
+// face turns, so prefer a face-only algorithm for the recommendation when
+// the case also ships wide/slice/rotation versions.
+const FACE_TOKEN = /^[URFDLB]('|2)?$/;
+
+function preferredAlgorithm(item: CfopCase): string[] {
+  const candidates = item.algorithms.map(algorithmMoves);
+  return candidates.find((tokens) => tokens.every((token) => FACE_TOKEN.test(token)))
+    ?? candidates[0];
+}
+
+const KNOWN_CASE_ALGORITHMS = CASE_LIBRARY.map((item) => ({
+  kind: item.kind,
+  id: item.id,
+  name: item.name,
+  cube: item.cube,
+  algorithm: preferredAlgorithm(item),
+}));
 
 function serializeRelativeToCenters(state: CubeState): string {
   const colorToFace = new Map<StickerColor, string>(FACES.map((face) => [state[face][4], face]));
@@ -109,11 +117,9 @@ function caseSignatures(
   return values;
 }
 
-const CASE_SIGNATURES = KNOWN_CASE_ALGORITHMS.flatMap((item) => {
-  const whiteCrossDown = rotateCube(createSolvedCube(), "x2");
-  const caseState = applyMoves(whiteCrossDown, invertAlgorithm(item.algorithm));
-  return caseSignatures(item.kind, caseState, "white").map(({ signature, auf }) => ({ ...item, signature, auf }));
-});
+const CASE_SIGNATURES = KNOWN_CASE_ALGORITHMS.flatMap(({ cube, ...item }) =>
+  caseSignatures(item.kind, cube, "white").map(({ signature, auf }) => ({ ...item, signature, auf })),
+);
 
 export function recognizeCfopCase(
   kind: "oll" | "pll",

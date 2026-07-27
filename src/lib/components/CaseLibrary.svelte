@@ -10,13 +10,21 @@
     Search,
     Sparkles,
   } from "lucide-svelte";
+  import Cube3D from "$lib/components/Cube3D.svelte";
+  import LazyCubeThumb from "$lib/components/LazyCubeThumb.svelte";
   import {
     algorithmMoves,
     familiesFor,
     filterCases,
     selectCase,
+    type CaseAlgorithm,
     type CaseKind,
   } from "$lib/cases/caseLibrary";
+  import { executeMoves } from "$lib/cube/algorithm";
+  import { cloneCube, isSolved, type CubeState, type StickerPalette } from "$lib/cube/cube";
+  import { DEFAULT_GYRO_CALIBRATION } from "$lib/cube/orientation";
+
+  let { stickerPalette }: { stickerPalette: StickerPalette } = $props();
 
   let kind = $state<CaseKind>("oll");
   let query = $state("");
@@ -25,10 +33,29 @@
   let practiceId = $state<string | null>(null);
   let mobileDetailOpen = $state(false);
 
+  // 3D preview state: the selected case cube, optionally mid-playback of one
+  // of its algorithms. Cube3D animates every move fed through previewMove.
+  let previewCube = $state<CubeState | null>(null);
+  let previewSerial = $state(0);
+  let previewMove = $state<string | null>(null);
+  let playbackTimer: ReturnType<typeof setInterval> | null = null;
+  let playingAlgorithmId = $state<string | null>(null);
+  let playbackDone = $state(false);
+
   const families = $derived(familiesFor(kind));
   const visibleCases = $derived(filterCases({ kind, query, family }));
   const selected = $derived(selectCase(selectedId, visibleCases));
   const practicing = $derived(selected?.id === practiceId);
+  const activeCube = $derived(previewCube ?? selected?.cube ?? null);
+  const playbackState = $derived(
+    playbackDone && activeCube
+      ? isSolved(activeCube)
+        ? "solved"
+        : activeCube.U.every((color) => color === activeCube.U[4])
+          ? "oriented"
+          : ""
+      : "",
+  );
 
   function selectKind(next: CaseKind): void {
     kind = next;
@@ -36,6 +63,7 @@
     selectedId = null;
     practiceId = null;
     mobileDetailOpen = false;
+    resetPreview();
   }
 
   function chooseCase(id: string): void {
@@ -48,9 +76,49 @@
     if (selected) practiceId = selected.id;
   }
 
-  function pllColor(color: string | undefined): string {
-    return color ? `var(--cube-${color})` : "var(--color-surface-highest)";
+  function stopPlayback(): void {
+    if (playbackTimer !== null) clearInterval(playbackTimer);
+    playbackTimer = null;
+    playingAlgorithmId = null;
   }
+
+  function resetPreview(): void {
+    stopPlayback();
+    previewCube = null;
+    previewMove = null;
+    playbackDone = false;
+  }
+
+  function playAlgorithm(algorithm: CaseAlgorithm): void {
+    if (!selected) return;
+    stopPlayback();
+    const tokens = algorithmMoves(algorithm);
+    previewCube = cloneCube(selected.cube);
+    playbackDone = false;
+    playingAlgorithmId = algorithm.id;
+    let index = 0;
+    playbackTimer = setInterval(() => {
+      if (!previewCube || index >= tokens.length) {
+        stopPlayback();
+        playbackDone = true;
+        return;
+      }
+      previewMove = tokens[index];
+      previewSerial += 1;
+      previewCube = executeMoves(previewCube, [tokens[index]]);
+      index += 1;
+      if (index >= tokens.length) {
+        stopPlayback();
+        playbackDone = true;
+      }
+    }, 430);
+  }
+
+  // Switching cases always returns to the canonical diagram.
+  $effect(() => {
+    selected?.id;
+    resetPreview();
+  });
 </script>
 
 <section class="case-library" class:mobile-detail-open={mobileDetailOpen} aria-labelledby="case-library-title">
@@ -60,7 +128,7 @@
       <div>
         <span class="eyebrow">Case Library</span>
         <h1 id="case-library-title">OLL / PLL 定向训练</h1>
-        <p>先学会识别，再选择顺手公式。当前练习入口仅保存本地准备状态，不生成真机成绩。</p>
+        <p>57 个 OLL 与 21 个 PLL 全集。图案由公式逆运算推导，播放公式即可观看 3D 还原过程。当前练习入口仅保存本地准备状态，不生成真机成绩。</p>
       </div>
     </div>
     <div class="kind-switch" aria-label="Case 分类">
@@ -106,11 +174,7 @@
             onclick={() => chooseCase(item.id)}
           >
             <span class="case-index">{item.kind.toUpperCase()} {item.number}</span>
-            <span class="mini-pattern" aria-hidden="true">
-              {#each item.pattern.top as yellow}
-                <i class:yellow></i>
-              {/each}
-            </span>
+            <LazyCubeThumb caseId={item.id} cube={item.cube} palette={stickerPalette} />
             <span class="case-card-copy">
               <strong>{item.name}</strong>
               <small>{item.family} · {item.tags.slice(0, 2).join(" · ")}</small>
@@ -122,7 +186,7 @@
     </div>
 
     <aside class="case-detail" aria-live="polite">
-      {#if selected}
+      {#if selected && activeCube}
         <button class="mobile-back" onclick={() => (mobileDetailOpen = false)}><ArrowLeft size={17} /> 返回 Case 列表</button>
         <div class="detail-heading">
           <div>
@@ -130,34 +194,29 @@
             <h2>{selected.name}</h2>
             {#if selected.aliases.length > 0}<p>也叫 {selected.aliases.join(" / ")}</p>{/if}
           </div>
-          <span class="verified-badge"><Check size={14} /> 内置样例</span>
+          <span class="verified-badge"><Check size={14} /> 公式推导图案</span>
         </div>
 
         <div class="pattern-and-hint">
           <figure class="case-pattern" aria-label={`${selected.name} 标准图案，黄色顶面朝上，绿色面朝前`}>
             <div class="orientation-label"><span>U 黄</span><span>F 绿</span></div>
-            <div class="top-face">
-              {#each selected.pattern.top as yellow}
-                <i class:yellow></i>
-              {/each}
-            </div>
-            <div class="side-ring" aria-hidden="true">
-              {#each ["F", "R", "B", "L"] as face, faceIndex}
-                <div class="side-face">
-                  <span>{face}</span>
-                  <div>
-                    {#each [0, 1, 2] as sticker}
-                      {@const ringIndex = faceIndex * 3 + sticker}
-                      <i
-                        class:yellow={!selected.pattern.ringColors && selected.pattern.ring[ringIndex]}
-                        style:background={selected.pattern.ringColors ? pllColor(selected.pattern.ringColors[ringIndex]) : undefined}
-                      ></i>
-                    {/each}
-                  </div>
-                </div>
-              {/each}
-            </div>
-            <figcaption>黄色朝上 · 绿色朝前的标准观察方向</figcaption>
+            <Cube3D
+              cube={activeCube}
+              orientation={null}
+              gyroCalibration={DEFAULT_GYRO_CALIBRATION}
+              {stickerPalette}
+              interactive
+              moveSerial={previewSerial}
+              lastMove={previewMove}
+            />
+            <figcaption>
+              黄色朝上 · 绿色朝前 · 拖动旋转观察
+              {#if previewCube || playbackDone}
+                <button class="reset-preview" onclick={resetPreview}><RotateCcw size={13} /> 恢复 Case 图案</button>
+              {/if}
+              {#if playbackState === "solved"}<span class="playback-result">✓ 已还原</span>
+              {:else if playbackState === "oriented"}<span class="playback-result">✓ 顶面定向完成</span>{/if}
+            </figcaption>
           </figure>
 
           <div class="recognition-card">
@@ -172,13 +231,23 @@
         <section class="algorithms" aria-labelledby="algorithm-title">
           <div class="section-title">
             <div><span class="eyebrow">Algorithms</span><h3 id="algorithm-title">推荐公式</h3></div>
-            <span>{selected.algorithms.length} 个版本</span>
+            <span>{selected.algorithms.length} 个版本 · 可播放</span>
           </div>
           {#each selected.algorithms as algorithm, algorithmIndex}
-            <article class="algorithm-card">
+            {@const isPlaying = playingAlgorithmId === algorithm.id}
+            <article class="algorithm-card" class:playing={isPlaying}>
               <div class="algorithm-meta">
                 <strong>{algorithmIndex + 1}. {algorithm.label}</strong>
-                <span>{algorithmMoves(algorithm).length} moves</span>
+                <span class="algorithm-meta-right">
+                  <span>{algorithmMoves(algorithm).length} moves</span>
+                  <button
+                    class="play-algorithm"
+                    disabled={playingAlgorithmId !== null && !isPlaying}
+                    onclick={() => playAlgorithm(algorithm)}
+                  >
+                    {#if isPlaying}<RotateCcw size={14} /> 播放中…{:else}<Play size={14} /> 播放{/if}
+                  </button>
+                </span>
               </div>
               <div class="algorithm-segments" aria-label={`${algorithm.label} 公式`}>
                 {#each algorithm.segments as segment}
@@ -244,13 +313,10 @@
   .case-list,
   .case-detail { min-width: 0; border: 1px solid var(--color-outline-soft); border-radius: 22px; background: var(--color-surface); box-shadow: 0 20px 50px rgb(0 0 0 / 0.1); }
   .case-list { display: grid; align-content: start; gap: 7px; max-height: calc(100vh - 250px); min-height: 560px; overflow-y: auto; padding: 10px; }
-  .case-card { display: grid; grid-template-columns: 56px 48px minmax(0, 1fr) 20px; align-items: center; gap: 10px; min-width: 0; min-height: 72px; padding: 9px 10px; border: 1px solid transparent; border-radius: 15px; color: var(--color-text); text-align: left; background: transparent; cursor: pointer; }
+  .case-card { display: grid; grid-template-columns: 56px 56px minmax(0, 1fr) 20px; align-items: center; gap: 10px; min-width: 0; min-height: 72px; padding: 9px 10px; border: 1px solid transparent; border-radius: 15px; color: var(--color-text); text-align: left; background: transparent; cursor: pointer; }
   .case-card:hover { background: var(--color-surface-high); }
   .case-card.selected { border-color: rgb(135 232 188 / 0.35); background: color-mix(in srgb, var(--color-primary) 9%, var(--color-surface-high)); }
   .case-index { color: var(--color-primary); font-size: 0.68rem; font-weight: 800; }
-  .mini-pattern { display: grid; grid-template-columns: repeat(3, 1fr); width: 44px; height: 44px; gap: 2px; padding: 3px; border-radius: 8px; background: var(--color-cube-frame); }
-  .mini-pattern i { border-radius: 2px; background: var(--color-surface-highest); }
-  .mini-pattern i.yellow { background: var(--cube-yellow); }
   .case-card-copy { display: grid; min-width: 0; gap: 4px; }
   .case-card-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .case-card-copy small { overflow: hidden; color: var(--color-text-muted); font-size: 0.65rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -266,19 +332,15 @@
   .detail-heading h2 { margin-top: 4px; font-size: clamp(1.65rem, 3vw, 2.3rem); letter-spacing: -0.04em; }
   .detail-heading p { margin-top: 5px; color: var(--color-text-muted); font-size: 0.72rem; }
   .verified-badge { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 5px; min-height: 30px; padding: 0 9px; border: 1px solid rgb(114 215 167 / 0.35); border-radius: 999px; color: var(--color-success); font-size: 0.68rem; }
-  .pattern-and-hint { display: grid; grid-template-columns: minmax(220px, 0.8fr) minmax(240px, 1.2fr); gap: 14px; }
-  .case-pattern { display: grid; justify-items: center; min-width: 0; margin: 0; padding: 16px; border-radius: 18px; background: var(--color-surface-high); }
-  .orientation-label { display: flex; justify-content: space-between; width: min(100%, 220px); margin-bottom: 8px; color: var(--color-text-muted); font-size: 0.62rem; font-weight: 750; }
-  .top-face { display: grid; grid-template-columns: repeat(3, 1fr); width: min(58vw, 170px); aspect-ratio: 1; gap: 4px; padding: 5px; border-radius: 12px; background: var(--color-cube-frame); }
-  .top-face i { border-radius: 5px; background: var(--color-surface-highest); }
-  .top-face i.yellow { background: var(--cube-yellow); }
-  .side-ring { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: min(100%, 310px); gap: 4px; margin-top: 10px; }
-  .side-face { display: grid; gap: 3px; }
-  .side-face > span { color: var(--color-text-muted); font-size: 0.55rem; text-align: center; }
-  .side-face > div { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px; border-radius: 5px; background: var(--color-cube-frame); }
-  .side-face i { height: 16px; border-radius: 2px; background: var(--color-surface-highest); }
-  .side-face i.yellow { background: var(--cube-yellow); }
-  .case-pattern figcaption { margin-top: 10px; color: var(--color-text-muted); font-size: 0.62rem; text-align: center; }
+  .pattern-and-hint { display: grid; grid-template-columns: minmax(240px, 0.9fr) minmax(240px, 1.1fr); gap: 14px; }
+  .case-pattern { display: grid; justify-items: center; min-width: 0; margin: 0; padding: 10px 12px 12px; border-radius: 18px; background: var(--color-surface-high); }
+  .case-pattern :global(.cube-3d-wrap) { width: 100%; min-height: 280px; padding: 0; }
+  .case-pattern :global(.cube-stage) { width: 100%; height: 260px; }
+  .case-pattern :global(.cube-3d-wrap > p) { display: none; }
+  .orientation-label { display: flex; justify-content: space-between; width: min(100%, 240px); margin-bottom: 2px; color: var(--color-text-muted); font-size: 0.62rem; font-weight: 750; }
+  .case-pattern figcaption { display: grid; justify-items: center; gap: 6px; margin-top: 4px; color: var(--color-text-muted); font-size: 0.62rem; text-align: center; }
+  .reset-preview { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 10px; border-radius: 9px; color: var(--color-primary); background: var(--color-surface-highest); cursor: pointer; }
+  .playback-result { color: var(--color-success); font-weight: 800; }
   .recognition-card { display: grid; align-content: start; gap: 11px; padding: 18px; border: 1px solid var(--color-outline-soft); border-radius: 18px; }
   .recognition-card > span { display: flex; align-items: center; gap: 7px; color: var(--color-primary); font-size: 0.72rem; font-weight: 800; }
   .recognition-card p { color: var(--color-text); font-size: 0.86rem; line-height: 1.7; }
@@ -290,9 +352,13 @@
   .section-title h3 { margin-top: 3px; font-size: 1.05rem; }
   .section-title > span { color: var(--color-text-muted); font-size: 0.7rem; }
   .algorithm-card { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--color-outline-soft); border-radius: 15px; background: var(--color-surface-high); }
+  .algorithm-card.playing { border-color: rgb(135 232 188 / 0.4); background: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface-high)); }
   .algorithm-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .algorithm-meta strong { font-size: 0.78rem; }
+  .algorithm-meta-right { display: flex; align-items: center; gap: 10px; }
   .algorithm-meta span, .algorithm-card small { color: var(--color-text-muted); font-size: 0.64rem; }
+  .play-algorithm { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 11px; border-radius: 9px; color: var(--color-on-primary); background: var(--color-primary); font-size: 0.68rem; font-weight: 800; cursor: pointer; }
+  .play-algorithm:disabled { opacity: 0.45; cursor: default; }
   .algorithm-segments { display: flex; flex-wrap: wrap; gap: 7px; }
   .algorithm-segments code { min-width: 0; padding: 8px 9px; border: 1px solid var(--color-outline-soft); border-radius: 9px; color: var(--color-text); background: var(--color-surface); font: 700 0.78rem/1.4 "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; }
 
@@ -323,7 +389,7 @@
     .family-filter { flex: 1 1 auto; }
     .library-layout { grid-template-columns: 1fr; }
     .case-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; min-height: 0; overflow: visible; }
-    .case-card { grid-template-columns: 50px 42px minmax(0, 1fr); }
+    .case-card { grid-template-columns: 50px 50px minmax(0, 1fr); }
     .case-card > :global(svg) { display: none; }
   }
 
@@ -347,7 +413,6 @@
     .case-detail { gap: 16px; padding: 15px; border-radius: 18px; }
     .detail-heading { align-items: flex-start; flex-direction: column; }
     .pattern-and-hint { grid-template-columns: minmax(0, 1fr); }
-    .top-face { width: min(55vw, 168px); }
     .practice-panel { align-items: stretch; flex-direction: column; }
     .primary-action, .secondary-action { width: 100%; min-height: 48px; }
   }

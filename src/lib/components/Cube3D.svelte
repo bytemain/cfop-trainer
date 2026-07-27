@@ -20,14 +20,23 @@
     Vector3,
     WebGLRenderer,
   } from "three";
-  import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
   import {
     FACES,
+    cloneCube,
+    createSolvedCube,
+    stickerGeometry,
     type CubeState,
-    type Face,
     type StickerColor,
     type StickerPalette,
   } from "$lib/cube/cube";
+  import { executeMoves } from "$lib/cube/algorithm";
+  import {
+    parseAlgorithmToken,
+    pivotAngleForTurn,
+    rotateVectorByTurn,
+    turnIncludesHome,
+  } from "$lib/cube/layerAnimation";
+  import { buildCubeCubies, CUBIE_SPACING } from "$lib/three/cubeMesh";
   import { gyroModelMatrix, type GyroCalibration } from "$lib/cube/orientation";
   import type { CubeQuaternion } from "$lib/protocols/gan/types";
 
@@ -37,12 +46,16 @@
     gyroCalibration,
     stickerPalette,
     interactive = true,
+    moveSerial = 0,
+    lastMove = null,
   }: {
     cube: CubeState;
     orientation?: CubeQuaternion | null;
     gyroCalibration: GyroCalibration;
     stickerPalette: StickerPalette;
     interactive?: boolean;
+    moveSerial?: number;
+    lastMove?: string | null;
   } = $props();
 
   let canvas: HTMLCanvasElement;
@@ -51,12 +64,12 @@
   let camera: PerspectiveCamera | null = null;
   let viewGroup: Group | null = null;
   let poseGroup: Group | null = null;
+  let cubieRoot: Group | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let animationFrame: number | null = null;
   let poseAnimationFrame: number | null = null;
   let lastPoseFrameAt = 0;
   let hasDisplayedPose = false;
-  let stickerMeshes: Record<Face, Mesh[]> | null = null;
   let dragging = $state(false);
   let dragLastX = 0;
   let dragLastY = 0;
@@ -65,14 +78,58 @@
   const displayedPoseQuaternion = new Quaternion();
   const stickerMaterials = new Map<string, MeshStandardMaterial>();
 
-  const faceRotations: Record<Face, [number, number, number]> = {
-    F: [0, 0, 0],
-    B: [0, Math.PI, 0],
-    R: [0, Math.PI / 2, 0],
-    L: [0, -Math.PI / 2, 0],
-    U: [-Math.PI / 2, 0, 0],
-    D: [Math.PI / 2, 0, 0],
-  };
+  // ---------------------------------------------------------------------------
+  // Layer-turn animation. The cube is built from 27 individual cubies so a move
+  // can pivot one layer around its face axis instead of repainting stickers.
+  // The facelet `cube` prop stays authoritative: moves animate, everything else
+  // (snapshots, resync, color remaps) hard-syncs cubie transforms immediately.
+  // ---------------------------------------------------------------------------
+
+  interface CubieSticker {
+    normal: readonly [number, number, number];
+    mesh: Mesh;
+    color: StickerColor | null;
+  }
+
+  interface Cubie {
+    home: [number, number, number];
+    group: Group;
+    stickers: CubieSticker[];
+  }
+
+  const cubies: Cubie[] = [];
+  const moveQueue: ReturnType<typeof parseAlgorithmToken>[] = [];
+  let expectedCube: CubeState = createSolvedCube();
+  let lastSerial = 0;
+  let moveAnimating = false;
+  let moveGeneration = 0;
+  let activePivot: Group | null = null;
+
+  // The 24 axis-aligned cube rotations. Used to snap cubie orientations back
+  // onto the grid after an animation and to reconstruct cubie poses from a
+  // facelet snapshot during hard sync.
+  const CUBE_ROTATION_GROUP: Quaternion[] = (() => {
+    const generators = [
+      new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), Math.PI / 2),
+      new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2),
+    ];
+    const members: Quaternion[] = [];
+    const seen = new Set<string>();
+    const pending: Quaternion[] = [new Quaternion()];
+    while (pending.length > 0) {
+      const candidate = pending.pop()!;
+      const key = [candidate.x, candidate.y, candidate.z, candidate.w]
+        .map((value) => value.toFixed(3))
+        .join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      members.push(candidate);
+      for (const generator of generators) {
+        pending.push(generator.clone().multiply(candidate));
+      }
+    }
+    return members;
+  })();
 
   function requestRender(): void {
     if (animationFrame !== null) return;
@@ -114,40 +171,204 @@
     return texture;
   }
 
-  function buildCube(): void {
-    if (!poseGroup) return;
-    const body = new Mesh(
-      new RoundedBoxGeometry(3.08, 3.08, 3.08, 5, 0.12),
-      new MeshStandardMaterial({ color: 0x080a0a, roughness: 0.72, metalness: 0.04 }),
-    );
-    poseGroup.add(body);
-
-    const geometry = new RoundedBoxGeometry(0.88, 0.88, 0.075, 3, 0.055);
-    const nextMeshes: Record<Face, Mesh[]> = { U: [], R: [], F: [], D: [], L: [], B: [] };
-    for (const face of FACES) {
-      const faceGroup = new Group();
-      faceGroup.rotation.set(...faceRotations[face]);
-      for (let index = 0; index < 9; index += 1) {
-        const row = Math.floor(index / 3);
-        const column = index % 3;
-        const sticker = new Mesh(geometry, materialFor(cube[face][index]));
-        sticker.position.set((column - 1) * 1.01, (1 - row) * 1.01, 1.565);
-        faceGroup.add(sticker);
-        nextMeshes[face].push(sticker);
-      }
-      poseGroup.add(faceGroup);
-    }
-    stickerMeshes = nextMeshes;
-  }
-
-  function updateStickerColors(): void {
-    if (!stickerMeshes) return;
-    for (const face of FACES) {
-      cube[face].forEach((color, index) => {
-        stickerMeshes![face][index].material = materialFor(color);
+  function buildCubies(): void {
+    if (!cubieRoot) return;
+    const built = buildCubeCubies(materialFor, () => "white");
+    for (const item of built) {
+      cubieRoot.add(item.group);
+      cubies.push({
+        home: item.home,
+        group: item.group,
+        stickers: item.stickers.map((sticker) => ({ ...sticker, color: null })),
       });
     }
+  }
+
+  function sameAxisVector(
+    left: readonly [number, number, number],
+    right: readonly [number, number, number],
+  ): boolean {
+    return left[0] === right[0] && left[1] === right[1] && left[2] === right[2];
+  }
+
+  function rotateNormalByQuaternion(
+    normal: readonly [number, number, number],
+    rotation: Quaternion,
+  ): [number, number, number] {
+    const vector = new Vector3(normal[0], normal[1], normal[2]).applyQuaternion(rotation);
+    return [Math.round(vector.x), Math.round(vector.y), Math.round(vector.z)];
+  }
+
+  function cubeEquals(left: CubeState, right: CubeState): boolean {
+    return FACES.every((face) => left[face].every((color, index) => color === right[face][index]));
+  }
+
+  function isAnimatableMove(notation: string | null | undefined): boolean {
+    return !!notation && parseAlgorithmToken(notation) !== null;
+  }
+
+  function prefersReducedMotion(): boolean {
+    return (
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
+  // Rebuild every cubie transform and sticker color from a facelet state.
+  // Used for the initial render and for any update that is not a single
+  // animatable layer move (BLE snapshots, desync resync, palette remaps).
+  function hardSync(state: CubeState): void {
+    moveGeneration += 1;
+    moveQueue.length = 0;
+    moveAnimating = false;
+    dissolvePivot();
+    if (cubies.length > 0) {
+      const worldStickers = FACES.flatMap((face) =>
+        state[face].map((color, index) => {
+          const geometry = stickerGeometry(face, index);
+          return { position: geometry.position, normal: geometry.normal, color };
+        }),
+      );
+      for (const cubie of cubies) {
+        const placed = worldStickers.filter((sticker) =>
+          sameAxisVector(sticker.position, cubie.home),
+        );
+        const localNormals = cubie.stickers.map((sticker) => sticker.normal);
+        let matched: Quaternion | null = null;
+        if (localNormals.length === 0) {
+          matched = new Quaternion();
+        } else {
+          for (const candidate of CUBE_ROTATION_GROUP) {
+            const fits = localNormals.every((local) =>
+              placed.some((sticker) =>
+                sameAxisVector(rotateNormalByQuaternion(local, candidate), sticker.normal),
+              ),
+            );
+            if (fits) {
+              matched = candidate;
+              break;
+            }
+          }
+        }
+        cubie.group.position.set(
+          cubie.home[0] * CUBIE_SPACING,
+          cubie.home[1] * CUBIE_SPACING,
+          cubie.home[2] * CUBIE_SPACING,
+        );
+        cubie.group.quaternion.copy(matched ?? new Quaternion());
+        for (const sticker of cubie.stickers) {
+          const worldNormal = rotateNormalByQuaternion(sticker.normal, cubie.group.quaternion);
+          const source = placed.find((candidate) => sameAxisVector(candidate.normal, worldNormal));
+          if (!source) continue;
+          sticker.color = source.color;
+          sticker.mesh.material = materialFor(source.color);
+        }
+      }
+    }
+    expectedCube = cloneCube(state);
     requestRender();
+  }
+
+  function dissolvePivot(): void {
+    if (!activePivot || !cubieRoot) {
+      activePivot = null;
+      return;
+    }
+    for (const child of [...activePivot.children]) cubieRoot.attach(child);
+    cubieRoot.remove(activePivot);
+    activePivot = null;
+  }
+
+  function enqueueMove(notation: string): void {
+    const turn = parseAlgorithmToken(notation);
+    if (!turn) return;
+    expectedCube = executeMoves(expectedCube, [notation]);
+    if (prefersReducedMotion()) {
+      hardSync(expectedCube);
+      return;
+    }
+    moveQueue.push(turn);
+    // A burst far beyond playback speed means we are seconds behind; snap to
+    // the authoritative state instead of replaying stale choreography.
+    if (moveQueue.length > 32) {
+      hardSync(expectedCube);
+      return;
+    }
+    pumpMoveQueue();
+  }
+
+  function nearestGroupQuaternion(rotation: Quaternion): Quaternion {
+    let best = CUBE_ROTATION_GROUP[0];
+    let bestAngle = Infinity;
+    for (const candidate of CUBE_ROTATION_GROUP) {
+      const angle = rotation.angleTo(candidate);
+      if (angle < bestAngle) {
+        bestAngle = angle;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  // Queued moves play faster so live device bursts (~11 Hz on GAN16) catch up
+  // without growing the backlog indefinitely.
+  function moveDuration(amount: 1 | -1 | 2): number {
+    const base = Math.max(80, 210 - moveQueue.length * 26);
+    return base * (amount === 2 ? 1.35 : 1);
+  }
+
+  function pumpMoveQueue(): void {
+    if (moveAnimating || moveQueue.length === 0 || !cubieRoot || !renderer || !camera) return;
+    const turn = moveQueue.shift()!;
+    const layer = cubies.filter((cubie) => turnIncludesHome(cubie.home, turn));
+    moveAnimating = true;
+    const generation = moveGeneration;
+    const pivot = new Group();
+    cubieRoot.add(pivot);
+    activePivot = pivot;
+    cubieRoot.updateMatrixWorld(true);
+    for (const cubie of layer) pivot.attach(cubie.group);
+    const normal = turn.normal;
+    const axisVector = new Vector3(normal[0], normal[1], normal[2]);
+    const targetAngle = pivotAngleForTurn(turn);
+    const duration = moveDuration(turn.amount);
+    const startedAt = performance.now();
+    const activeRenderer = renderer;
+    const activeCamera = camera;
+
+    const step = (now: number) => {
+      if (generation !== moveGeneration || !cubieRoot) {
+        moveAnimating = false;
+        return;
+      }
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      pivot.quaternion.setFromAxisAngle(axisVector, targetAngle * eased);
+      activeRenderer.render(rendererScene, activeCamera);
+      if (progress < 1) {
+        requestAnimationFrame(step);
+        return;
+      }
+      // Bake the finished turn into each cubie and snap back onto the grid so
+      // float drift never accumulates across long solve sessions.
+      pivot.quaternion.setFromAxisAngle(axisVector, targetAngle);
+      pivot.updateMatrixWorld(true);
+      for (const cubie of layer) {
+        cubieRoot.attach(cubie.group);
+        cubie.home = rotateVectorByTurn(cubie.home, turn);
+        cubie.group.position.set(
+          cubie.home[0] * CUBIE_SPACING,
+          cubie.home[1] * CUBIE_SPACING,
+          cubie.home[2] * CUBIE_SPACING,
+        );
+        cubie.group.quaternion.copy(nearestGroupQuaternion(cubie.group.quaternion));
+      }
+      cubieRoot.remove(pivot);
+      activePivot = null;
+      moveAnimating = false;
+      pumpMoveQueue();
+    };
+    requestAnimationFrame(step);
   }
 
   function updatePose(): void {
@@ -286,10 +507,38 @@
     event.preventDefault();
   }
 
+  // One sync path for every way the facelet state can change:
+  //  - serial advanced by exactly one with a layer move -> animate that move;
+  //  - serial reset/jumped, or the state diverges from what the animation
+  //    queue predicts -> hard-sync from the authoritative facelet state.
   $effect(() => {
-    cube;
+    const serial = moveSerial;
+    const state = cube;
+    const move = lastMove;
+    const previousSerial = lastSerial;
+    lastSerial = serial;
+    if (!cubieRoot) return;
+    if (serial === previousSerial) {
+      if (!cubeEquals(state, expectedCube)) hardSync(state);
+      return;
+    }
+    if (serial === previousSerial + 1 && isAnimatableMove(move)) {
+      enqueueMove(move!);
+      if (!cubeEquals(state, expectedCube)) hardSync(state);
+      return;
+    }
+    hardSync(state);
+  });
+
+  $effect(() => {
     stickerPalette;
-    updateStickerColors();
+    if (cubies.length === 0) return;
+    for (const cubie of cubies) {
+      for (const sticker of cubie.stickers) {
+        if (sticker.color) sticker.mesh.material = materialFor(sticker.color);
+      }
+    }
+    requestRender();
   });
 
   $effect(() => {
@@ -323,9 +572,12 @@
 
     viewGroup = new Group();
     poseGroup = new Group();
+    cubieRoot = new Group();
+    poseGroup.add(cubieRoot);
     viewGroup.add(poseGroup);
     rendererScene.add(viewGroup);
-    buildCube();
+    buildCubies();
+    hardSync(cube);
 
     const shadow = new Mesh(
       new PlaneGeometry(5.4, 2.2),
@@ -336,7 +588,6 @@
     rendererScene.add(shadow);
 
     syncViewMode();
-    updateStickerColors();
     updatePose();
     resizeObserver = new ResizeObserver(([entry]) => {
       const width = Math.max(1, entry.contentRect.width);
@@ -349,6 +600,11 @@
     resizeObserver.observe(stage);
 
     return () => {
+      moveGeneration += 1;
+      moveQueue.length = 0;
+      moveAnimating = false;
+      activePivot = null;
+      cubies.length = 0;
       resizeObserver?.disconnect();
       if (animationFrame !== null) cancelAnimationFrame(animationFrame);
       if (poseAnimationFrame !== null) cancelAnimationFrame(poseAnimationFrame);
@@ -365,7 +621,7 @@
       camera = null;
       viewGroup = null;
       poseGroup = null;
-      stickerMeshes = null;
+      cubieRoot = null;
     };
   });
 </script>

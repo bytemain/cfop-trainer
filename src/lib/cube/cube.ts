@@ -35,9 +35,9 @@ export interface CrossEdgeCoordinate {
 
 export type CfopPhase = "cross" | "f2l" | "oll" | "pll" | "done";
 
-type Vec3 = readonly [number, number, number];
+export type Vec3 = readonly [number, number, number];
 
-interface Sticker {
+export interface Sticker {
   position: Vec3;
   normal: Vec3;
   color: StickerColor;
@@ -111,7 +111,7 @@ export function cloneCube(state: CubeState): CubeState {
   return Object.fromEntries(FACES.map((face) => [face, [...state[face]]])) as CubeState;
 }
 
-function stickerGeometry(face: Face, index: number): { position: Vec3; normal: Vec3 } {
+export function stickerGeometry(face: Face, index: number): { position: Vec3; normal: Vec3 } {
   const row = Math.floor(index / 3);
   const column = index % 3;
 
@@ -143,13 +143,13 @@ function faceIndexFromGeometry(normal: Vec3, position: Vec3): { face: Face; inde
   return { face: "L", index: (1 - y) * 3 + (z + 1) };
 }
 
-function toStickers(state: CubeState): Sticker[] {
+export function toStickers(state: CubeState): Sticker[] {
   return FACES.flatMap((face) =>
     state[face].map((color, index) => ({ ...stickerGeometry(face, index), color })),
   );
 }
 
-function fromStickers(stickers: Sticker[]): CubeState {
+export function fromStickers(stickers: Sticker[]): CubeState {
   const result = Object.fromEntries(
     FACES.map((face) => [face, Array<StickerColor>(9)]),
   ) as CubeState;

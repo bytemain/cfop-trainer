@@ -12,7 +12,11 @@
 - XState 训练流程；
 - SQLite migration；
 - Material 3 Adaptive 风格的手机/桌面响应式训练界面；
-- 演示连接、逐步打乱、自动计时、逐步还原和 desync/resync 交互。
+- 演示连接、逐步打乱、自动计时、逐步还原和 desync/resync 交互；
+- 3D 魔方视图带层转动动画（支持面转 / 宽转 / M-E-S 层转 / x-y-z 整转）；
+- 57 OLL + 21 PLL 全集 Case 库：3D 图示（列表缩略图与详情均为 WebGL 渲染），图案由公式逆运算推导，公式可逐步播放。
+
+Case 图案与复盘识别共用同一份推导数据：`src/lib/cases/caseLibrary.ts` 声明公式，`CubeState` 与 pattern 在模块初始化时由逆公式作用于标准态得出，单测保证每个公式都能还原其对应 Case。
 
 2026-07-10 已用 `GAN16ui_CB0C` 完成 GAN V4 GATT、密钥派生、完整状态、电量和连续转动事件的真机验证。兼容性进度见 [docs/device-compatibility.md](./docs/device-compatibility.md)，协议说明见 [docs/gan-v4.md](./docs/gan-v4.md)。
 
