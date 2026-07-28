@@ -93,6 +93,17 @@ Left-multiplying would conjugate every turn by the reference pose.
    errors that way — so the reference must be the identity grip, never the
    connection grip.
 
+   The ~10 degree figure was optimistic: later data showed the GAN16ui IMU
+   has no heading reference, so gravity fixes pitch and roll but the world
+   frame yaw origin is random on every power cycle (measured 38–98° jumps
+   between reconnects). Yaw is therefore unobservable without a user
+   reference; the UI marks anchors as aligned only after a semantic anchor
+   (quick calibration / signal-lab calibration) and offers one-key
+   re-alignment (place white-up/green-front, press C). Session-start and
+   sensor-reset anchors still track motion axis- and direction-true (the
+   error is a constant yaw conjugation), they just do not match the
+   physical heading.
+
 Runtime state is split into three independent records:
 
 - `DeviceCalibration`: persistent sensor-to-cube mapping, relative order and residuals;

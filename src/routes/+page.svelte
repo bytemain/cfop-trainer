@@ -10,6 +10,7 @@
     BookOpenCheck,
     Check,
     CircleAlert,
+    Compass,
     Download,
     History,
     LayoutDashboard,
@@ -262,6 +263,9 @@
       }
 
       if (event.key.toLowerCase() === "r") trainer.reset();
+      if (event.key.toLowerCase() === "c" && trainer.connectedDeviceName && trainer.gyroQuaternion) {
+        trainer.zeroGyro();
+      }
       if (event.key === "Escape" && deviceDialogOpen) closeDeviceDialog();
       if (event.key === "Escape" && quickCalibrationOpen) quickCalibrationOpen = false;
     };
@@ -379,6 +383,21 @@
           </div>
 
           <div class="cube-visual-stage">
+            {#if trainer.connectedDeviceName && trainer.gyroCalibration.enabled && trainer.gyroQuaternion}
+              {#if trainer.poseAligned}
+                <span class="pose-align-chip aligned" title="快速校准已将当前白上绿前姿态绑定为标准姿态">
+                  <Check size={13} aria-hidden="true" /> 姿态已对齐
+                </span>
+              {:else}
+                <button
+                  class="pose-align-chip unaligned"
+                  onclick={() => trainer.zeroGyro()}
+                  title="陀螺仪没有指南针，每次连接偏航角随机。把魔方白上绿前放好，点此或按 C 一键对齐"
+                >
+                  <Compass size={14} aria-hidden="true" /> 姿态未对齐 · 白上绿前放好后点此或按 C
+                </button>
+              {/if}
+            {/if}
             <Cube3D
               cube={trainer.cube}
               orientation={trainer.gyroQuaternion}
@@ -1181,6 +1200,40 @@
   .workspace-card { border-radius: 24px; }
   .cube-workspace { min-height: 650px; padding: 22px; }
   .cube-visual-stage { position: relative; }
+  .pose-align-chip {
+    position: absolute;
+    z-index: 4;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: calc(100% - 20px);
+    min-height: 30px;
+    padding: 0 12px;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 750;
+    white-space: nowrap;
+  }
+  .pose-align-chip.aligned {
+    border: 1px solid rgb(114 215 167 / 0.4);
+    color: var(--color-success);
+    background: color-mix(in srgb, var(--color-surface-high) 86%, transparent);
+  }
+  .pose-align-chip.unaligned {
+    border: 1px solid rgb(255 196 84 / 0.55);
+    color: #b97f0a;
+    background: color-mix(in srgb, rgb(255 214 130 / 0.92) 18%, var(--color-surface-high));
+    cursor: pointer;
+    animation: pose-chip-in 180ms ease-out;
+  }
+  .pose-align-chip.unaligned:hover { border-color: rgb(255 196 84 / 0.95); }
+  @keyframes pose-chip-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+    to { opacity: 1; transform: translateX(-50%); }
+  }
   .cube-net-overlay {
     position: absolute;
     z-index: 3;

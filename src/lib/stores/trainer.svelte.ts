@@ -287,6 +287,19 @@ class TrainerStore {
     return composeGyroCalibration(this.deviceCalibration, this.sessionAnchor, this.viewPreference);
   }
 
+  /**
+   * The pose is aligned to the physical cube only after a semantic anchor:
+   * quick calibration (manual) or signal-lab calibration. Session-start and
+   * sensor-reset anchors track motion correctly but carry an arbitrary yaw,
+   * because the GAN16ui IMU has no heading reference and its world-frame yaw
+   * origin is random on every power cycle (measured 38-98 degree jumps
+   * between reconnects); gravity fixes pitch and roll only.
+   */
+  get poseAligned(): boolean {
+    const reason = this.sessionAnchor?.reason;
+    return reason === "manual" || reason === "calibration";
+  }
+
   private actor = createActor(trainingMachine);
   private startedAt: number | null = null;
   private completedMs = 0;
