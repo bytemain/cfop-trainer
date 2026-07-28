@@ -61,15 +61,22 @@ export type Matrix3 = [
 // Fixed GAN V4 protocol contract confirmed by CubeStation's Android bridge,
 // csTimer-compatible packet semantics and controlled GAN16ui rotations.
 // Canonical cube space is +X red, +Y white, +Z green.
+//
+// bodyToModel is the signed-axis sensor mounting (sensor +X -> model +Z,
+// +Y -> model -X, +Z -> model -Y). With relativeOrder reference * inverse(current),
+// the conjugation bodyToModel * delta * bodyToModel^T maps a physical
+// whole-cube turn onto the same model axis with the physical direction;
+// orientation.test.ts locks this with deidentified GAN16ui fixtures.
 export const GAN_V4_BODY_TO_MODEL: Matrix3 = [[0, -1, 0], [0, 0, -1], [1, 0, 0]];
 export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "reference-current-inverse";
 export const GAN_V4_POSE_CONTRACT_VERSION = 1;
 
-// Model-constant sensor reading at the canonical identity grip (white up,
-// green front), from the same deidentified GAN16ui real-device capture that
-// anchors orientation.test.ts. It lets the fixed contract produce an absolute
-// pose before any user anchor exists; with it, connecting while holding the
-// cube upright renders upright, and world-axis turns stay world-axis turns.
+// Deidentified GAN16ui real-device reading at the canonical identity grip
+// (white up, green front). Fixture evidence for the axis contract only: the
+// sensor world frame origin is session-dependent, so this constant must not
+// be used as a cross-session absolute reference at runtime. Sessions anchor
+// relative tracking at the first pose frame; quick calibration performs the
+// explicit semantic binding to canonical identity.
 export const GAN_V4_IDENTITY_SENSOR_POSE: CubeQuaternion = {
   x: -0.07567134227142988,
   y: 0.018830564884244807,
@@ -232,15 +239,16 @@ export function gyroModelMatrix(
   calibration: GyroCalibration,
 ): Matrix3 | null {
   if (!quaternion || !calibration.enabled) return null;
+  if (!calibration.zero) {
+    // Before the session anchor exists there is no reproducible absolute
+    // reference (the sensor world frame origin is session-dependent), so
+    // render the canonical grip. The first pose frame anchors relative
+    // tracking; quick calibration binds semantic identity explicitly.
+    return [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  }
   const current = quaternionMatrix(quaternion);
-  // The signal lab derives this signed permutation independently for each
-  // physical cube. Until calibration is complete, retain the protocol's
-  // conservative legacy fallback so gyro rendering remains usable.
   const bodyToModel = calibration.bodyToModel ?? GAN_V4_BODY_TO_MODEL;
-  // Without a session anchor, the model-constant identity-grip reading is the
-  // reference: the fixed contract alone then yields the absolute canonical
-  // pose (white up / green front renders as identity).
-  const reference = quaternionMatrix(calibration.zero ?? GAN_V4_IDENTITY_SENSOR_POSE);
+  const reference = quaternionMatrix(calibration.zero);
   const relative = calibration.relativeOrder === "current-reference-inverse"
     ? multiplyMatrix3(current, transposeMatrix3(reference))
     : multiplyMatrix3(reference, transposeMatrix3(current));
@@ -248,11 +256,10 @@ export function gyroModelMatrix(
     multiplyMatrix3(bodyToModel as Matrix3, relative),
     transposeMatrix3(bodyToModel as Matrix3),
   );
-  // The GAN quaternion is passive, so this relative pose is a body-frame
-  // delta: it right-multiplies the reference pose. (Left-multiplying would
-  // conjugate every turn by the reference pose.) With the identity-grip
-  // fallback reference, session-start anchoring composes to the exact
-  // absolute pose: P_ref · (P_ref^-1 · P_cur) = P_cur.
+  // The relative pose is the complete rotation from the anchor grip expressed
+  // in the model world frame; it right-multiplies whatever canonical pose the
+  // anchor represents (identity for quick calibration and session start, the
+  // last accepted pose after a sensor reset).
   let model = calibration.referencePose
     ? multiplyMatrix3(calibration.referencePose, relativePose)
     : relativePose;

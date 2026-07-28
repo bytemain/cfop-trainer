@@ -61,7 +61,9 @@ unknowns:
    ```
 
 2. `bodyToModel`, a proper signed-axis rotation from the sensor delta frame to
-   the canonical cube frame.
+   the canonical cube frame. The fixed GAN V4 contract is the sensor mount
+   (sensor +X → model +Z, +Y → −X, +Z → −Y). Per-device signal-lab
+   calibrations store their own fitted conjugator in the same field.
 
 The normalized domain pose is:
 
@@ -70,25 +72,25 @@ Rdelta = relativeOrder(reference, current)
 Rcube  = bodyToModel · Rdelta · bodyToModelᵀ
 ```
 
-3. `identitySensorPose`, the model-constant sensor reading at the canonical
-   identity grip (white up, green front). When no session anchor exists yet,
-   it is the reference, so the fixed contract alone yields the absolute
-   canonical pose: the identity grip renders as identity before any user
-   calibration. `GAN_V4_IDENTITY_SENSOR_POSE` ships this constant from the
-   same deidentified GAN16ui real-device capture that anchors the tests.
-
-Because the sensor quaternion is passive, `Rcube` is a body-frame delta and
-right-multiplies the reference pose:
+`Rcube` is the complete rotation from the anchor grip expressed in the model
+world frame; it right-multiplies the canonical pose the anchor represents:
 
 ```text
 Rdisplayed = Rreference · Rcube
 ```
 
-With the identity-grip fallback reference this composes to the exact
-absolute pose for any connection grip: `P_ref · (P_ref⁻¹ · P_cur) = P_cur`.
-Left-multiplying would conjugate every turn by the reference pose. (The
-legacy axis-confusion bug was a separate fault: the no-anchor fallback
-formula predated this contract entirely.)
+Left-multiplying would conjugate every turn by the reference pose.
+
+3. Session anchoring. The sensor world frame origin is session-dependent, so
+   no cross-session absolute pose exists and no runtime constant may claim
+   one. The first pose frame of a session anchors relative tracking at the
+   canonical identity (the display starts at the standard grip and every
+   physical turn is reproduced axis- and direction-true from there); quick
+   calibration rebinds the anchor to the real white-up/green-front grip
+   explicitly; sensor-reset reanchoring preserves the last accepted pose for
+   continuity. `GAN_V4_IDENTITY_SENSOR_POSE` is a deidentified GAN16ui
+   real-device reading at the identity grip: fixture evidence for the axis
+   contract in `orientation.test.ts`, never a runtime reference.
 
 Runtime state is split into three independent records:
 
@@ -102,15 +104,13 @@ background gap is checked before the next quaternion is accepted. If the
 sensor frame appears to have reset, the new sensor reference is anchored to
 the last accepted canonical pose so the renderer cannot jump arbitrarily.
 
-The multiplication order is data, not an implementation detail. The GAN V4
-sensor quaternion is passive (it rotates world-frame vectors into cube-body
-frame), so the normalized relative rotation is `reference · current⁻¹`
-(`reference-current-inverse`). The ROS tf2 forward order
-`q_relative = q2 × inverse(q1)` applies to active quaternions; using it here
-(`current-reference-inverse`) preserves the apparent axis but renders every
-whole-cube turn backward — that was the direction bug. Note that 180°
-fixtures cannot distinguish the two orders, so direction evidence must come
-from controlled sub-180° turns.
+The multiplication order is data, not an implementation detail. The fixed
+GAN V4 contract is `reference-current-inverse`; real-device evidence (user
+reports plus the historical record) shows the ROS tf2 forward order
+`current-reference-inverse` preserves the apparent axis but renders every
+whole-cube turn backward. Note that 180° fixtures cannot distinguish the two
+orders, so direction and axis evidence must come from controlled sub-180°
+turns.
 
 Legacy fallbacks that predate this contract (a hard-coded GAN-world-to-UI
 matrix, transposed quaternions, or renderer-side axis swaps) are removed.
@@ -261,7 +261,7 @@ lock down:
 - quaternion normalization and composition order;
 - identity at the captured reference pose;
 - the white-up/green-front semantic anchor;
-- the unanchored absolute pose from the identity-grip model constant;
+- the unanchored canonical identity pose;
 - world-axis turns staying on their world axis for arbitrary connection grips;
 - three controlled positive-face clockwise rotations;
 - 24 continuous free-air edges visiting exactly 24 unique legal pose nodes and

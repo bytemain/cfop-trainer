@@ -1,25 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
-  composeGyroCalibration,
   DEFAULT_DEVICE_CALIBRATION,
   DEFAULT_VIEW_PREFERENCE,
-  gyroModelMatrix,
   quaternionFromAxisAngle,
 } from "$lib/cube/orientation";
 import { PoseSession } from "./poseSession";
 
 describe("PoseSession", () => {
-  it("anchors the first GAN frame to its absolute canonical pose instead of identity", () => {
+  it("anchors the first GAN frame to the canonical identity pose", () => {
+    // The sensor world frame origin is session-dependent, so the session
+    // starts relative tracking at canonical identity instead of claiming a
+    // cross-session absolute pose.
     const session = new PoseSession(DEFAULT_DEVICE_CALIBRATION, DEFAULT_VIEW_PREFERENCE);
-    const first = quaternionFromAxisAngle("z", 35);
-    const observation = session.observe(first, 1_000);
-    expect(observation.anchor?.cubeReference).toEqual(
-      gyroModelMatrix(first, composeGyroCalibration(
-        DEFAULT_DEVICE_CALIBRATION,
-        null,
-        DEFAULT_VIEW_PREFERENCE,
-      )),
-    );
+    const observation = session.observe(quaternionFromAxisAngle("z", 35), 1_000);
+    expect(observation.anchor?.cubeReference).toEqual([
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ]);
+    expect(observation.anchor?.reason).toBe("session-start");
   });
 
   it("rejects an impossible in-cadence jump", () => {

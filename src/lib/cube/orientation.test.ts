@@ -28,6 +28,28 @@ function expectIdentity(model: Matrix3): void {
   }
 }
 
+// Build a sensor quaternion whose contract delta from `zeroReading` equals
+// the given model-space rotation:
+// B · (zero · q⁻¹) · Bᵀ = pose  =>  q = Bᵀ · poseᵀ · B · zero.
+function sensorReadingAtDelta(pose: Matrix3, zeroReading: CubeQuaternion): CubeQuaternion {
+  const matrix = multiplyMatrix3(
+    multiplyMatrix3(
+      multiplyMatrix3(transposeMatrix3(GAN_V4_BODY_TO_MODEL), transposeMatrix3(pose)),
+      GAN_V4_BODY_TO_MODEL,
+    ),
+    quaternionMatrix(zeroReading),
+  );
+  const three = new Quaternion().setFromRotationMatrix(
+    new Matrix4().set(
+      matrix[0][0], matrix[0][1], matrix[0][2], 0,
+      matrix[1][0], matrix[1][1], matrix[1][2], 0,
+      matrix[2][0], matrix[2][1], matrix[2][2], 0,
+      0, 0, 0, 1,
+    ),
+  );
+  return { x: three.x, y: three.y, z: three.z, w: three.w };
+}
+
 describe("GAN orientation mapping", () => {
   it("ships the verified GAN V4 pose contract as the runtime default", () => {
     expect(DEFAULT_DEVICE_CALIBRATION.bodyToModel).toEqual(GAN_V4_BODY_TO_MODEL);
@@ -73,61 +95,40 @@ describe("GAN orientation mapping", () => {
     const model = gyroModelMatrix(yellowUpBlueFrontFixture, {
       ...DEFAULT_GYRO_CALIBRATION,
       zero: whiteUpGreenFrontFixture,
-      bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+      bodyToModel: GAN_V4_BODY_TO_MODEL,
     })!;
     expect(model[0][0]).toBeGreaterThan(0.98);
     expect(model[1][1]).toBeLessThan(-0.98);
     expect(model[2][2]).toBeLessThan(-0.98);
   });
 
-  it("derives the absolute canonical pose from the fixed contract without an anchor", () => {
-    // No session anchor: the identity-grip model constant is the reference,
-    // so the real-device white-up/green-front reading renders as identity...
+  it("renders the canonical identity pose before any session anchor exists", () => {
+    // The sensor world frame origin is session-dependent; without an anchor
+    // there is no reproducible absolute pose, so the canonical grip renders.
     expectIdentity(gyroModelMatrix(whiteUpGreenFrontFixture, DEFAULT_GYRO_CALIBRATION)!);
-    // ...and a yellow-up/blue-front reading renders as a model X half-turn.
-    const halfTurn = gyroModelMatrix(yellowUpBlueFrontFixture, DEFAULT_GYRO_CALIBRATION)!;
-    expect(halfTurn[0][0]).toBeGreaterThan(0.98);
-    expect(halfTurn[1][1]).toBeLessThan(-0.98);
-    expect(halfTurn[2][2]).toBeLessThan(-0.98);
+    expectIdentity(gyroModelMatrix(yellowUpBlueFrontFixture, DEFAULT_GYRO_CALIBRATION)!);
   });
 
   it("keeps world-axis turns on their world axis for arbitrary connection grips", () => {
     // Regression: composing the reference pose on the left (reference * delta)
     // expressed deltas in the body frame, so a physical X turn rendered as Y
     // whenever the session started away from the identity grip.
-    const bodyToModel = GAN_V4_BODY_TO_MODEL;
-    const identitySensor = quaternionMatrix(GAN_V4_IDENTITY_SENSOR_POSE);
-    const sensorReadingAt = (pose: Matrix3): CubeQuaternion => {
-      // Invert R = B * Q0 * q^-1 * B^T for q.
-      const matrix = multiplyMatrix3(
-        multiplyMatrix3(transposeMatrix3(bodyToModel), transposeMatrix3(pose)),
-        multiplyMatrix3(bodyToModel, identitySensor),
-      );
-      const three = new Quaternion().setFromRotationMatrix(
-        new Matrix4().set(
-          matrix[0][0], matrix[0][1], matrix[0][2], 0,
-          matrix[1][0], matrix[1][1], matrix[1][2], 0,
-          matrix[2][0], matrix[2][1], matrix[2][2], 0,
-          0, 0, 0, 1,
-        ),
-      );
-      return { x: three.x, y: three.y, z: three.z, w: three.w };
-    };
-
-    // Connect while holding the cube yawed 40 degrees, then physically turn
-    // the whole cube +30 degrees around the world X (red-orange) axis.
+    // Regression: the displayed pose must track the physical pose relative
+    // to the anchored grip, so a physical world-axis turn from any connection
+    // grip stays on that world axis.
+    const baseReading = whiteUpGreenFrontFixture;
     const connectionPose = quaternionMatrix(quaternionFromAxisAngle("y", 40));
     const worldXTurn = quaternionMatrix(quaternionFromAxisAngle("x", 30));
     const turnedPose = multiplyMatrix3(worldXTurn, connectionPose);
     const calibration = {
       ...DEFAULT_GYRO_CALIBRATION,
-      zero: sensorReadingAt(connectionPose),
+      zero: sensorReadingAtDelta(connectionPose, baseReading),
       referencePose: connectionPose,
-      bodyToModel,
+      bodyToModel: GAN_V4_BODY_TO_MODEL,
       relativeOrder: GAN_V4_RELATIVE_ORDER,
     };
 
-    const model = gyroModelMatrix(sensorReadingAt(turnedPose), calibration)!;
+    const model = gyroModelMatrix(sensorReadingAtDelta(turnedPose, baseReading), calibration)!;
     expect(rotationDistanceDeg(model, turnedPose)).toBeLessThan(1e-6);
 
     // The on-screen delta since connection is a pure world-X rotation.
@@ -164,27 +165,33 @@ describe("GAN orientation mapping", () => {
     const model = gyroModelMatrix(end, {
       ...DEFAULT_GYRO_CALIBRATION,
       zero: start,
-      bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+      bodyToModel: GAN_V4_BODY_TO_MODEL,
     })!;
     expect(model[0][0]).toBeGreaterThan(0.9);
     expect(Math.abs(model[1][0])).toBeLessThan(0.4);
     expect(Math.abs(model[2][0])).toBeLessThan(0.4);
   });
 
-  it("preserves positive whole-cube rotation direction on all three canonical axes", () => {
+  it("renders positive physical whole-cube rotations as positive model rotations", () => {
+    const identityReading = { x: 0, y: 0, z: 0, w: 1 };
     const calibration = {
       ...DEFAULT_GYRO_CALIBRATION,
-      zero: { x: 0, y: 0, z: 0, w: 1 },
+      zero: identityReading,
       bodyToModel: GAN_V4_BODY_TO_MODEL,
       relativeOrder: GAN_V4_RELATIVE_ORDER,
     };
-    // The GAN quaternion is passive (world -> body), so a sensor reading
-    // that is +30 degrees around a sensor axis renders as the negative
-    // model-frame turn around the mapped axis; pick sensor inputs that
-    // produce positive canonical rotations.
-    const redAxis = gyroModelMatrix(quaternionFromAxisAngle("y", 30), calibration);
-    const whiteAxis = gyroModelMatrix(quaternionFromAxisAngle("z", 30), calibration);
-    const greenAxis = gyroModelMatrix(quaternionFromAxisAngle("x", -30), calibration);
+    const redAxis = gyroModelMatrix(
+      sensorReadingAtDelta(quaternionMatrix(quaternionFromAxisAngle("x", 30)), identityReading),
+      calibration,
+    );
+    const whiteAxis = gyroModelMatrix(
+      sensorReadingAtDelta(quaternionMatrix(quaternionFromAxisAngle("y", 30)), identityReading),
+      calibration,
+    );
+    const greenAxis = gyroModelMatrix(
+      sensorReadingAtDelta(quaternionMatrix(quaternionFromAxisAngle("z", 30)), identityReading),
+      calibration,
+    );
 
     // +X/red sends +Y/white toward +Z/green.
     expect(applyMatrix3(redAxis!, [0, 1, 0])[2]).toBeCloseTo(0.5, 6);
@@ -205,7 +212,7 @@ describe("GAN orientation mapping", () => {
         {
           ...DEFAULT_GYRO_CALIBRATION,
           zero: { x: 0, y: 0, z: 0, w: 1 },
-          bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+          bodyToModel: GAN_V4_BODY_TO_MODEL,
           relativeOrder: "current-reference-inverse",
         },
     );
@@ -219,7 +226,7 @@ describe("GAN orientation mapping", () => {
         {
           ...DEFAULT_GYRO_CALIBRATION,
           zero: { x: 0, y: 0, z: 0, w: 1 },
-          bodyToModel: [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
+          bodyToModel: GAN_V4_BODY_TO_MODEL,
           relativeOrder: "reference-current-inverse",
         },
     );

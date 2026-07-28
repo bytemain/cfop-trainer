@@ -75,13 +75,13 @@ bodyToModel =
 [ 1  0  0 ]
 
 relativeOrder = reference * inverse(current)
-
-identitySensorPose = (x -0.07567134, y 0.01883056, z 0.84577431, w -0.52781159)
 ```
 
-`identitySensorPose` 是白上绿前标准握持下的传感器读数（与 `orientation.test.ts` 同源的真机 fixture）。没有会话锚点时它充当 reference，使固定契约直接给出绝对姿态：白上绿前渲染为单位姿态，任意握持连接都有 `P_ref · (P_ref⁻¹ · P_cur) = P_cur` 的严格绝对跟踪。GAN 四元数是被动变换（world→body），`Rdelta` 是物体坐标系增量，合成显示姿态时须右乘参考姿态：`Rdisplayed = Rreference · Rdelta`；左乘会把每个转动共轭一遍参考姿态。注意 180° fixture 无法区分乘法顺序，方向证据必须来自受控的非 180° 转动。
+`bodyToModel` 是 signed-axis 传感器安装映射（传感器 +X → 模型 +Z，+Y → −X，+Z → −Y）。`bodyToModel · (reference · current⁻¹) · bodyToModelᵀ` 把物理整转映射到同模型轴、同方向的显示增量，已用脱敏真机 fixture 固化在 `orientation.test.ts`（白上绿前 ↔ 黄上蓝前 = 绕红橙轴半周；红心朝用户绕红橙轴转动 = X 主导）。
 
-应用连接 GAN V4 时必须覆盖历史本地 axis calibration，不能要求普通用户重复三轴采集。首个姿态帧经固定契约转换成绝对 `CubePose` 后建立 session anchor；anchor 只负责掉线/传感器重启后的连续性，不得把首帧强制归零成 identity。
+传感器世界系原点随会话变化（每次连接的初始 yaw 不可复现），因此不存在跨会话绝对姿态，运行时也不得用任何常量声称它：会话首帧锚定到 canonical identity（画面从标准握持开始，之后的物理转动逐轴逐方向真实复现）；快速校准把当前白上绿前显式绑定为 identity；`GAN_V4_IDENTITY_SENSOR_POSE` 只是真机 fixture 证据，不作为运行时 reference。显示姿态按 `Rdisplayed = Rreference · Rdelta` 合成——增量右乘参考姿态；左乘会把每个转动共轭一遍参考姿态。注意 180° fixture 无法区分乘法顺序，方向/轴向证据必须来自受控的非 180° 转动。
+
+应用连接 GAN V4 时必须覆盖历史本地 axis calibration，不能要求普通用户重复三轴采集。首个姿态帧锚定到 canonical identity 建立 session anchor（不得用跨会话常量声称绝对姿态）；anchor 负责掉线/传感器重启后的连续性，快速校准负责白上绿前的语义绑定。
 
 旧版本曾允许用 `invertX/Y/Z` 与三个 Euler offset 补偿协议模型。这些值如果继续保存在本地，会在固定协议矩阵之后再次生效，表现为“初始姿态斜着、某个轴又反了”。pose contract v1 会在 GAN V4 首次重连时只清除一次未版本化的旧补偿；之后用户在当前版本主动设置的显示偏好仍会保留。
 
