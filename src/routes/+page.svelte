@@ -40,6 +40,7 @@
     trainer,
   } from "$lib/stores/trainer.svelte";
   import { FACES, type StickerColor } from "$lib/cube/cube";
+  import { VIEW_PRESETS } from "$lib/cube/viewPresets";
   import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
   import { streamRecorder, type StreamLogInfo } from "$lib/logging/streamRecorder";
@@ -386,6 +387,7 @@
               interactive={!trainer.connectedDeviceName || !trainer.gyroCalibration.enabled}
               moveSerial={trainer.eventCount}
               lastMove={trainer.lastMove}
+              viewPreset={trainer.viewPresetId}
             />
             {#if show2dOverlay}
               <aside class="cube-net-overlay" aria-label="3D 视图的 2D 辅助图">
@@ -712,6 +714,31 @@
                   <code>{trainer.stickerPalette[option.value]}</code>
                 </span>
               </label>
+            {/each}
+          </div>
+
+          <div class="palette-heading">
+            <div>
+              <strong>3D 默认视角</strong>
+              <small>3D 魔方视图的初始角度；拖动后双击或按 Home 回到这里</small>
+            </div>
+          </div>
+          <div class="view-preset-grid" aria-label="3D 默认视角">
+            {#each VIEW_PRESETS as preset}
+              <button
+                class="view-preset"
+                class:active={trainer.viewPresetId === preset.id}
+                aria-pressed={trainer.viewPresetId === preset.id}
+                onclick={() => trainer.setViewPreset(preset.id)}
+              >
+                <span class="mini-cube-scene" aria-hidden="true">
+                  <span class="mini-cube" style:--p={`${preset.pitchDeg}deg`} style:--y={`${preset.yawDeg}deg`}>
+                    <i class="mc-top"></i><i class="mc-front"></i><i class="mc-left"></i>
+                  </span>
+                </span>
+                <strong>{preset.label}</strong>
+                <small>{preset.hint}</small>
+              </button>
             {/each}
           </div>
 
@@ -1427,6 +1454,17 @@
   .stream-log-info { display: grid; gap: 8px; width: 100%; padding: 12px; border: 1px dashed var(--color-outline-soft); border-radius: 13px; background: var(--color-surface-high); }
   .stream-log-info .palette-heading { margin: 0; }
   .stream-log-path { overflow: hidden; color: var(--color-info); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
+  .view-preset-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  .view-preset { display: grid; justify-items: center; gap: 5px; padding: 10px 6px 9px; border: 1px solid var(--color-outline-soft); border-radius: 13px; background: var(--color-surface-high); cursor: pointer; }
+  .view-preset.active { border-color: rgb(135 232 188 / 0.55); background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface-high)); }
+  .view-preset strong { color: var(--color-text); font-size: 0.74rem; }
+  .view-preset small { color: var(--color-text-muted); font-size: 0.6rem; text-align: center; }
+  .mini-cube-scene { display: grid; place-items: center; width: 48px; height: 44px; perspective: 380px; }
+  .mini-cube { position: relative; width: 24px; height: 24px; transform-style: preserve-3d; transform: rotateX(calc(var(--p) * -1)) rotateY(var(--y)); }
+  .mini-cube i { position: absolute; inset: 0; border: 1px solid rgb(0 0 0 / 0.4); backface-visibility: hidden; }
+  .mini-cube .mc-top { background: var(--cube-white); transform: rotateX(90deg) translateZ(12px); }
+  .mini-cube .mc-front { background: var(--cube-green); transform: translateZ(12px); }
+  .mini-cube .mc-left { background: var(--cube-orange); filter: brightness(0.82); transform: rotateY(-90deg) translateZ(12px); }
   .protocol-validation-panel { display: grid; width: 100%; gap: 14px; padding: 16px; border: 1px solid rgb(92 185 150 / 0.3); border-radius: 18px; background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface-high)); }
   .protocol-validation-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .protocol-validation-heading h3 { margin: 3px 0 0; }

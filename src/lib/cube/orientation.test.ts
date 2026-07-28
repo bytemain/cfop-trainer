@@ -102,11 +102,15 @@ describe("GAN orientation mapping", () => {
     expect(model[2][2]).toBeLessThan(-0.98);
   });
 
-  it("renders the canonical identity pose before any session anchor exists", () => {
-    // The sensor world frame origin is session-dependent; without an anchor
-    // there is no reproducible absolute pose, so the canonical grip renders.
+  it("derives the near-absolute pose from the fixed contract without an anchor", () => {
+    // No session anchor: the identity-grip model constant is the reference.
+    // The real-device white-up/green-front reading renders as identity...
     expectIdentity(gyroModelMatrix(whiteUpGreenFrontFixture, DEFAULT_GYRO_CALIBRATION)!);
-    expectIdentity(gyroModelMatrix(yellowUpBlueFrontFixture, DEFAULT_GYRO_CALIBRATION)!);
+    // ...and a yellow-up/blue-front reading renders as a model X half-turn.
+    const halfTurn = gyroModelMatrix(yellowUpBlueFrontFixture, DEFAULT_GYRO_CALIBRATION)!;
+    expect(halfTurn[0][0]).toBeGreaterThan(0.98);
+    expect(halfTurn[1][1]).toBeLessThan(-0.98);
+    expect(halfTurn[2][2]).toBeLessThan(-0.98);
   });
 
   it("keeps world-axis turns on their world axis for arbitrary connection grips", () => {

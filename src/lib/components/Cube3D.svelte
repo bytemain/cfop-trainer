@@ -37,6 +37,7 @@
     turnIncludesHome,
   } from "$lib/cube/layerAnimation";
   import { buildCubeCubies, CUBIE_SPACING } from "$lib/three/cubeMesh";
+  import { viewPresetById, type ViewPresetId } from "$lib/cube/viewPresets";
   import { gyroModelMatrix, type GyroCalibration } from "$lib/cube/orientation";
   import type { CubeQuaternion } from "$lib/protocols/gan/types";
 
@@ -48,6 +49,7 @@
     interactive = true,
     moveSerial = 0,
     lastMove = null,
+    viewPreset = "standard",
   }: {
     cube: CubeState;
     orientation?: CubeQuaternion | null;
@@ -56,6 +58,7 @@
     interactive?: boolean;
     moveSerial?: number;
     lastMove?: string | null;
+    viewPreset?: ViewPresetId;
   } = $props();
 
   let canvas: HTMLCanvasElement;
@@ -431,7 +434,13 @@
   }
 
   function resetView(): void {
-    viewQuaternion.setFromEuler(new Euler(24 * Math.PI / 180, 34 * Math.PI / 180, 0, "XYZ"));
+    const preset = viewPresetById(viewPreset);
+    viewQuaternion.setFromEuler(new Euler(
+      preset.pitchDeg * Math.PI / 180,
+      preset.yawDeg * Math.PI / 180,
+      0,
+      "XYZ",
+    ));
     viewGroup?.quaternion.copy(viewQuaternion);
     syncViewAttribute();
     requestRender();
@@ -545,6 +554,11 @@
   $effect(() => {
     interactive;
     syncViewMode();
+  });
+
+  $effect(() => {
+    viewPreset;
+    resetView();
   });
 
   onMount(() => {

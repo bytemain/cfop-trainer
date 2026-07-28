@@ -105,15 +105,19 @@ export class PoseSession {
 
     const current = this.lastAccepted ? alignedTo(this.lastAccepted, value) : normalizeQuaternion(value);
     if (!this.anchor) {
-      // The sensor world frame origin is session-dependent, so no cross-
-      // session absolute pose exists. Anchor relative tracking at the
-      // canonical identity: the display starts at the standard grip and
-      // every physical turn is reproduced axis- and direction-true from
-      // there. Quick calibration rebinds the anchor to the real white-up/
-      // green-front grip explicitly.
+      // Anchor at the near-absolute pose derived from the identity-grip model
+      // constant: the sensor world frame is reproducible across sessions to
+      // within ~10 degrees (measured from stream data), so tracking is
+      // near-true from the first frame. Quick calibration rebinds the anchor
+      // to the current session's own identity-grip reading and removes the
+      // residual; sensor-reset reanchoring preserves the last accepted pose.
+      const absolutePose = gyroModelMatrix(
+        current,
+        composeGyroCalibration(this.device, null, this.view),
+      ) ?? IDENTITY;
       this.anchor = {
         sensorReference: current,
-        cubeReference: IDENTITY,
+        cubeReference: absolutePose,
         establishedAt: at,
         reason: "session-start",
       };

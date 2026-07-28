@@ -72,11 +72,11 @@ export const GAN_V4_RELATIVE_ORDER: SensorRelativeOrder = "reference-current-inv
 export const GAN_V4_POSE_CONTRACT_VERSION = 1;
 
 // Deidentified GAN16ui real-device reading at the canonical identity grip
-// (white up, green front). Fixture evidence for the axis contract only: the
-// sensor world frame origin is session-dependent, so this constant must not
-// be used as a cross-session absolute reference at runtime. Sessions anchor
-// relative tracking at the first pose frame; quick calibration performs the
-// explicit semantic binding to canonical identity.
+// (white up, green front), from the same capture that anchors
+// orientation.test.ts. Stream analysis measured the sensor world frame to be
+// reproducible across sessions to within ~10 degrees, so this constant is the
+// no-anchor reference: near-true absolute tracking from the first frame.
+// Quick calibration replaces it with the current session's own reading.
 export const GAN_V4_IDENTITY_SENSOR_POSE: CubeQuaternion = {
   x: -0.07567134227142988,
   y: 0.018830564884244807,
@@ -239,16 +239,15 @@ export function gyroModelMatrix(
   calibration: GyroCalibration,
 ): Matrix3 | null {
   if (!quaternion || !calibration.enabled) return null;
-  if (!calibration.zero) {
-    // Before the session anchor exists there is no reproducible absolute
-    // reference (the sensor world frame origin is session-dependent), so
-    // render the canonical grip. The first pose frame anchors relative
-    // tracking; quick calibration binds semantic identity explicitly.
-    return [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-  }
   const current = quaternionMatrix(quaternion);
   const bodyToModel = calibration.bodyToModel ?? GAN_V4_BODY_TO_MODEL;
-  const reference = quaternionMatrix(calibration.zero);
+  // Without a session anchor, the identity-grip model constant is the
+  // reference. Stream analysis measured the sensor world frame to be
+  // reproducible across sessions to within ~10 degrees, so this yields
+  // near-true absolute tracking from the first frame; quick calibration
+  // replaces the reference with the current session's own identity-grip
+  // reading and removes the residual.
+  const reference = quaternionMatrix(calibration.zero ?? GAN_V4_IDENTITY_SENSOR_POSE);
   const relative = calibration.relativeOrder === "current-reference-inverse"
     ? multiplyMatrix3(current, transposeMatrix3(reference))
     : multiplyMatrix3(reference, transposeMatrix3(current));
@@ -256,10 +255,11 @@ export function gyroModelMatrix(
     multiplyMatrix3(bodyToModel as Matrix3, relative),
     transposeMatrix3(bodyToModel as Matrix3),
   );
-  // The relative pose is the complete rotation from the anchor grip expressed
-  // in the model world frame; it right-multiplies whatever canonical pose the
-  // anchor represents (identity for quick calibration and session start, the
-  // last accepted pose after a sensor reset).
+  // The relative pose is the complete rotation from the reference grip
+  // expressed in the model world frame; it right-multiplies whatever
+  // canonical pose the anchor represents (the near-absolute pose for session
+  // start, identity for quick calibration, the last accepted pose after a
+  // sensor reset).
   let model = calibration.referencePose
     ? multiplyMatrix3(calibration.referencePose, relativePose)
     : relativePose;

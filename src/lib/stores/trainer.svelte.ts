@@ -59,6 +59,7 @@ import { CubeClock, type CubeClockSample } from "$lib/timeline/cubeClock";
 import { MoveTimeline, type MoveTimelineItem } from "$lib/timeline/moveTimeline";
 import { PoseSession, type PoseHealth } from "$lib/pose/poseSession";
 import { streamRecorder } from "$lib/logging/streamRecorder";
+import { DEFAULT_VIEW_PRESET_ID, viewPresetById, type ViewPresetId } from "$lib/cube/viewPresets";
 import {
   matchesAxisDirection,
   relativeProtocolRotation,
@@ -76,6 +77,7 @@ const SCRAMBLE_FACES = ["U", "R", "F", "D", "L", "B"] as const;
 const SCRAMBLE_SUFFIXES = ["", "'", "2"] as const;
 const SOLVED_FACELETS = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 const GLOBAL_CUBE_PROFILE_KEY = "cfop-trainer:cube-profile:default";
+const VIEW_PRESET_KEY = "cfop-trainer:view-preset";
 
 export interface ProtocolValidationStep {
   id: string;
@@ -243,6 +245,7 @@ class TrainerStore {
   deviceCalibration = $state<DeviceCalibration>({ ...DEFAULT_DEVICE_CALIBRATION });
   sessionAnchor = $state<SessionAnchor | null>(null);
   viewPreference = $state<ViewPreference>({ ...DEFAULT_VIEW_PREFERENCE });
+  viewPresetId = $state<ViewPresetId>(DEFAULT_VIEW_PRESET_ID);
   poseHealth = $state<PoseHealth>({
     status: "initializing",
     message: "等待第一帧姿态",
@@ -328,6 +331,9 @@ class TrainerStore {
     if (!this.preferencesInitialized) {
       this.loadPreferences(GLOBAL_CUBE_PROFILE_KEY);
       this.loadSignalCalibrationProfile(GLOBAL_CUBE_PROFILE_KEY + ":signal-calibration");
+      if (typeof localStorage !== "undefined") {
+        this.viewPresetId = viewPresetById(localStorage.getItem(VIEW_PRESET_KEY)).id;
+      }
       this.preferencesInitialized = true;
     }
     this.initializationPromise ??= this.autoReconnectRememberedDevice();
@@ -1093,6 +1099,13 @@ class TrainerStore {
   resetStickerPalette(): void {
     this.stickerPalette = { ...BRIGHT_STICKER_PALETTE };
     this.persistDevicePreferences();
+  }
+
+  setViewPreset(id: ViewPresetId): void {
+    this.viewPresetId = viewPresetById(id).id;
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(VIEW_PRESET_KEY, this.viewPresetId);
+    }
   }
 
   setGyroEnabled(enabled: boolean): void {

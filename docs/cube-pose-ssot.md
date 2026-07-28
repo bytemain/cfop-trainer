@@ -81,16 +81,17 @@ Rdisplayed = Rreference · Rcube
 
 Left-multiplying would conjugate every turn by the reference pose.
 
-3. Session anchoring. The sensor world frame origin is session-dependent, so
-   no cross-session absolute pose exists and no runtime constant may claim
-   one. The first pose frame of a session anchors relative tracking at the
-   canonical identity (the display starts at the standard grip and every
-   physical turn is reproduced axis- and direction-true from there); quick
-   calibration rebinds the anchor to the real white-up/green-front grip
-   explicitly; sensor-reset reanchoring preserves the last accepted pose for
-   continuity. `GAN_V4_IDENTITY_SENSOR_POSE` is a deidentified GAN16ui
-   real-device reading at the identity grip: fixture evidence for the axis
-   contract in `orientation.test.ts`, never a runtime reference.
+3. Session anchoring. Stream analysis measured the sensor world frame to be
+   reproducible across sessions to within ~10 degrees, so the no-anchor
+   reference is the identity-grip model constant
+   (`GAN_V4_IDENTITY_SENSOR_POSE`): tracking is near-absolute from the first
+   pose frame. Quick calibration rebinds the anchor to the current session's
+   own white-up/green-front reading and removes the residual; sensor-reset
+   reanchoring preserves the last accepted pose for continuity. Note that
+   anchoring at the connection grip instead would conjugate every displayed
+   turn by the (arbitrary) connection pose — stream data showed 77° axis
+   errors that way — so the reference must be the identity grip, never the
+   connection grip.
 
 Runtime state is split into three independent records:
 
@@ -261,7 +262,7 @@ lock down:
 - quaternion normalization and composition order;
 - identity at the captured reference pose;
 - the white-up/green-front semantic anchor;
-- the unanchored canonical identity pose;
+- the unanchored near-absolute pose from the identity-grip model constant;
 - world-axis turns staying on their world axis for arbitrary connection grips;
 - three controlled positive-face clockwise rotations;
 - 24 continuous free-air edges visiting exactly 24 unique legal pose nodes and
