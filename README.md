@@ -14,7 +14,8 @@
 - Material 3 Adaptive 风格的手机/桌面响应式训练界面；
 - 演示连接、逐步打乱、自动计时、逐步还原和 desync/resync 交互；
 - 3D 魔方视图带层转动动画（支持面转 / 宽转 / M-E-S 层转 / x-y-z 整转）；
-- 57 OLL + 21 PLL 全集 Case 库：3D 图示（列表缩略图与详情均为 WebGL 渲染），图案由公式逆运算推导，公式可逐步播放。
+- 57 OLL + 21 PLL 全集 Case 库：3D 图示（列表缩略图与详情均为 WebGL 渲染），图案由公式逆运算推导，公式可逐步播放；
+- 实时数据流全保真落盘（`cfop-trainer-stream.jsonl`，10 MiB × 5 滚动）：解密协议帧 / 姿态 / 动作，供离线分析，见 [docs/testing.md](./docs/testing.md)。
 
 Case 图案与复盘识别共用同一份推导数据：`src/lib/cases/caseLibrary.ts` 声明公式，`CubeState` 与 pattern 在模块初始化时由逆公式作用于标准态得出，单测保证每个公式都能还原其对应 Case。
 

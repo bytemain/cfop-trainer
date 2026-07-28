@@ -39,6 +39,16 @@ const JSONL_MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
 const JSONL_ROTATED_FILES: usize = 3;
 const JSONL_MAX_LINE_SIZE: usize = 16 * 1024;
 
+// Full-fidelity protocol stream (raw decrypted frames, poses, moves) for
+// offline analysis. Unlike the sanitized JSONL log this channel deliberately
+// carries quaternion and packet bytes; it never carries device identity
+// (addresses, names, manufacturer data) or key material.
+const STREAM_FILE_NAME: &str = "cfop-trainer-stream.jsonl";
+const STREAM_FILE_STEM: &str = "cfop-trainer-stream";
+const STREAM_MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+const STREAM_ROTATED_FILES: usize = 4;
+const STREAM_MAX_LINE_SIZE: usize = 64 * 1024;
+
 #[derive(Default)]
 struct JsonlLogState {
     write_lock: Mutex<()>,
@@ -84,6 +94,30 @@ struct NativeBleConnectedDevice {
 
 fn rotated_log_path(active: &Path, index: usize) -> PathBuf {
     active.with_file_name(format!("cfop-trainer.{index}.jsonl"))
+}
+
+fn rotated_stem_path(directory: &Path, stem: &str, index: usize) -> PathBuf {
+    directory.join(format!("{stem}.{index}.jsonl"))
+}
+
+fn rotate_stem_logs(directory: &Path, stem: &str, active: &Path, rotated_files: usize) -> Result<(), String> {
+    let oldest = rotated_stem_path(directory, stem, rotated_files);
+    if oldest.exists() {
+        fs::remove_file(&oldest).map_err(|error| error.to_string())?;
+    }
+
+    for index in (1..rotated_files).rev() {
+        let from = rotated_stem_path(directory, stem, index);
+        let to = rotated_stem_path(directory, stem, index + 1);
+        if from.exists() {
+            fs::rename(from, to).map_err(|error| error.to_string())?;
+        }
+    }
+
+    if active.exists() {
+        fs::rename(active, rotated_stem_path(directory, stem, 1)).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn rotate_jsonl_logs(active: &Path) -> Result<(), String> {
@@ -204,6 +238,76 @@ fn write_jsonl_log<R: Runtime>(
         .lock()
         .map_err(|_| "JSONL logger lock is poisoned".to_owned())?;
     append_jsonl(&app, &line)
+}
+
+fn append_stream_lines<R: Runtime>(app: &tauri::AppHandle<R>, lines: &[String]) -> Result<(), String> {
+    let mut canonical_lines = Vec::with_capacity(lines.len());
+    let mut batch_bytes = 0_u64;
+    for line in lines {
+        if line.len() > STREAM_MAX_LINE_SIZE {
+            return Err("stream entry exceeds the 64 KiB safety limit".to_owned());
+        }
+        let value: Value =
+            serde_json::from_str(line).map_err(|_| "stream entry is not valid JSON")?;
+        if !value.is_object() {
+            return Err("stream entry must be a JSON object".to_owned());
+        }
+        let canonical = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+        batch_bytes += canonical.len() as u64 + 1;
+        canonical_lines.push(canonical);
+    }
+
+    let directory = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| error.to_string())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let active = directory.join(STREAM_FILE_NAME);
+    let current_size = active
+        .metadata()
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if current_size + batch_bytes > STREAM_MAX_FILE_SIZE {
+        rotate_stem_logs(&directory, STREAM_FILE_STEM, &active, STREAM_ROTATED_FILES)?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(active)
+        .map_err(|error| error.to_string())?;
+    for line in &canonical_lines {
+        writeln!(file, "{line}").map_err(|error| error.to_string())?;
+    }
+    file.flush().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn write_stream_lines<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, JsonlLogState>,
+    lines: Vec<String>,
+) -> Result<(), String> {
+    let _guard = state
+        .write_lock
+        .lock()
+        .map_err(|_| "JSONL logger lock is poisoned".to_owned())?;
+    append_stream_lines(&app, &lines)
+}
+
+#[tauri::command]
+fn stream_log_info<R: Runtime>(app: tauri::AppHandle<R>) -> Result<Value, String> {
+    let directory = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "directory": directory.to_string_lossy(),
+        "activeFile": STREAM_FILE_NAME,
+        "maxFileBytes": STREAM_MAX_FILE_SIZE,
+        "rotatedFiles": STREAM_ROTATED_FILES,
+        "maxTotalBytes": STREAM_MAX_FILE_SIZE * (STREAM_ROTATED_FILES as u64 + 1),
+    }))
 }
 
 #[tauri::command]
@@ -978,6 +1082,8 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             write_jsonl_log,
+            write_stream_lines,
+            stream_log_info,
             save_json_export,
             gan_ble_subscribe,
             ble_backend,

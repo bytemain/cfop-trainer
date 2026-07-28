@@ -58,6 +58,7 @@ import {
 import { CubeClock, type CubeClockSample } from "$lib/timeline/cubeClock";
 import { MoveTimeline, type MoveTimelineItem } from "$lib/timeline/moveTimeline";
 import { PoseSession, type PoseHealth } from "$lib/pose/poseSession";
+import { streamRecorder } from "$lib/logging/streamRecorder";
 import {
   matchesAxisDirection,
   relativeProtocolRotation,
@@ -475,6 +476,12 @@ class TrainerStore {
       this.connectedDeviceName = device.name;
       this.connection = "ready";
       this.connectionMessage = `${device.name} 已连接。`;
+      streamRecorder.record("session", {
+        event: "connected",
+        protocol: adapter.version,
+        firmware: this.firmwareVersion,
+        hardware: this.hardwareVersion,
+      });
       safeLogger.info("trainer", "device-ready", {
         name: device.name,
         protocol: adapter.version,
@@ -1118,6 +1125,10 @@ class TrainerStore {
     this.poseSession.manuallyAnchor(this.gyroQuaternion);
     this.sessionAnchor = this.poseSession.currentAnchor();
     this.poseHealth = this.poseSession.currentHealth();
+    streamRecorder.record("calibration", {
+      event: "manual-anchor",
+      quaternion: { ...this.gyroQuaternion },
+    });
   }
 
   quickCalibrateWhiteUpGreenFront(): boolean {
@@ -1136,6 +1147,11 @@ class TrainerStore {
     safeLogger.info("calibration", "quick-anchor-applied", {
       referencePose: "white-up-green-front",
       lastStepDeg: this.poseHealth.lastStepDeg,
+    });
+    streamRecorder.record("calibration", {
+      event: "quick-anchor",
+      referencePose: "white-up-green-front",
+      quaternion: this.gyroQuaternion ? { ...this.gyroQuaternion } : null,
     });
     return true;
   }
@@ -1341,6 +1357,14 @@ class TrainerStore {
     this.protocolMoveSerial += 1;
     const stateBefore = cloneCube(this.cube);
     this.applyDomainMove(move);
+    streamRecorder.record("move", {
+      sequence: event.sequence,
+      move,
+      source: event.source ?? "live",
+      cubeTime: clockSample?.cubeTime ?? null,
+      receivedAt: event.receivedAt,
+      protocol: event.protocol,
+    });
     this.moveTimeline.appendMove({
       sequence: event.sequence,
       move,
@@ -1386,6 +1410,10 @@ class TrainerStore {
 
   private async closeRealSession(): Promise<void> {
     this.stopBatteryPolling();
+    if (this.session) {
+      streamRecorder.record("session", { event: "disconnected" });
+      void streamRecorder.flushNow();
+    }
     await this.unsubscribeMoves?.().catch(() => undefined);
     this.unsubscribeMoves = null;
     await this.unsubscribeContinuity?.().catch(() => undefined);
@@ -1506,6 +1534,15 @@ class TrainerStore {
     const observation = this.poseSession.observe(event.quaternion, event.receivedAt);
     this.poseHealth = observation.health;
     this.sessionAnchor = observation.anchor;
+    streamRecorder.record("pose", {
+      receivedAt: event.receivedAt,
+      protocol: event.protocol,
+      quaternion: { ...event.quaternion },
+      accepted: observation.accepted,
+      health: observation.health.status,
+      stepDeg: observation.health.lastStepDeg,
+      reanchorCount: observation.health.reanchorCount,
+    });
     if (!observation.accepted || !observation.quaternion) {
       safeLogger.warn("pose", "orientation-rejected", {
         status: observation.health.status,
@@ -1528,8 +1565,16 @@ class TrainerStore {
   }
 
   private handleSignalFrame(event: CubeSignalFrameEvent): void {
-    // The decoded frame lives only in this short-lived in-memory handoff. It is
-    // never sent to safeLogger or persisted by the TrainerStore.
+    // The decoded frame is handed to the in-memory protocol inspector and to
+    // the full-fidelity stream recorder (raw bytes, replayable offline). It
+    // is never sent to the sanitized safeLogger channel.
+    streamRecorder.recordFrame(
+      event.protocol,
+      event.layer,
+      event.packetType,
+      event.receivedAt,
+      event.bytes,
+    );
     this.lastSignalFrame = {
       ...event,
       bytes: event.bytes.slice(),

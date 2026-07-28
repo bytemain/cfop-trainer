@@ -42,6 +42,7 @@
   import { FACES, type StickerColor } from "$lib/cube/cube";
   import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
+  import { streamRecorder, type StreamLogInfo } from "$lib/logging/streamRecorder";
 
   type Section = "train" | "cases" | "history" | "settings";
   const colorOptions: Array<{ value: StickerColor; label: string }> = [
@@ -52,6 +53,7 @@
 
   let activeSection = $state<Section>("train");
   let show2dOverlay = $state(true);
+  let streamLogInfo = $state<StreamLogInfo | null>(null);
   let deviceDialogOpen = $state(false);
   let deviceDialogAutoScan = $state(false);
   let replayIndex = $state(0);
@@ -248,6 +250,7 @@
 
   onMount(() => {
     void trainer.initialize();
+    void streamRecorder.info().then((info) => (streamLogInfo = info));
     const poseClock = window.setInterval(() => (poseClockNow = Date.now()), 400);
     const handleKeydown = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
@@ -761,6 +764,18 @@
             <article><span>Session anchor</span><strong>{trainer.sessionAnchor?.reason ?? "等待首帧"}</strong><code>{trainer.sessionAnchor ? new Date(trainer.sessionAnchor.establishedAt).toLocaleTimeString() : "—"}</code></article>
             <article><span>Timeline</span><strong>{trainer.timelineContinuous ? "连续" : "已截断"}</strong><code>{trainer.timelineItems.length} events</code></article>
           </div>
+
+          {#if streamLogInfo}
+            <div class="stream-log-info">
+              <div class="palette-heading">
+                <div>
+                  <strong>实时数据流记录</strong>
+                  <small>解密后的协议帧、姿态与动作全量落盘（不含设备身份），供离线分析；单个文件 {Math.round(streamLogInfo.maxFileBytes / 1024 / 1024)} MiB，滚动保留 {streamLogInfo.rotatedFiles + 1} 个（共 {Math.round(streamLogInfo.maxTotalBytes / 1024 / 1024)} MiB）</small>
+                </div>
+              </div>
+              <code class="stream-log-path">{streamLogInfo.directory}/{streamLogInfo.activeFile}</code>
+            </div>
+          {/if}
 
           <section class="protocol-validation-panel" aria-labelledby="protocol-validation-title">
             <div class="protocol-validation-heading">
@@ -1409,6 +1424,9 @@
   .protocol-debug span { color: var(--color-text-muted); font-size: 0.68rem; }
   .protocol-debug strong { font-size: 1.1rem; }
   .protocol-debug code { overflow: hidden; color: var(--color-info); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
+  .stream-log-info { display: grid; gap: 8px; width: 100%; padding: 12px; border: 1px dashed var(--color-outline-soft); border-radius: 13px; background: var(--color-surface-high); }
+  .stream-log-info .palette-heading { margin: 0; }
+  .stream-log-path { overflow: hidden; color: var(--color-info); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
   .protocol-validation-panel { display: grid; width: 100%; gap: 14px; padding: 16px; border: 1px solid rgb(92 185 150 / 0.3); border-radius: 18px; background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface-high)); }
   .protocol-validation-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .protocol-validation-heading h3 { margin: 3px 0 0; }
