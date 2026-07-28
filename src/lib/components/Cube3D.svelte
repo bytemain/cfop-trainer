@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { RotateCcw } from "lucide-svelte";
   import {
     ACESFilmicToneMapping,
     AmbientLight,
@@ -74,6 +75,7 @@
   let lastPoseFrameAt = 0;
   let hasDisplayedPose = false;
   let dragging = $state(false);
+  let viewOffset = $state(false);
   let dragLastX = 0;
   let dragLastY = 0;
   const viewQuaternion = new Quaternion();
@@ -443,6 +445,7 @@
     ));
     viewGroup?.quaternion.copy(viewQuaternion);
     syncViewAttribute();
+    viewOffset = false;
     requestRender();
   }
 
@@ -471,11 +474,11 @@
     viewQuaternion.premultiply(delta).normalize();
     viewGroup?.quaternion.copy(viewQuaternion);
     syncViewAttribute();
+    viewOffset = true;
     requestRender();
   }
 
   function startDrag(event: PointerEvent): void {
-    if (!interactive) return;
     dragging = true;
     dragLastX = event.clientX;
     dragLastY = event.clientY;
@@ -483,7 +486,7 @@
   }
 
   function moveDrag(event: PointerEvent): void {
-    if (!interactive || !dragging) return;
+    if (!dragging) return;
     const deltaX = event.clientX - dragLastX;
     const deltaY = event.clientY - dragLastY;
     dragLastX = event.clientX;
@@ -494,13 +497,11 @@
   }
 
   function stopDrag(event: PointerEvent): void {
-    if (!interactive) return;
     dragging = false;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   }
 
   function rotateWithKeyboard(event: KeyboardEvent): void {
-    if (!interactive) return;
     const step = event.shiftKey ? 30 : 12;
     if (event.key === "ArrowLeft") rotateView("y", -step);
     else if (event.key === "ArrowRight") rotateView("y", step);
@@ -639,25 +640,29 @@
   <div
     bind:this={stage}
     class:dragging
-    class:interactive
     class="cube-stage"
   >
     <canvas
       bind:this={canvas}
-      role={interactive ? "button" : "img"}
-      tabindex={interactive ? 0 : -1}
+      role="button"
+      tabindex={0}
       aria-label={interactive
         ? "当前魔方 3D 视图（WebGL）。可向任意方向连续拖动翻转，双击或按 Home 恢复默认视角。"
-        : "当前魔方 3D 实时姿态（WebGL）。真机陀螺仪跟随时已禁用手动拖动。"}
+        : "当前魔方 3D 实时姿态（WebGL）。可拖动改变观察角度，双击或点击回正恢复默认视角。"}
       onpointerdown={startDrag}
       onpointermove={moveDrag}
       onpointerup={stopDrag}
       onpointercancel={stopDrag}
       onkeydown={rotateWithKeyboard}
-      ondblclick={() => interactive && resetView()}
+      ondblclick={resetView}
     ></canvas>
+    {#if viewOffset}
+      <button class="recenter-view" onclick={resetView}>
+        <RotateCcw size={14} aria-hidden="true" /> 回正视角
+      </button>
+    {/if}
   </div>
-  <p>{interactive ? "GPU WebGL 全向视图 · 拖动观察 · 双击 / Home 复位" : "GPU WebGL 实时姿态 · 固定透视 · 手动拖动已禁用"}</p>
+  <p>{interactive ? "GPU WebGL 全向视图 · 拖动观察 · 双击 / Home 复位" : "GPU WebGL 实时姿态 · 拖动改变观察角度 · 回正恢复默认视角"}</p>
 </div>
 
 <style>
@@ -671,17 +676,40 @@
   }
 
   .cube-stage {
+    position: relative;
     width: min(100%, 520px);
     height: 320px;
     border-radius: 22px;
     background: radial-gradient(circle at 50% 44%, rgb(135 232 188 / 0.07), transparent 55%);
-    cursor: default;
-    touch-action: auto;
+    cursor: grab;
+    touch-action: none;
     user-select: none;
   }
 
-  .cube-stage.interactive { cursor: grab; touch-action: none; }
-  .cube-stage.interactive.dragging { cursor: grabbing; }
+  .cube-stage.dragging { cursor: grabbing; }
+  .recenter-view {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 0 13px;
+    border: 1px solid rgb(135 232 188 / 0.45);
+    border-radius: 999px;
+    color: var(--color-text);
+    background: color-mix(in srgb, var(--color-surface-high) 88%, transparent);
+    font-size: 0.7rem;
+    font-weight: 750;
+    cursor: pointer;
+    animation: recenter-in 160ms ease-out;
+  }
+  .recenter-view:hover { border-color: var(--color-primary); color: var(--color-primary); }
+  @keyframes recenter-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
+  }
   canvas { display: block; width: 100%; height: 100%; border-radius: inherit; outline: none; }
   canvas:focus-visible { box-shadow: inset 0 0 0 2px rgb(135 232 188 / 0.8); }
   p { margin: 0; color: var(--color-text-muted); font-size: 0.68rem; }

@@ -289,6 +289,97 @@ describe("GAN V4 session", () => {
     await session.disconnect();
   });
 
+  it("keeps emitting moves across the 8-bit counter wrap 255 -> 0", async () => {
+    const device: DiscoveredDevice = {
+      id: "wrap-device",
+      name: "GAN16ui_WRAP",
+      serviceUuids: [],
+      manufacturerData: { 1: [9, 9, 9, 0, 1, 2, 3, 4, 5] },
+    };
+    const cipher = new GanV2Cipher(deriveGanV2CipherMaterial(extractGanHardwareAddress(device.manufacturerData)!));
+    let notify: ((data: Uint8Array) => void) | undefined;
+    const connection: BleConnection = {
+      device,
+      disconnect: vi.fn(async () => undefined),
+      read: vi.fn(async () => new Uint8Array()),
+      subscribe: vi.fn(async (_service, _characteristic, listener) => {
+        notify = listener;
+        return async () => undefined;
+      }),
+      write: vi.fn(async (_service, _characteristic, encrypted) => {
+        const request = cipher.decode(encrypted);
+        if (request[0] === 0xdd && request[3] === 0xed) {
+          queueMicrotask(() => notify?.(cipher.encode(solvedSnapshot(253))));
+        }
+      }),
+    };
+
+    const session = await new GanV4Protocol().open(connection);
+    await session.initialSnapshot();
+    const moves: CubeMoveEvent[] = [];
+    await session.moves((event) => moves.push(event));
+
+    // The GAN16ui counter is 8-bit on the wire: 254, 255, then 0, 1, 2.
+    for (const sequence of [254, 255, 0, 1, 2]) {
+      notify?.(cipher.encode(movePacket(sequence)));
+    }
+    // The wrap must extend into the internal 16-bit space instead of being
+    // dropped as a 65281-step backward jump.
+    expect(moves.map((event) => event.sequence)).toEqual([254, 255, 256, 257, 258]);
+
+    // A stale retransmission of 255 after the wrap must stay deduplicated.
+    notify?.(cipher.encode(movePacket(255)));
+    expect(moves.map((event) => event.sequence)).toEqual([254, 255, 256, 257, 258]);
+    await session.disconnect();
+  });
+
+  it("re-baselines the move stream on a requested snapshot after a wrap", async () => {
+    const device: DiscoveredDevice = {
+      id: "rebaseline-device",
+      name: "GAN16ui_REBASELINE",
+      serviceUuids: [],
+      manufacturerData: { 1: [9, 9, 9, 0, 1, 2, 3, 4, 5] },
+    };
+    const cipher = new GanV2Cipher(deriveGanV2CipherMaterial(extractGanHardwareAddress(device.manufacturerData)!));
+    let notify: ((data: Uint8Array) => void) | undefined;
+    let snapshotSequence = 253;
+    const connection: BleConnection = {
+      device,
+      disconnect: vi.fn(async () => undefined),
+      read: vi.fn(async () => new Uint8Array()),
+      subscribe: vi.fn(async (_service, _characteristic, listener) => {
+        notify = listener;
+        return async () => undefined;
+      }),
+      write: vi.fn(async (_service, _characteristic, encrypted) => {
+        const request = cipher.decode(encrypted);
+        if (request[0] === 0xdd && request[3] === 0xed) {
+          const sequence = snapshotSequence;
+          queueMicrotask(() => notify?.(cipher.encode(solvedSnapshot(sequence))));
+        }
+      }),
+    };
+
+    const session = await new GanV4Protocol().open(connection);
+    await session.initialSnapshot();
+    const moves: CubeMoveEvent[] = [];
+    await session.moves((event) => moves.push(event));
+
+    for (const sequence of [254, 255, 0]) {
+      notify?.(cipher.encode(movePacket(sequence)));
+    }
+    expect(moves.map((event) => event.sequence)).toEqual([254, 255, 256]);
+
+    // A resync snapshot reports the raw 8-bit counter; the adapter must
+    // re-baseline on it so trainer and adapter agree again.
+    snapshotSequence = 3;
+    await expect(session.requestSnapshot()).resolves.toMatchObject({ sequence: 3 });
+
+    notify?.(cipher.encode(movePacket(4)));
+    expect(moves.map((event) => event.sequence)).toEqual([254, 255, 256, 4]);
+    await session.disconnect();
+  });
+
   it("falls back to a snapshot only after history retries and reports a discontinuity", async () => {
     const device: DiscoveredDevice = {
       id: "fallback-device",

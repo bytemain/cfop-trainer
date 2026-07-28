@@ -197,7 +197,6 @@ class GanV4Session implements SmartCubeSession {
       sequence: snapshot.sequence ?? null,
     });
     if (!verified) throw new Error("GAN did not report a solved state after CubeStation reset command");
-    this.establishMoveBaseline(reliableSnapshotMoveSequence(snapshot.sequence));
     return snapshot;
   }
 
@@ -368,6 +367,12 @@ class GanV4Session implements SmartCubeSession {
       };
       // Request/response ownership is handled by initialSnapshot and recovery.
       // Periodic 0xED broadcasts must never rewind the live move baseline.
+      if (requested) {
+        // A requested snapshot is an authoritative state at its sequence:
+        // re-baseline the move stream here so the trainer and the adapter
+        // agree after resyncs, including across 8-bit counter wraps.
+        this.establishMoveBaseline(reliableSnapshotMoveSequence(snapshot.sequence));
+      }
       this.resolveNext(this.pendingSnapshots, snapshot);
       return;
     }
@@ -423,8 +428,11 @@ class GanV4Session implements SmartCubeSession {
     if (sequence === null) return;
     this.lastEmittedSequence = sequence;
     for (const bufferedSequence of this.moveBuffer.keys()) {
-      const distance = (bufferedSequence - sequence) & 0xffff;
-      if (distance === 0 || distance >= 0x8000) this.moveBuffer.delete(bufferedSequence);
+      // The wire counter is 8-bit: compare low bytes so buffered moves from
+      // before the baseline's counter lap are purged instead of looking like
+      // far-future moves.
+      const distance = (bufferedSequence - sequence) & 0xff;
+      if (distance === 0 || distance >= 0x80) this.moveBuffer.delete(bufferedSequence);
     }
     this.drainMoveBuffer();
   }
@@ -441,12 +449,19 @@ class GanV4Session implements SmartCubeSession {
         firstMoveSequence: event.sequence,
         baseline: this.lastEmittedSequence,
       });
+      if (!this.moveBuffer.has(event.sequence)) this.moveBuffer.set(event.sequence, event);
+      this.drainMoveBuffer();
+      return;
     }
-    if (this.lastEmittedSequence !== null) {
-      const distance = (event.sequence - this.lastEmittedSequence) & 0xffff;
-      if (distance === 0 || distance >= 0x8000) return;
-    }
-    if (!this.moveBuffer.has(event.sequence)) this.moveBuffer.set(event.sequence, event);
+    // GAN16ui's move counter is 8-bit on the wire (move-history packets carry
+    // a single byte and the live counter wraps 255 -> 0). Expand the low byte
+    // into the internal 16-bit space relative to the last emitted sequence so
+    // the wrap reads as +1 instead of a 65281 backward jump that would drop
+    // every subsequent move and desynchronize the displayed cube state.
+    const sequence = this.expandSequenceByte(event.sequence & 0xff, this.lastEmittedSequence);
+    const distance = (sequence - this.lastEmittedSequence) & 0xffff;
+    if (distance === 0 || distance >= 0x8000) return;
+    if (!this.moveBuffer.has(sequence)) this.moveBuffer.set(sequence, { ...event, sequence });
     this.drainMoveBuffer();
   }
 
@@ -568,7 +583,7 @@ class GanV4Session implements SmartCubeSession {
       this.historyTimer = null;
     }
     for (const recovered of packet.moves) {
-      const sequence = this.expandHistorySequence(recovered.sequence, this.historyTarget);
+      const sequence = this.expandSequenceByte(recovered.sequence, this.historyTarget);
       if (this.moveBuffer.has(sequence)) continue;
       this.moveBuffer.set(sequence, {
         move: recovered.move,
@@ -582,7 +597,7 @@ class GanV4Session implements SmartCubeSession {
     if (this.recoveryInFlight) void this.sendHistoryAttempt();
   }
 
-  private expandHistorySequence(lowByte: number, reference: number): number {
+  private expandSequenceByte(lowByte: number, reference: number): number {
     const base = reference & 0xff00;
     const candidates = [base | lowByte, ((base - 0x100) | lowByte) & 0xffff, ((base + 0x100) | lowByte) & 0xffff];
     return candidates.sort((left, right) => {

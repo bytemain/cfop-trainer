@@ -155,8 +155,10 @@ export class GanV4ProtocolDiagnostics {
 
     if (packet.type === "move") {
       if (this.lastMoveSequence !== null) {
-        const distance = (packet.sequence - this.lastMoveSequence) & 0xffff;
-        if (distance > 1 && distance < 0x8000) {
+        // The wire counter is 8-bit; compare low bytes so the 255 -> 0 wrap is
+        // continuity, not a gap, while real skips are still detected.
+        const distance = ((packet.sequence & 0xff) - (this.lastMoveSequence & 0xff)) & 0xff;
+        if (distance > 1 && distance < 0x80) {
           this.snapshot.moveSequenceGaps += 1;
           this.recordIssue(
             "move-sequence-gap",
