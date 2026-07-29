@@ -267,6 +267,10 @@ export function isSolved(state: CubeState): boolean {
   return FACES.every((face) => state[face].every((color) => color === state[face][4]));
 }
 
+export function cubeEquals(left: CubeState, right: CubeState): boolean {
+  return FACES.every((face) => left[face].every((color, index) => color === right[face][index]));
+}
+
 function cubiesAreSolved(state: CubeState, positions: readonly Vec3[]): boolean {
   const stickers = toStickers(state);
 

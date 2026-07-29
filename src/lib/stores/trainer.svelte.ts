@@ -6,6 +6,7 @@ import {
   applyMoves,
   cloneCube,
   createSolvedCube,
+  cubeEquals,
   cubeStateFromFacelets,
   derivePhase,
   derivePhaseFacts,
@@ -58,6 +59,11 @@ import {
 import { CubeClock, type CubeClockSample } from "$lib/timeline/cubeClock";
 import { MoveTimeline, type MoveTimelineItem } from "$lib/timeline/moveTimeline";
 import { PoseSession, type PoseHealth } from "$lib/pose/poseSession";
+import {
+  decideScrambleMove,
+  scramblePrefixState,
+  type ScrambleFault,
+} from "$lib/sessions/scrambleGuidance";
 import { streamRecorder } from "$lib/logging/streamRecorder";
 import { DEFAULT_VIEW_PRESET_ID, viewPresetById, type ViewPresetId } from "$lib/cube/viewPresets";
 import {
@@ -227,6 +233,7 @@ class TrainerStore {
   cube = $state<CubeState>(createSolvedCube());
   scramble = $state<string[]>([]);
   scrambleIndex = $state(0);
+  scrambleFault = $state<ScrambleFault | null>(null);
   solveMoves = $state<string[]>([]);
   solveIndex = $state(0);
   elapsedMs = $state(0);
@@ -308,6 +315,7 @@ class TrainerStore {
   private completedMs = 0;
   private timerHandle: ReturnType<typeof setInterval> | null = null;
   private demoPlaybackHandle: ReturnType<typeof setInterval> | null = null;
+  private scrambleBaseState: CubeState = createSolvedCube();
   private session: SmartCubeSession | null = null;
   private unsubscribeMoves: (() => Promise<void>) | null = null;
   private unsubscribeContinuity: (() => Promise<void>) | null = null;
@@ -551,6 +559,8 @@ class TrainerStore {
     if (!this.session) this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
     this.scramble = generateScramble();
     this.scrambleIndex = 0;
+    this.scrambleFault = null;
+    this.scrambleBaseState = cloneCube(this.cube);
     this.solveMoves = [];
     this.solveIndex = 0;
     this.elapsedMs = 0;
@@ -598,6 +608,7 @@ class TrainerStore {
     if (this.session || this.scrambleIndex <= 0) return;
     this.stopDemoPlayback();
     this.scrambleIndex -= 1;
+    this.scrambleFault = null;
     const solved = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
     this.cube = applyMoves(solved, this.scramble.slice(0, this.scrambleIndex));
     this.solveMoves = [];
@@ -612,6 +623,8 @@ class TrainerStore {
     if (this.session) return;
     this.stopDemoPlayback();
     this.scrambleIndex = 0;
+    this.scrambleFault = null;
+    this.scrambleBaseState = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
     this.cube = cubeStateFromFacelets(SOLVED_FACELETS, this.faceColors);
     this.solveMoves = [];
     this.solveIndex = 0;
@@ -1480,9 +1493,32 @@ class TrainerStore {
     });
     this.publishTimeline();
 
-    if (this.sessionState === "scrambling" && this.currentScrambleMove === move) {
-      this.scrambleIndex += 1;
-      if (this.scrambleIndex === this.scramble.length) {
+    if (this.sessionState === "scrambling") {
+      const decision = decideScrambleMove({
+        scramble: this.scramble,
+        index: this.scrambleIndex,
+        move,
+        fault: this.scrambleFault,
+        stateMatchesPrefix: cubeEquals(
+          this.cube,
+          scramblePrefixState(this.scrambleBaseState, this.scramble, this.scrambleIndex),
+        ),
+        stateMatchesPreviousPrefix: this.scrambleIndex > 0 && cubeEquals(
+          this.cube,
+          scramblePrefixState(this.scrambleBaseState, this.scramble, this.scrambleIndex - 1),
+        ),
+      });
+      if (decision.kind === "advance") {
+        this.scrambleIndex += 1;
+        if (decision.clearFault) this.scrambleFault = null;
+      } else if (decision.kind === "undo") {
+        this.scrambleIndex -= 1;
+      } else if (decision.kind === "recover") {
+        this.scrambleFault = null;
+      } else {
+        this.scrambleFault = decision.fault;
+      }
+      if (this.scrambleIndex === this.scramble.length && !this.scrambleFault) {
         this.solveMoves = invertAlgorithm(this.scramble);
         this.solveIndex = 0;
         // Scramble telemetry is not part of the solve reconstruction. The
@@ -1530,6 +1566,7 @@ class TrainerStore {
     this.connectedDeviceName = null;
     this.battery = null;
     this.lastSnapshotAt = null;
+    this.scrambleFault = null;
     this.firmwareVersion = "unknown";
     this.hardwareVersion = "unknown";
     this.lastCubeSequence = undefined;

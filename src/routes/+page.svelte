@@ -40,8 +40,9 @@
     PHASE_LABELS,
     trainer,
   } from "$lib/stores/trainer.svelte";
-  import { FACES, type StickerColor } from "$lib/cube/cube";
+  import { FACES, invertMove, type StickerColor } from "$lib/cube/cube";
   import { VIEW_PRESETS } from "$lib/cube/viewPresets";
+  import { recognizeCubePose } from "$lib/calibration/poseRecognition";
   import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
   import { streamRecorder, type StreamLogInfo } from "$lib/logging/streamRecorder";
@@ -174,6 +175,26 @@
   );
 
   const primaryLabel = $derived(trainer.scramble.length === 0 ? "生成打乱" : "生成新打乱");
+  const COLOR_LABELS: Record<StickerColor, string> = {
+    white: "白", yellow: "黄", red: "红", orange: "橙", blue: "蓝", green: "绿",
+  };
+  const livePoseRecognition = $derived(
+    trainer.gyroQuaternion
+      ? recognizeCubePose(trainer.gyroQuaternion, trainer.gyroCalibration, trainer.faceColors)
+      : null,
+  );
+  const scrambleOrientationOk = $derived(
+    livePoseRecognition !== null &&
+      livePoseRecognition.topColor === trainer.faceColors.U &&
+      livePoseRecognition.frontColor === trainer.faceColors.F,
+  );
+  // Scramble notation is defined against the solved cube with a known top/
+  // front, so with a connected device require a solved cube, and — when the
+  // pose is aligned enough to verify — the white-up/green-front grip.
+  const scrambleBlocked = $derived(
+    Boolean(trainer.connectedDeviceName) &&
+      (!trainer.facts.cubeSolved || (trainer.poseAligned && !scrambleOrientationOk)),
+  );
   const cubePaletteStyle = $derived(
     "--cube-white:" + trainer.stickerPalette.white + ";" +
       "--cube-yellow:" + trainer.stickerPalette.yellow + ";" +
@@ -480,7 +501,7 @@
           {/if}
 
           <div class="primary-actions">
-            <button class="primary-button" onclick={primaryAction}>
+            <button class="primary-button" onclick={primaryAction} disabled={scrambleBlocked}>
               <Sparkles size={19} />
               {primaryLabel}
             </button>
@@ -496,6 +517,30 @@
               </div>
             </div>
 
+            {#if trainer.connectedDeviceName}
+              <div class="scramble-readiness" aria-label="打乱前置条件">
+                <span class:ok={trainer.facts.cubeSolved}>
+                  {#if trainer.facts.cubeSolved}
+                    <Check size={13} aria-hidden="true" /> 实体魔方已还原
+                  {:else}
+                    <CircleAlert size={13} aria-hidden="true" /> 请先还原实体魔方
+                  {/if}
+                </span>
+                {#if trainer.poseAligned}
+                  {#if scrambleOrientationOk}
+                    <span class="ok"><Check size={13} aria-hidden="true" /> 朝向白上绿前</span>
+                  {:else if livePoseRecognition}
+                    <span>
+                      <CircleAlert size={13} aria-hidden="true" />
+                      请白上绿前放置（当前{COLOR_LABELS[livePoseRecognition.topColor]}上{COLOR_LABELS[livePoseRecognition.frontColor]}前）
+                    </span>
+                  {/if}
+                {:else}
+                  <span class="muted">姿态未对齐，无法校验朝向（按 C 对齐）</span>
+                {/if}
+              </div>
+            {/if}
+
             {#if trainer.scramble.length === 0}
               <div class="empty-guide">
                 <TimerReset size={32} />
@@ -510,6 +555,23 @@
                   >{move}</span>
                 {/each}
               </div>
+              {#if trainer.scrambleFault}
+                <div class="scramble-fault" role="alert">
+                  <CircleAlert size={16} aria-hidden="true" />
+                  <span>
+                    打乱出错：第 {trainer.scrambleFault.index + 1} 步应为
+                    <strong>{trainer.scrambleFault.expected ?? "—"}</strong>，实际做了
+                    <strong>{trainer.scrambleFault.got}</strong>。执行逆动作回到正确状态后自动继续。
+                  </span>
+                  <button class="player-reset" onclick={() => trainer.prepareScramble()}>
+                    <RotateCcw size={15} aria-hidden="true" /> 重新打乱
+                  </button>
+                </div>
+              {:else if trainer.connectedDeviceName && trainer.sessionState === "scrambling" && trainer.scrambleIndex > 0}
+                <p class="scramble-undo-hint">
+                  做错了？直接做 <strong>{invertMove(trainer.scramble[trainer.scrambleIndex - 1])}</strong> 即可回退上一步
+                </p>
+              {/if}
               <div class="progress-track" aria-label="打乱进度">
                 <span style={`width:${trainer.scrambleProgress * 100}%`}></span>
               </div>
@@ -1219,6 +1281,7 @@
   .text-button:disabled { cursor: wait; opacity: 0.48; }
   .primary-button { color: var(--color-on-primary); background: var(--color-primary); }
   .primary-button:hover { background: var(--color-primary-strong); }
+  .primary-button:disabled { cursor: not-allowed; opacity: 0.42; }
   .secondary-button { color: var(--color-text); background: var(--color-surface-highest); }
   .secondary-button:disabled { cursor: not-allowed; opacity: 0.42; }
   .section-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -1371,6 +1434,49 @@
   .progress-track { height: 5px; overflow: hidden; border-radius: 99px; background: var(--color-surface-highest); }
   .progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--color-primary); transition: width 160ms ease-out; }
   .guide-next { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; }
+  .scramble-readiness { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .scramble-readiness span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 11px;
+    border: 1px solid rgb(255 196 84 / 0.5);
+    border-radius: 999px;
+    color: #b97f0a;
+    background: color-mix(in srgb, rgb(255 214 130 / 0.9) 14%, var(--color-surface-high));
+    font-size: 0.68rem;
+    font-weight: 700;
+  }
+  .scramble-readiness span.ok {
+    border-color: rgb(114 215 167 / 0.4);
+    color: var(--color-success);
+    background: color-mix(in srgb, var(--color-surface-high) 88%, transparent);
+  }
+  .scramble-readiness span.muted {
+    border-color: var(--color-outline-soft);
+    color: var(--color-text-muted);
+    background: transparent;
+  }
+  .scramble-fault {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 10px;
+    padding: 11px 13px;
+    border: 1px solid rgb(255 122 110 / 0.5);
+    border-radius: 13px;
+    color: var(--color-text);
+    background: color-mix(in srgb, rgb(255 122 110 / 0.85) 12%, var(--color-surface-high));
+    font-size: 0.72rem;
+    line-height: 1.5;
+  }
+  .scramble-fault :global(svg) { flex: 0 0 auto; color: #ff6a5e; }
+  .scramble-fault > span { flex: 1 1 220px; min-width: 0; }
+  .scramble-fault strong { color: var(--color-text); }
+  .scramble-undo-hint { margin: 10px 0 0; color: var(--color-text-muted); font-size: 0.68rem; }
+  .scramble-undo-hint strong { color: var(--color-text); font-family: "SFMono-Regular", Consolas, monospace; }
   .guide-next span { color: var(--color-text-muted); font-size: 0.74rem; }
   .guide-next strong { font: 750 1.45rem "SFMono-Regular", Consolas, monospace; }
   .demo-player {

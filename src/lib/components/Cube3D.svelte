@@ -25,6 +25,7 @@
     FACES,
     cloneCube,
     createSolvedCube,
+    cubeEquals,
     stickerGeometry,
     type CubeState,
     type StickerColor,
@@ -202,10 +203,6 @@
   ): [number, number, number] {
     const vector = new Vector3(normal[0], normal[1], normal[2]).applyQuaternion(rotation);
     return [Math.round(vector.x), Math.round(vector.y), Math.round(vector.z)];
-  }
-
-  function cubeEquals(left: CubeState, right: CubeState): boolean {
-    return FACES.every((face) => left[face].every((color, index) => color === right[face][index]));
   }
 
   function isAnimatableMove(notation: string | null | undefined): boolean {
