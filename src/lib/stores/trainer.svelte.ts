@@ -1494,11 +1494,15 @@ class TrainerStore {
         index: this.scrambleIndex,
         move,
         fault: this.scrambleFault,
-        stateMatchesPrefix: cubeEquals(
+        matchesNextPrefix: cubeEquals(
+          this.cube,
+          scramblePrefixState(this.scrambleBaseState, this.scramble, this.scrambleIndex + 1),
+        ),
+        matchesCurrentPrefix: cubeEquals(
           this.cube,
           scramblePrefixState(this.scrambleBaseState, this.scramble, this.scrambleIndex),
         ),
-        stateMatchesPreviousPrefix: this.scrambleIndex > 0 && cubeEquals(
+        matchesPreviousPrefix: this.scrambleIndex > 0 && cubeEquals(
           this.cube,
           scramblePrefixState(this.scrambleBaseState, this.scramble, this.scrambleIndex - 1),
         ),
@@ -1510,6 +1514,9 @@ class TrainerStore {
         this.scrambleIndex -= 1;
       } else if (decision.kind === "recover") {
         this.scrambleFault = null;
+      } else if (decision.kind === "hold") {
+        // First quarter turn of a double turn: the cube state already reflects
+        // the half turn; keep the index and wait for the completing quarter turn.
       } else {
         this.scrambleFault = decision.fault;
       }

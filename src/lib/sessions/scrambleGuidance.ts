@@ -1,11 +1,14 @@
-import { applyMoves, invertMove, type CubeState } from "$lib/cube/cube";
+import { applyMoves, type CubeState } from "$lib/cube/cube";
 
 /**
- * Scramble guidance for physical sessions: the user must follow the shown
- * sequence exactly. A wrong move diverges the physical cube from the
- * sequence; the user recovers by undoing moves until the cube matches the
- * sequence prefix again (the app verifies against the cube state), or by
- * undoing the previous step with its inverse move.
+ * Scramble guidance for physical sessions: the user follows the shown sequence.
+ *
+ * The GAN cube reports only quarter turns (X / X'), never a double turn (X2).
+ * A scramble step like "B2" therefore arrives as two quarter turns. Decisions
+ * are verified against the scramble prefix states rather than move strings, so
+ * a double turn advances only once both quarter turns land on the X2 state (in
+ * either turn direction), and the first quarter turn is held — not faulted —
+ * while the turn completes.
  */
 
 export interface ScrambleFault {
@@ -18,12 +21,14 @@ export interface ScrambleFault {
 }
 
 export type ScrambleMoveDecision =
-  /** The expected move: advance one step (clearing a fault if the state matches). */
+  /** The cube reached the next prefix state: advance one step. */
   | { kind: "advance"; clearFault: boolean }
-  /** Inverse of the previous step with matching state: step back. */
+  /** The cube returned to the previous prefix state: step back. */
   | { kind: "undo" }
-  /** A faulted session returned to the sequence prefix: clear the fault. */
+  /** A faulted cube returned to the current prefix state: clear the fault. */
   | { kind: "recover" }
+  /** First quarter turn of a double turn: wait for the completing quarter turn. */
+  | { kind: "hold" }
   /** Anything else while diverging: record/refresh the fault. */
   | { kind: "fault"; fault: ScrambleFault };
 
@@ -32,35 +37,65 @@ export function decideScrambleMove(params: {
   index: number;
   move: string;
   fault: ScrambleFault | null;
-  /** Cube state equals base + scramble[0..index) after applying `move`. */
-  stateMatchesPrefix: boolean;
-  /** Cube state equals base + scramble[0..index-1) after applying `move`. */
-  stateMatchesPreviousPrefix: boolean;
+  /** Cube state after `move` equals base + scramble[0..index+1). */
+  matchesNextPrefix: boolean;
+  /** Cube state after `move` equals base + scramble[0..index). */
+  matchesCurrentPrefix: boolean;
+  /** Cube state after `move` equals base + scramble[0..index-1). */
+  matchesPreviousPrefix: boolean;
 }): ScrambleMoveDecision {
-  const { scramble, index, move, fault, stateMatchesPrefix, stateMatchesPreviousPrefix } = params;
+  const {
+    scramble,
+    index,
+    move,
+    fault,
+    matchesNextPrefix,
+    matchesCurrentPrefix,
+    matchesPreviousPrefix,
+  } = params;
   const expected = scramble[index] ?? null;
+  const previous = index > 0 ? scramble[index - 1] : null;
 
-  // While faulted, matching the prefix means the user undid their divergence.
-  if (fault && stateMatchesPrefix) {
-    return move === expected ? { kind: "advance", clearFault: true } : { kind: "recover" };
+  // Advancement: the cube reached the next prefix state. State-verified, so a
+  // double turn advances only after both quarter turns complete the X2 state.
+  if (expected !== null && matchesNextPrefix) {
+    return { kind: "advance", clearFault: fault !== null };
   }
 
-  if (expected !== null && move === expected) {
-    return { kind: "advance", clearFault: false };
-  }
-
-  // Clean undo: the inverse of the previous step is only ambiguous with the
-  // expected move when scrambles repeat a face, which generation forbids.
-  if (
-    !fault &&
-    index > 0 &&
-    move === invertMove(scramble[index - 1]) &&
-    stateMatchesPreviousPrefix
-  ) {
+  // Undo: the cube returned to the previous prefix state. For a double turn
+  // this is only true after both quarter turns unwind the X2.
+  if (!fault && previous !== null && matchesPreviousPrefix) {
     return { kind: "undo" };
   }
 
+  // Halfway through a double turn (advancing or undoing): the first quarter
+  // turn leaves the cube one quarter from a prefix. Hold for the completing
+  // quarter turn instead of flagging a fault.
+  if (!fault && isDoubleTurnHalfway(expected, previous, move)) {
+    return { kind: "hold" };
+  }
+
+  // Fault recovery: the faulted cube returned to the current prefix state, so
+  // the divergence has been undone.
+  if (fault && matchesCurrentPrefix) {
+    return { kind: "recover" };
+  }
+
   return { kind: "fault", fault: { index: fault?.index ?? index, expected, got: move } };
+}
+
+/**
+ * True when `move` is a quarter turn of a face whose expected or previous
+ * scramble step is a double turn — i.e. the first half of an in-progress X2.
+ */
+function isDoubleTurnHalfway(
+  expected: string | null,
+  previous: string | null,
+  move: string,
+): boolean {
+  if (move.endsWith("2")) return false; // the cube never reports a double turn
+  const face = move[0];
+  return expected === `${face}2` || previous === `${face}2`;
 }
 
 export function scramblePrefixState(
