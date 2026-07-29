@@ -305,11 +305,6 @@ class TrainerStore {
    * origin is random on every power cycle (measured 38-98 degree jumps
    * between reconnects); gravity fixes pitch and roll only.
    */
-  get poseAligned(): boolean {
-    const reason = this.sessionAnchor?.reason;
-    return reason === "manual" || reason === "calibration" || reason === "restored" || reason === "inferred";
-  }
-
   private actor = createActor(trainingMachine);
   private startedAt: number | null = null;
   private completedMs = 0;

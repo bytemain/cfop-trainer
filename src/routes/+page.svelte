@@ -10,7 +10,6 @@
     BookOpenCheck,
     Check,
     CircleAlert,
-    Compass,
     Download,
     History,
     LayoutDashboard,
@@ -41,7 +40,6 @@
   } from "$lib/stores/trainer.svelte";
   import { FACES, invertMove, type StickerColor } from "$lib/cube/cube";
   import { VIEW_PRESETS } from "$lib/cube/viewPresets";
-  import { recognizeCubePose } from "$lib/calibration/poseRecognition";
   import { serializeSignalCalibrationProfile } from "$lib/calibration/signalProfile";
   import { exportJsonFile } from "$lib/data/jsonExport";
   import { streamRecorder, type StreamLogInfo } from "$lib/logging/streamRecorder";
@@ -174,25 +172,11 @@
   );
 
   const primaryLabel = $derived(trainer.scramble.length === 0 ? "生成打乱" : "生成新打乱");
-  const COLOR_LABELS: Record<StickerColor, string> = {
-    white: "白", yellow: "黄", red: "红", orange: "橙", blue: "蓝", green: "绿",
-  };
-  const livePoseRecognition = $derived(
-    trainer.gyroQuaternion
-      ? recognizeCubePose(trainer.gyroQuaternion, trainer.gyroCalibration, trainer.faceColors)
-      : null,
-  );
-  const scrambleOrientationOk = $derived(
-    livePoseRecognition !== null &&
-      livePoseRecognition.topColor === trainer.faceColors.U &&
-      livePoseRecognition.frontColor === trainer.faceColors.F,
-  );
-  // Scramble notation is defined against the solved cube with a known top/
-  // front, so with a connected device require a solved cube, and — when the
-  // pose is aligned enough to verify — the white-up/green-front grip.
+  // Scramble notation is face-relative (R = the red-centered face), so it is
+  // well-defined regardless of how the cube is held. The only precondition is
+  // a solved cube; we deliberately do NOT force a white-up/green-front grip.
   const scrambleBlocked = $derived(
-    Boolean(trainer.connectedDeviceName) &&
-      (!trainer.facts.cubeSolved || (trainer.poseAligned && !scrambleOrientationOk)),
+    Boolean(trainer.connectedDeviceName) && !trainer.facts.cubeSolved,
   );
   const cubePaletteStyle = $derived(
     "--cube-white:" + trainer.stickerPalette.white + ";" +
@@ -438,33 +422,12 @@
 
           <div class="cube-visual-stage">
             {#if trainer.connectedDeviceName && trainer.gyroCalibration.enabled && trainer.gyroQuaternion}
-              {#if trainer.poseAligned}
-                <span
-                  class="pose-align-chip aligned"
-                  title={trainer.sessionAnchor?.reason === "restored"
-                    ? "沿用上次的校准基准；魔方休眠过会重置偏航角，发现不符时白上绿前放好按 C 重新对齐"
-                    : trainer.sessionAnchor?.reason === "inferred"
-                      ? "魔方直立，已按最近的标准朝向静默推测对齐；不符时白上绿前放好按 C 精确校准"
-                      : "快速校准已将当前白上绿前姿态绑定为标准姿态"}
-                >
-                  <Check size={13} aria-hidden="true" />
-                  {#if trainer.sessionAnchor?.reason === "restored"}
-                    姿态已对齐 · 沿用上次校准 · 不符按 C
-                  {:else if trainer.sessionAnchor?.reason === "inferred"}
-                    姿态推测对齐 · 不符按 C
-                  {:else}
-                    姿态已对齐
-                  {/if}
-                </span>
-              {:else}
-                <button
-                  class="pose-align-chip unaligned"
-                  onclick={() => trainer.zeroGyro()}
-                  title="陀螺仪没有指南针，每次连接偏航角随机。把魔方白上绿前放好，点此或按 C 一键对齐"
-                >
-                  <Compass size={14} aria-hidden="true" /> 姿态未对齐 · 白上绿前放好后点此或按 C
-                </button>
-              {/if}
+              <span
+                class="pose-align-chip aligned"
+                title="画面姿态与实体魔方实时一致。如需白上绿前标准视角，放好后按 C 校准。"
+              >
+                <Check size={13} aria-hidden="true" /> 姿态与实体一致
+              </span>
             {/if}
             <Cube3D
               cube={trainer.cube}
@@ -566,17 +529,7 @@
 
           {#if scrambleBlocked}
             <div class="scramble-readiness" aria-label="打乱前置条件">
-              {#if !trainer.facts.cubeSolved}
-                <span><CircleAlert size={13} aria-hidden="true" /> 请先还原实体魔方</span>
-              {/if}
-              {#if trainer.poseAligned && !scrambleOrientationOk && livePoseRecognition}
-                <span>
-                  <CircleAlert size={13} aria-hidden="true" />
-                  请白上绿前放置（当前{COLOR_LABELS[livePoseRecognition.topColor]}上{COLOR_LABELS[livePoseRecognition.frontColor]}前）
-                </span>
-              {:else if !trainer.poseAligned && trainer.connectedDeviceName}
-                <span class="muted">姿态未对齐，无法校验朝向（按 C 对齐）</span>
-              {/if}
+              <span><CircleAlert size={13} aria-hidden="true" /> 请先还原实体魔方，再开始打乱</span>
             </div>
           {/if}
 
@@ -1389,11 +1342,6 @@
     background: color-mix(in srgb, rgb(255 214 130 / 0.9) 14%, var(--color-surface-high));
     font-size: 0.68rem;
     font-weight: 700;
-  }
-  .scramble-readiness span.muted {
-    border-color: var(--color-outline-soft);
-    color: var(--color-text-muted);
-    background: transparent;
   }
   .scramble-fault {
     display: flex;

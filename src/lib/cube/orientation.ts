@@ -73,10 +73,8 @@ export const GAN_V4_POSE_CONTRACT_VERSION = 1;
 
 // Deidentified GAN16ui real-device reading at the canonical identity grip
 // (white up, green front), from the same capture that anchors
-// orientation.test.ts. Stream analysis measured the sensor world frame to be
-// reproducible across sessions to within ~10 degrees, so this constant is the
-// no-anchor reference: near-true absolute tracking from the first frame.
-// Quick calibration replaces it with the current session's own reading.
+// orientation.test.ts. This calibrates GAN_V4_BODY_TO_MODEL so the physical
+// axes render correctly; it must stay the white-up/green-front reading.
 export const GAN_V4_IDENTITY_SENSOR_POSE: CubeQuaternion = {
   x: -0.07567134227142988,
   y: 0.018830564884244807,

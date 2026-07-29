@@ -5,7 +5,6 @@ import {
   DEFAULT_VIEW_PREFERENCE,
   gyroModelMatrix,
   quaternionFromAxisAngle,
-  snapToCubePose,
 } from "$lib/cube/orientation";
 import { PoseSession } from "./poseSession";
 
@@ -36,21 +35,9 @@ describe("PoseSession", () => {
   });
 
   it("anchors the first GAN frame to its near-absolute canonical pose", () => {
-    // Upright first frame: the random per-power-cycle yaw is silently
-    // inferred by snapping to the nearest legal cube orientation.
-    const session = new PoseSession(DEFAULT_DEVICE_CALIBRATION, DEFAULT_VIEW_PREFERENCE);
-    const first = quaternionFromAxisAngle("z", 35);
-    const observation = session.observe(first, 1_000);
-    const absolutePose = gyroModelMatrix(first, composeGyroCalibration(
-      DEFAULT_DEVICE_CALIBRATION,
-      null,
-      DEFAULT_VIEW_PREFERENCE,
-    ))!;
-    expect(observation.anchor?.reason).toBe("inferred");
-    expect(observation.anchor?.cubeReference).toEqual(snapToCubePose(absolutePose));
-  });
-
-  it("keeps the near-absolute pose without inference for freely held cubes", () => {
+    // A non-upright first frame anchors at the near-absolute pose (gravity-true
+    // tilt) without snapping; an upright frame would snap to the nearest legal
+    // cube orientation. Quick calibration rebinds the anchor explicitly.
     const session = new PoseSession(DEFAULT_DEVICE_CALIBRATION, DEFAULT_VIEW_PREFERENCE);
     const first = quaternionFromAxisAngle("x", 45);
     const observation = session.observe(first, 1_000);
