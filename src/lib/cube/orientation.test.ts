@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { Matrix4, Quaternion } from "three";
 import {
   applyMatrix3,
+  CUBE_POSE_GROUP,
   DEFAULT_GYRO_CALIBRATION,
   gyroModelMatrix,
   multiplyMatrix3,
   quaternionMatrix,
   quaternionFromAxisAngle,
   rotationDistanceDeg,
+  snapToCubePose,
   transposeMatrix3,
   DEFAULT_DEVICE_CALIBRATION,
   GAN_V4_BODY_TO_MODEL,
@@ -240,4 +242,33 @@ describe("GAN orientation mapping", () => {
     expect(referenceCurrent?.[1][2]).toBeCloseTo(0.5, 6);
   });
 
+});
+
+describe("cube pose snapping", () => {
+  const yaw = (deg: number): Matrix3 => quaternionMatrix(quaternionFromAxisAngle("y", deg));
+  const near = (a: Matrix3, b: Matrix3) => rotationDistanceDeg(a, b);
+
+  it("contains exactly the 24 legal cube orientations", () => {
+    expect(CUBE_POSE_GROUP).toHaveLength(24);
+  });
+
+  it("snaps pure-yaw poses to the nearest quarter turn", () => {
+    expect(near(snapToCubePose(yaw(0)), yaw(0))).toBeLessThan(1e-9);
+    expect(near(snapToCubePose(yaw(20)), yaw(0))).toBeLessThan(1e-9);
+    expect(near(snapToCubePose(yaw(50)), yaw(90))).toBeLessThan(1e-9);
+    expect(near(snapToCubePose(yaw(180)), yaw(180))).toBeLessThan(1e-9);
+    expect(near(snapToCubePose(yaw(-100)), yaw(-90))).toBeLessThan(1e-9);
+  });
+
+  it("stays within 45 degrees for near-upright poses and bounded for any pose", () => {
+    for (let deg = 0; deg < 360; deg += 15) {
+      for (const tilt of [0, 10, 20, 45, 60, 90]) {
+        const pose = multiplyMatrix3(yaw(deg), quaternionMatrix(quaternionFromAxisAngle("x", tilt)));
+        const distance = near(snapToCubePose(pose), pose);
+        if (tilt <= 20) expect(distance, `yaw ${deg} tilt ${tilt}`).toBeLessThanOrEqual(45 + tilt + 1e-9);
+        // The 24-group covering radius is ~54-63 degrees for arbitrary poses.
+        expect(distance, `yaw ${deg} tilt ${tilt}`).toBeLessThanOrEqual(65);
+      }
+    }
+  });
 });

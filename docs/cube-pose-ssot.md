@@ -104,6 +104,16 @@ Left-multiplying would conjugate every turn by the reference pose.
    error is a constant yaw conjugation), they just do not match the
    physical heading.
 
+   One silent inference is sound: an upright cube (gravity says a face is
+   up) is almost always turned roughly square to its viewer, so at session
+   start an upright first frame is snapped to the nearest of the 24 legal
+   cube orientations — a pure yaw inference, marked as anchor reason
+   `inferred` and counted as aligned. Freely held (non-upright) cubes keep
+   the near-absolute pose and the unaligned affordance. Semantic anchors
+   persist per device and are restored on reconnect while younger than 30
+   minutes; older anchors are dropped because a deep sleep (yaw reset) is
+   then likely.
+
 Runtime state is split into three independent records:
 
 - `DeviceCalibration`: persistent sensor-to-cube mapping, relative order and residuals;

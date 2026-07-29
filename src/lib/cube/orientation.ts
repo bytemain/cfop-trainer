@@ -36,7 +36,7 @@ export interface SessionAnchor {
   sensorReference: CubeQuaternion;
   cubeReference: Matrix3;
   establishedAt: number;
-  reason: "calibration" | "manual" | "session-start" | "sensor-reset" | "restored";
+  reason: "calibration" | "manual" | "session-start" | "sensor-reset" | "restored" | "inferred";
 }
 
 export interface ViewPreference {
@@ -232,6 +232,43 @@ export function rotationDistanceDeg(left: Matrix3, right: Matrix3): number {
   const delta = multiplyMatrix3(left, transposeMatrix3(right));
   const cosine = Math.max(-1, Math.min(1, (delta[0][0] + delta[1][1] + delta[2][2] - 1) / 2));
   return (Math.acos(cosine) * 180) / Math.PI;
+}
+
+// The 24 legal cube orientations (quarter-turn closure around X and Y).
+const QUARTER_X: Matrix3 = [[1, 0, 0], [0, 0, -1], [0, 1, 0]];
+const QUARTER_Y: Matrix3 = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
+const IDENTITY_MATRIX: Matrix3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+export const CUBE_POSE_GROUP: readonly Matrix3[] = (() => {
+  const group: Matrix3[] = [];
+  const seen = new Set<string>();
+  const queue: Matrix3[] = [IDENTITY_MATRIX];
+  while (queue.length > 0) {
+    const candidate = queue.pop()!;
+    const key = candidate.flat().map((value) => value.toFixed(6)).join(",");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    group.push(candidate);
+    queue.push(
+      multiplyMatrix3(QUARTER_X, candidate),
+      multiplyMatrix3(QUARTER_Y, candidate),
+    );
+  }
+  return group;
+})();
+
+/** Snap a pose to the nearest of the 24 legal cube orientations. */
+export function snapToCubePose(pose: Matrix3): Matrix3 {
+  let best = CUBE_POSE_GROUP[0];
+  let bestCosine = -2;
+  for (const candidate of CUBE_POSE_GROUP) {
+    const delta = multiplyMatrix3(candidate, transposeMatrix3(pose));
+    const cosine = (delta[0][0] + delta[1][1] + delta[2][2] - 1) / 2;
+    if (cosine > bestCosine) {
+      bestCosine = cosine;
+      best = candidate;
+    }
+  }
+  return best;
 }
 
 export function gyroModelMatrix(

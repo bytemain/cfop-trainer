@@ -5,6 +5,7 @@ import {
   DEFAULT_VIEW_PREFERENCE,
   gyroModelMatrix,
   quaternionFromAxisAngle,
+  snapToCubePose,
 } from "$lib/cube/orientation";
 import { PoseSession } from "./poseSession";
 
@@ -35,12 +36,25 @@ describe("PoseSession", () => {
   });
 
   it("anchors the first GAN frame to its near-absolute canonical pose", () => {
-    // The identity-grip model constant makes the no-anchor pose near-absolute
-    // (the sensor world frame is reproducible across sessions to ~10 deg), so
-    // tracking is true from the first frame without user calibration.
+    // Upright first frame: the random per-power-cycle yaw is silently
+    // inferred by snapping to the nearest legal cube orientation.
     const session = new PoseSession(DEFAULT_DEVICE_CALIBRATION, DEFAULT_VIEW_PREFERENCE);
     const first = quaternionFromAxisAngle("z", 35);
     const observation = session.observe(first, 1_000);
+    const absolutePose = gyroModelMatrix(first, composeGyroCalibration(
+      DEFAULT_DEVICE_CALIBRATION,
+      null,
+      DEFAULT_VIEW_PREFERENCE,
+    ))!;
+    expect(observation.anchor?.reason).toBe("inferred");
+    expect(observation.anchor?.cubeReference).toEqual(snapToCubePose(absolutePose));
+  });
+
+  it("keeps the near-absolute pose without inference for freely held cubes", () => {
+    const session = new PoseSession(DEFAULT_DEVICE_CALIBRATION, DEFAULT_VIEW_PREFERENCE);
+    const first = quaternionFromAxisAngle("x", 45);
+    const observation = session.observe(first, 1_000);
+    expect(observation.anchor?.reason).toBe("session-start");
     expect(observation.anchor?.cubeReference).toEqual(
       gyroModelMatrix(first, composeGyroCalibration(
         DEFAULT_DEVICE_CALIBRATION,
@@ -48,7 +62,6 @@ describe("PoseSession", () => {
         DEFAULT_VIEW_PREFERENCE,
       )),
     );
-    expect(observation.anchor?.reason).toBe("session-start");
   });
 
   it("rejects an impossible in-cadence jump", () => {

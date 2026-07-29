@@ -423,12 +423,18 @@
                   class="pose-align-chip aligned"
                   title={trainer.sessionAnchor?.reason === "restored"
                     ? "沿用上次的校准基准；魔方休眠过会重置偏航角，发现不符时白上绿前放好按 C 重新对齐"
-                    : "快速校准已将当前白上绿前姿态绑定为标准姿态"}
+                    : trainer.sessionAnchor?.reason === "inferred"
+                      ? "魔方直立，已按最近的标准朝向静默推测对齐；不符时白上绿前放好按 C 精确校准"
+                      : "快速校准已将当前白上绿前姿态绑定为标准姿态"}
                 >
                   <Check size={13} aria-hidden="true" />
-                  {trainer.sessionAnchor?.reason === "restored"
-                    ? "姿态已对齐 · 沿用上次校准 · 不符按 C"
-                    : "姿态已对齐"}
+                  {#if trainer.sessionAnchor?.reason === "restored"}
+                    姿态已对齐 · 沿用上次校准 · 不符按 C
+                  {:else if trainer.sessionAnchor?.reason === "inferred"}
+                    姿态推测对齐 · 不符按 C
+                  {:else}
+                    姿态已对齐
+                  {/if}
                 </span>
               {:else}
                 <button

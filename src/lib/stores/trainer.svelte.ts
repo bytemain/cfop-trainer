@@ -300,7 +300,7 @@ class TrainerStore {
    */
   get poseAligned(): boolean {
     const reason = this.sessionAnchor?.reason;
-    return reason === "manual" || reason === "calibration" || reason === "restored";
+    return reason === "manual" || reason === "calibration" || reason === "restored" || reason === "inferred";
   }
 
   private actor = createActor(trainingMachine);

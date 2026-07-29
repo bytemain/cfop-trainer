@@ -1,6 +1,7 @@
 import {
   gyroModelMatrix,
   normalizeQuaternion,
+  snapToCubePose,
   type DeviceCalibration,
   type Matrix3,
   type SessionAnchor,
@@ -129,20 +130,24 @@ export class PoseSession {
     const current = this.lastAccepted ? alignedTo(this.lastAccepted, value) : normalizeQuaternion(value);
     if (!this.anchor) {
       // Anchor at the near-absolute pose derived from the identity-grip model
-      // constant: the sensor world frame is reproducible across sessions to
-      // within ~10 degrees (measured from stream data), so tracking is
-      // near-true from the first frame. Quick calibration rebinds the anchor
-      // to the current session's own identity-grip reading and removes the
+      // constant. The sensor world frame yaw is random per power cycle, but
+      // gravity still fixes pitch and roll: an upright cube is almost always
+      // turned roughly square to its viewer, so silently snap the inferred
+      // pose to the nearest legal cube orientation (a yaw inference). Freely
+      // held cubes keep the near-absolute pose (gravity-true tilt) and the
+      // unaligned affordance instead. Quick calibration rebinds the anchor to
+      // the current session's own identity-grip reading and removes all
       // residual; sensor-reset reanchoring preserves the last accepted pose.
       const absolutePose = gyroModelMatrix(
         current,
         composeGyroCalibration(this.device, null, this.view),
       ) ?? IDENTITY;
+      const upright = Math.abs(absolutePose[1][1]) >= 0.9;
       this.anchor = {
         sensorReference: current,
-        cubeReference: absolutePose,
+        cubeReference: upright ? snapToCubePose(absolutePose) : absolutePose,
         establishedAt: at,
-        reason: "session-start",
+        reason: upright ? "inferred" : "session-start",
       };
     }
 
