@@ -419,8 +419,16 @@
           <div class="cube-visual-stage">
             {#if trainer.connectedDeviceName && trainer.gyroCalibration.enabled && trainer.gyroQuaternion}
               {#if trainer.poseAligned}
-                <span class="pose-align-chip aligned" title="快速校准已将当前白上绿前姿态绑定为标准姿态">
-                  <Check size={13} aria-hidden="true" /> 姿态已对齐
+                <span
+                  class="pose-align-chip aligned"
+                  title={trainer.sessionAnchor?.reason === "restored"
+                    ? "沿用上次的校准基准；魔方休眠过会重置偏航角，发现不符时白上绿前放好按 C 重新对齐"
+                    : "快速校准已将当前白上绿前姿态绑定为标准姿态"}
+                >
+                  <Check size={13} aria-hidden="true" />
+                  {trainer.sessionAnchor?.reason === "restored"
+                    ? "姿态已对齐 · 沿用上次校准 · 不符按 C"
+                    : "姿态已对齐"}
                 </span>
               {:else}
                 <button

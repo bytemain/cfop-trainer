@@ -78,6 +78,7 @@ const SCRAMBLE_SUFFIXES = ["", "'", "2"] as const;
 const SOLVED_FACELETS = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 const GLOBAL_CUBE_PROFILE_KEY = "cfop-trainer:cube-profile:default";
 const VIEW_PRESET_KEY = "cfop-trainer:view-preset";
+const POSE_ANCHOR_RESTORE_MAX_AGE_MS = 30 * 60_000;
 
 export interface ProtocolValidationStep {
   id: string;
@@ -299,7 +300,7 @@ class TrainerStore {
    */
   get poseAligned(): boolean {
     const reason = this.sessionAnchor?.reason;
-    return reason === "manual" || reason === "calibration";
+    return reason === "manual" || reason === "calibration" || reason === "restored";
   }
 
   private actor = createActor(trainingMachine);
@@ -426,6 +427,7 @@ class TrainerStore {
       await this.closeRealSession();
       this.connectedDeviceId = device.id;
       this.loadDevicePreferences(device.id);
+      this.restorePersistedPoseAnchor();
       const adapter = ganProtocolAdapterFor(device);
       if (!adapter) {
         safeLogger.warn("trainer", "protocol-unsupported", { name: device.name });
@@ -1148,11 +1150,85 @@ class TrainerStore {
     });
   }
 
+  private adoptSessionAnchor(): void {
+    this.sessionAnchor = this.poseSession.currentAnchor();
+    this.poseHealth = this.poseSession.currentHealth();
+    this.persistPoseAnchor();
+  }
+
+  private persistPoseAnchor(): void {
+    if (typeof localStorage === "undefined" || !this.connectedDeviceId) return;
+    const anchor = this.sessionAnchor;
+    if (!anchor || (anchor.reason !== "manual" && anchor.reason !== "calibration")) return;
+    try {
+      localStorage.setItem(
+        `cfop-trainer:cube-profile:${this.connectedDeviceId}:pose-anchor`,
+        JSON.stringify({
+          schemaVersion: 1,
+          sensorReference: anchor.sensorReference,
+          cubeReference: anchor.cubeReference,
+          reason: anchor.reason,
+          at: anchor.establishedAt,
+        }),
+      );
+    } catch {
+      // Storage pressure must never break calibration itself.
+    }
+  }
+
+  private restorePersistedPoseAnchor(): void {
+    if (typeof localStorage === "undefined" || !this.connectedDeviceId) return;
+    const raw = localStorage.getItem(
+      `cfop-trainer:cube-profile:${this.connectedDeviceId}:pose-anchor`,
+    );
+    if (!raw) return;
+    try {
+      const persisted = JSON.parse(raw) as {
+        schemaVersion?: number;
+        sensorReference?: { x: number; y: number; z: number; w: number };
+        cubeReference?: number[][];
+        reason?: string;
+        at?: number;
+      };
+      const q = persisted.sensorReference;
+      const ageMs = Date.now() - (persisted.at ?? 0);
+      // The sensor world frame survives reconnects while the cube stays
+      // powered, but a deep sleep resets its yaw origin; an anchor older than
+      // the sleep threshold would display a garbage pose, so drop it and let
+      // the session-start anchor plus the unaligned chip take over.
+      if (
+        persisted.schemaVersion !== 1 ||
+        !q || ![q.x, q.y, q.z, q.w].every(Number.isFinite) ||
+        !Array.isArray(persisted.cubeReference) ||
+        (persisted.reason !== "manual" && persisted.reason !== "calibration") ||
+        !Number.isFinite(ageMs) || ageMs < 0 || ageMs > POSE_ANCHOR_RESTORE_MAX_AGE_MS
+      ) {
+        return;
+      }
+      this.poseSession.restoreAnchor({
+        sensorReference: q,
+        cubeReference: persisted.cubeReference as [
+          [number, number, number],
+          [number, number, number],
+          [number, number, number],
+        ],
+        establishedAt: persisted.at ?? Date.now(),
+        reason: "restored",
+      });
+      this.adoptSessionAnchor();
+      safeLogger.info("calibration", "pose-anchor-restored", {
+        ageMs: Math.round(ageMs),
+        originalReason: persisted.reason,
+      });
+    } catch {
+      // Corrupt persisted anchors are ignored and recreated on calibration.
+    }
+  }
+
   zeroGyro(): void {
     if (!this.gyroQuaternion) return;
     this.poseSession.manuallyAnchor(this.gyroQuaternion);
-    this.sessionAnchor = this.poseSession.currentAnchor();
-    this.poseHealth = this.poseSession.currentHealth();
+    this.adoptSessionAnchor();
     streamRecorder.record("calibration", {
       event: "manual-anchor",
       quaternion: { ...this.gyroQuaternion },
@@ -1169,8 +1245,7 @@ class TrainerStore {
     this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
     this.poseSession.configure(this.deviceCalibration, this.viewPreference);
     this.poseSession.manuallyAnchor(this.gyroQuaternion);
-    this.sessionAnchor = this.poseSession.currentAnchor();
-    this.poseHealth = this.poseSession.currentHealth();
+    this.adoptSessionAnchor();
     this.persistDevicePreferences();
     safeLogger.info("calibration", "quick-anchor-applied", {
       referencePose: "white-up-green-front",
@@ -1222,7 +1297,7 @@ class TrainerStore {
       };
       this.poseSession.configure(this.deviceCalibration, this.viewPreference);
       this.poseSession.bootstrap(derivedCalibration.zero);
-      this.sessionAnchor = this.poseSession.currentAnchor();
+      this.adoptSessionAnchor();
       this.persistDevicePreferences();
     }
     if (typeof localStorage !== "undefined") {
@@ -1286,7 +1361,7 @@ class TrainerStore {
     this.viewPreference = { ...DEFAULT_VIEW_PREFERENCE };
     this.poseSession.configure(this.deviceCalibration, this.viewPreference);
     this.poseSession.bootstrap(derivedCalibration.zero);
-    this.sessionAnchor = this.poseSession.currentAnchor();
+    this.adoptSessionAnchor();
     this.persistDevicePreferences();
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(
@@ -1715,8 +1790,7 @@ class TrainerStore {
             }
           : { ...DEFAULT_VIEW_PREFERENCE };
       this.poseSession.configure(this.deviceCalibration, this.viewPreference);
-      this.sessionAnchor = this.poseSession.currentAnchor();
-      this.poseHealth = this.poseSession.currentHealth();
+      this.adoptSessionAnchor();
     } catch {
       // Invalid local calibration is ignored and can be recreated in Settings.
     }

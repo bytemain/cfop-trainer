@@ -95,6 +95,29 @@ export class PoseSession {
     this.health = { ...this.health, status: "initializing", message: "已建立新的会话基准" };
   }
 
+  /**
+   * Restore a persisted semantic anchor from a previous app session. The
+   * cube's sensor world frame survives reconnects while it stays powered, so
+   * a recent calibration remains valid across app restarts; the caller is
+   * responsible for not restoring anchors old enough that a deep sleep (yaw
+   * reset) is likely.
+   */
+  restoreAnchor(anchor: SessionAnchor): void {
+    this.anchor = {
+      ...anchor,
+      sensorReference: normalizeQuaternion(anchor.sensorReference),
+    };
+    this.lastAccepted = null;
+    this.lastAcceptedPose = anchor.cubeReference;
+    this.health = {
+      ...this.health,
+      status: "reanchored",
+      message: "已恢复上次校准的姿态基准",
+      lastAcceptedAt: null,
+      lastStepDeg: null,
+    };
+  }
+
   observe(value: CubeQuaternion, at: number): PoseObservation {
     if (!this.device.enabled) return this.result(false, null, "disabled", "陀螺仪跟随已关闭");
     const norm = Math.hypot(value.x, value.y, value.z, value.w);

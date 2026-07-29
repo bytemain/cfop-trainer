@@ -36,7 +36,7 @@ export interface SessionAnchor {
   sensorReference: CubeQuaternion;
   cubeReference: Matrix3;
   establishedAt: number;
-  reason: "calibration" | "manual" | "session-start" | "sensor-reset";
+  reason: "calibration" | "manual" | "session-start" | "sensor-reset" | "restored";
 }
 
 export interface ViewPreference {

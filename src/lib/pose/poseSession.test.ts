@@ -9,6 +9,31 @@ import {
 import { PoseSession } from "./poseSession";
 
 describe("PoseSession", () => {
+  it("restores a persisted anchor and tracks deltas from it", () => {
+    const session = new PoseSession(DEFAULT_DEVICE_CALIBRATION, DEFAULT_VIEW_PREFERENCE);
+    const sensorReference = quaternionFromAxisAngle("z", 20);
+    const cubeReference: [
+      [number, number, number],
+      [number, number, number],
+      [number, number, number],
+    ] = [
+      [0, -1, 0],
+      [1, 0, 0],
+      [0, 0, 1],
+    ];
+    session.restoreAnchor({ sensorReference, cubeReference, establishedAt: 123, reason: "restored" });
+    const observation = session.observe(sensorReference, 1_000);
+    expect(observation.accepted).toBe(true);
+    expect(observation.anchor?.reason).toBe("restored");
+    expect(observation.health.status).not.toBe("initializing");
+    // The first frame after restore renders exactly the persisted cube pose.
+    const rendered = gyroModelMatrix(
+      observation.quaternion!,
+      composeGyroCalibration(DEFAULT_DEVICE_CALIBRATION, observation.anchor, DEFAULT_VIEW_PREFERENCE),
+    );
+    expect(rendered).toEqual(cubeReference);
+  });
+
   it("anchors the first GAN frame to its near-absolute canonical pose", () => {
     // The identity-grip model constant makes the no-anchor pose near-absolute
     // (the sensor world frame is reproducible across sessions to ~10 deg), so
