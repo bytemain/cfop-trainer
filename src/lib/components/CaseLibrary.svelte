@@ -127,13 +127,14 @@
       <span class="library-icon"><BookOpenCheck size={24} /></span>
       <div>
         <span class="eyebrow">Case Library</span>
-        <h1 id="case-library-title">OLL / PLL 定向训练</h1>
+        <h1 id="case-library-title">CFOP Case 定向训练</h1>
         <p>57 个 OLL 与 21 个 PLL 全集。图案由公式逆运算推导，播放公式即可观看 3D 还原过程。当前练习入口仅保存本地准备状态，不生成真机成绩。</p>
       </div>
     </div>
     <div class="kind-switch" aria-label="Case 分类">
       <button class:active={kind === "oll"} aria-pressed={kind === "oll"} onclick={() => selectKind("oll")}>OLL</button>
       <button class:active={kind === "pll"} aria-pressed={kind === "pll"} onclick={() => selectKind("pll")}>PLL</button>
+      <button class:active={kind === "f2l"} aria-pressed={kind === "f2l"} onclick={() => selectKind("f2l")}>F2L</button>
     </div>
   </header>
 

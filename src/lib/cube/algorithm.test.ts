@@ -50,6 +50,8 @@ describe("algorithm execution", () => {
     expect(executeMoves(solved, ["r2"])).toEqual(executeMoves(solved, ["R2", "M2"]));
     expect(executeMoves(solved, ["l'"])).toEqual(executeMoves(solved, ["L'", "M'"]));
     expect(executeMoves(solved, ["u"])).toEqual(executeMoves(solved, ["U", "E'"]));
+    expect(executeMoves(solved, ["d"])).toEqual(executeMoves(solved, ["D", "E"]));
+    expect(executeMoves(solved, ["d'"])).toEqual(executeMoves(solved, ["D'", "E'"]));
     expect(executeMoves(solved, ["d2"])).toEqual(executeMoves(solved, ["D2", "E2"]));
     expect(executeMoves(solved, ["f'"])).toEqual(executeMoves(solved, ["F'", "S'"]));
     expect(executeMoves(solved, ["b"])).toEqual(executeMoves(solved, ["B", "S'"]));
@@ -63,6 +65,9 @@ describe("algorithm execution", () => {
       "x R' U R' D2 R U' R' D2 R2 x'",
       "R' U R' U' y R' F' R2 U' R' U R' F R F",
       "r' R2 U R' U r U2 r' U M'",
+      "y' U' R' U R",
+      "U' R U2' R' U y' R' U' R",
+      "U' R U' R' U y' R' U R",
     ];
     for (const algorithm of algorithms) {
       const tokens = tokenizeAlgorithm(algorithm);

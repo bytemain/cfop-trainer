@@ -5,7 +5,7 @@ import {
   type StickerColor,
 } from "$lib/cube/cube";
 
-export type CaseKind = "oll" | "pll";
+export type CaseKind = "oll" | "pll" | "f2l";
 
 export interface CasePattern {
   /** U-face stickers that show the last-layer color, row-major. */
@@ -32,7 +32,8 @@ export interface CfopCase {
   family: string;
   tags: readonly string[];
   recognition: string;
-  pattern: CasePattern;
+  /** OLL/PLL only: 2D orientation/permutation pattern (F2L uses the full cube state). */
+  pattern?: CasePattern;
   algorithms: readonly CaseAlgorithm[];
   /**
    * Canonical case state in diagram space (yellow up, green front, red
@@ -106,7 +107,9 @@ interface CaseDeclaration {
 function buildCase(declaration: CaseDeclaration): CfopCase {
   const id = declaration.kind === "oll"
     ? `oll-${declaration.number}`
-    : `pll-${declaration.slug ?? declaration.name.toLowerCase().replace(/\s+/g, "")}`;
+    : declaration.kind === "f2l"
+      ? `f2l-${declaration.number}`
+      : `pll-${declaration.slug ?? declaration.name.toLowerCase().replace(/\s+/g, "")}`;
   const cube = deriveCaseCube(declaration.algorithms[0].algorithm);
   return {
     id,
@@ -117,7 +120,7 @@ function buildCase(declaration: CaseDeclaration): CfopCase {
     family: declaration.family,
     tags: declaration.tags ?? [declaration.family, "Full"],
     recognition: declaration.recognition,
-    pattern: derivePattern(declaration.kind, cube),
+    pattern: declaration.kind === "f2l" ? undefined : derivePattern(declaration.kind, cube),
     cube,
     algorithms: declaration.algorithms.map((algorithm, index) => ({
       id: `${id}-${String.fromCharCode(97 + index)}`,
@@ -132,6 +135,8 @@ const oll = (declaration: Omit<CaseDeclaration, "kind">) =>
   buildCase({ ...declaration, kind: "oll" });
 const pll = (declaration: Omit<CaseDeclaration, "kind">) =>
   buildCase({ ...declaration, kind: "pll" });
+const f2l = (declaration: Omit<CaseDeclaration, "kind">) =>
+  buildCase({ ...declaration, kind: "f2l" });
 
 export const CASE_LIBRARY: readonly CfopCase[] = [
   // ------------------------------------------------------------- OLL 1-20 点形
@@ -645,6 +650,340 @@ export const CASE_LIBRARY: readonly CfopCase[] = [
     tags: ["G形", "相邻角交换", "三棱循环"],
     recognition: "G 形：车灯在左侧的 G 字轮廓；一对邻角交换 + 三棱循环。",
     algorithms: [{ algorithm: "R U R' U' D R2 U' R U' R' U R' U R2 D'" }],
+  }),
+  // ------------------------------------------------------------- F2L 41 case
+  f2l({
+    number: 1, name: "基本插入 1", aliases: ["F2L 1", "Basic Insert 1"],
+    family: "基本插入",
+    recognition: "角棱已正确连接，直接推入右前槽。",
+    algorithms: [
+      { algorithm: "U R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 2, name: "基本插入 2", aliases: ["F2L 2", "Basic Insert 2"],
+    family: "基本插入",
+    recognition: "角棱已正确连接，直接推入右前槽。",
+    algorithms: [
+      { algorithm: "y' U' R' U R" },
+      { algorithm: "y U' L' U L" },
+    ],
+  }),
+  f2l({
+    number: 3, name: "基本插入 3", aliases: ["F2L 3", "Basic Insert 3"],
+    family: "基本插入",
+    recognition: "角棱已正确连接，直接推入右前槽。",
+    algorithms: [
+      { algorithm: "y' R' U' R" },
+      { algorithm: "y L' U' L" },
+    ],
+  }),
+  f2l({
+    number: 4, name: "基本插入 4", aliases: ["F2L 4", "Basic Insert 4"],
+    family: "基本插入",
+    recognition: "角棱已正确连接，直接推入右前槽。",
+    algorithms: [
+      { algorithm: "R U R'" },
+    ],
+  }),
+  f2l({
+    number: 5, name: "异面向上 5", aliases: ["F2L 5", "Different Facing Up 5"],
+    family: "异面向上",
+    recognition: "角块与棱块都在顶层但朝向不同，先调整连接再入槽。",
+    algorithms: [
+      { algorithm: "U' R U' R' U y' R' U' R" },
+    ],
+  }),
+  f2l({
+    number: 6, name: "异面向上 6", aliases: ["F2L 6", "Different Facing Up 6"],
+    family: "异面向上",
+    recognition: "角块与棱块都在顶层但朝向不同，先调整连接再入槽。",
+    algorithms: [
+      { algorithm: "U' R U R' U R U R'" },
+    ],
+  }),
+  f2l({
+    number: 7, name: "异面向上 7", aliases: ["F2L 7", "Different Facing Up 7"],
+    family: "异面向上",
+    recognition: "角块与棱块都在顶层但朝向不同，先调整连接再入槽。",
+    algorithms: [
+      { algorithm: "U' R U2' R' U y' R' U' R" },
+      { algorithm: "U' R U2' R' d R' U' R" },
+    ],
+  }),
+  f2l({
+    number: 8, name: "异面向上 8", aliases: ["F2L 8", "Different Facing Up 8"],
+    family: "异面向上",
+    recognition: "角块与棱块都在顶层但朝向不同，先调整连接再入槽。",
+    algorithms: [
+      { algorithm: "R' U2' R2 U R2' U R" },
+    ],
+  }),
+  f2l({
+    number: 9, name: "异面向上 9", aliases: ["F2L 9", "Different Facing Up 9"],
+    family: "异面向上",
+    recognition: "角块与棱块都在顶层但朝向不同，先调整连接再入槽。",
+    algorithms: [
+      { algorithm: "y' U R' U R U' R' U' R" },
+    ],
+  }),
+  f2l({
+    number: 10, name: "异面向上 10", aliases: ["F2L 10", "Different Facing Up 10"],
+    family: "异面向上",
+    recognition: "角块与棱块都在顶层但朝向不同，先调整连接再入槽。",
+    algorithms: [
+      { algorithm: "U' R U' R' U R U R'" },
+    ],
+  }),
+  f2l({
+    number: 11, name: "同面向上 11", aliases: ["F2L 11", "Same Facing Up 11"],
+    family: "同面向上",
+    recognition: "角棱同在顶层且同向，用 U 调整即可连接入槽。",
+    algorithms: [
+      { algorithm: "U' R U R' U2 R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 12, name: "同面向上 12", aliases: ["F2L 12", "Same Facing Up 12"],
+    family: "同面向上",
+    recognition: "角棱同在顶层且同向，用 U 调整即可连接入槽。",
+    algorithms: [
+      { algorithm: "y' U R' U' R U2' R' U R" },
+      { algorithm: "d R' U' R U2' R' U R" },
+    ],
+  }),
+  f2l({
+    number: 13, name: "同面向上 13", aliases: ["F2L 13", "Same Facing Up 13"],
+    family: "同面向上",
+    recognition: "角棱同在顶层且同向，用 U 调整即可连接入槽。",
+    algorithms: [
+      { algorithm: "U' R U2' R' U2 R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 14, name: "同面向上 14", aliases: ["F2L 14", "Same Facing Up 14"],
+    family: "同面向上",
+    recognition: "角棱同在顶层且同向，用 U 调整即可连接入槽。",
+    algorithms: [
+      { algorithm: "y' U R' U2 R U2' R' U R" },
+      { algorithm: "d R' U2 R U2' R' U R" },
+    ],
+  }),
+  f2l({
+    number: 15, name: "白面向上 15", aliases: ["F2L 15", "White Facing Up 15"],
+    family: "白面向上",
+    recognition: "角块白色朝上，先藏角再连接棱块入槽。",
+    algorithms: [
+      { algorithm: "U R U2 R' U R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 16, name: "白面向上 16", aliases: ["F2L 16", "White Facing Up 16"],
+    family: "白面向上",
+    recognition: "角块白色朝上，先藏角再连接棱块入槽。",
+    algorithms: [
+      { algorithm: "y' U' R' U2 R U' R' U R" },
+    ],
+  }),
+  f2l({
+    number: 17, name: "白面向上 17", aliases: ["F2L 17", "White Facing Up 17"],
+    family: "白面向上",
+    recognition: "角块白色朝上，先藏角再连接棱块入槽。",
+    algorithms: [
+      { algorithm: "U2 R U R' U R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 18, name: "白面向上 18", aliases: ["F2L 18", "White Facing Up 18"],
+    family: "白面向上",
+    recognition: "角块白色朝上，先藏角再连接棱块入槽。",
+    algorithms: [
+      { algorithm: "y' U2 R' U' R U' R' U R" },
+    ],
+  }),
+  f2l({
+    number: 19, name: "错误连接 19", aliases: ["F2L 19", "Incorrectly Connected 19"],
+    family: "错误连接",
+    recognition: "角棱已连接但相对位置错误，先拆开再重新连接。",
+    algorithms: [
+      { algorithm: "y' R' U R U2' y R U R'" },
+    ],
+  }),
+  f2l({
+    number: 20, name: "错误连接 20", aliases: ["F2L 20", "Incorrectly Connected 20"],
+    family: "错误连接",
+    recognition: "角棱已连接但相对位置错误，先拆开再重新连接。",
+    algorithms: [
+      { algorithm: "R U' R' U2 y' R' U' R" },
+    ],
+  }),
+  f2l({
+    number: 21, name: "错误连接 21", aliases: ["F2L 21", "Incorrectly Connected 21"],
+    family: "错误连接",
+    recognition: "角棱已连接但相对位置错误，先拆开再重新连接。",
+    algorithms: [
+      { algorithm: "R U2 R' U' R U R'" },
+    ],
+  }),
+  f2l({
+    number: 22, name: "错误连接 22", aliases: ["F2L 22", "Incorrectly Connected 22"],
+    family: "错误连接",
+    recognition: "角棱已连接但相对位置错误，先拆开再重新连接。",
+    algorithms: [
+      { algorithm: "y' R' U2 R U R' U' R" },
+    ],
+  }),
+  f2l({
+    number: 23, name: "错误连接 23", aliases: ["F2L 23", "Incorrectly Connected 23"],
+    family: "错误连接",
+    recognition: "角棱已连接但相对位置错误，先拆开再重新连接。",
+    algorithms: [
+      { algorithm: "U R U' R' U' R U' R' U R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 24, name: "错误连接 24", aliases: ["F2L 24", "Incorrectly Connected 24"],
+    family: "错误连接",
+    recognition: "角棱已连接但相对位置错误，先拆开再重新连接。",
+    algorithms: [
+      { algorithm: "y' U' R' U R U R' U R U' R' U R" },
+    ],
+  }),
+  f2l({
+    number: 25, name: "角在棱出 25", aliases: ["F2L 25", "Corner In Edge Out 25"],
+    family: "角在棱出",
+    recognition: "角块已在槽内但棱块在外，先取出角块再连接入槽。",
+    algorithms: [
+      { algorithm: "U' F' R U R' U' R' F R" },
+    ],
+  }),
+  f2l({
+    number: 26, name: "角在棱出 26", aliases: ["F2L 26", "Corner In Edge Out 26"],
+    family: "角在棱出",
+    recognition: "角块已在槽内但棱块在外，先取出角块再连接入槽。",
+    algorithms: [
+      { algorithm: "U R U' R' U' F' U F" },
+    ],
+  }),
+  f2l({
+    number: 27, name: "角在棱出 27", aliases: ["F2L 27", "Corner In Edge Out 27"],
+    family: "角在棱出",
+    recognition: "角块已在槽内但棱块在外，先取出角块再连接入槽。",
+    algorithms: [
+      { algorithm: "R U' R' U R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 28, name: "角在棱出 28", aliases: ["F2L 28", "Corner In Edge Out 28"],
+    family: "角在棱出",
+    recognition: "角块已在槽内但棱块在外，先取出角块再连接入槽。",
+    algorithms: [
+      { algorithm: "y' R' U R U' R' U R" },
+    ],
+  }),
+  f2l({
+    number: 29, name: "角在棱出 29", aliases: ["F2L 29", "Corner In Edge Out 29"],
+    family: "角在棱出",
+    recognition: "角块已在槽内但棱块在外，先取出角块再连接入槽。",
+    algorithms: [
+      { algorithm: "y' R' U' R U R' U' R" },
+    ],
+  }),
+  f2l({
+    number: 30, name: "角在棱出 30", aliases: ["F2L 30", "Corner In Edge Out 30"],
+    family: "角在棱出",
+    recognition: "角块已在槽内但棱块在外，先取出角块再连接入槽。",
+    algorithms: [
+      { algorithm: "R U R' U' R U R'" },
+    ],
+  }),
+  f2l({
+    number: 31, name: "棱在角出 31", aliases: ["F2L 31", "Edge In Corner Out 31"],
+    family: "棱在角出",
+    recognition: "棱块已在槽内但角块在外，先取出棱块再连接入槽。",
+    algorithms: [
+      { algorithm: "R U' R' U y' R' U R" },
+    ],
+  }),
+  f2l({
+    number: 32, name: "棱在角出 32", aliases: ["F2L 32", "Edge In Corner Out 32"],
+    family: "棱在角出",
+    recognition: "棱块已在槽内但角块在外，先取出棱块再连接入槽。",
+    algorithms: [
+      { algorithm: "U R U' R' U R U' R' U R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 33, name: "棱在角出 33", aliases: ["F2L 33", "Edge In Corner Out 33"],
+    family: "棱在角出",
+    recognition: "棱块已在槽内但角块在外，先取出棱块再连接入槽。",
+    algorithms: [
+      { algorithm: "U' R U' R' U2 R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 34, name: "棱在角出 34", aliases: ["F2L 34", "Edge In Corner Out 34"],
+    family: "棱在角出",
+    recognition: "棱块已在槽内但角块在外，先取出棱块再连接入槽。",
+    algorithms: [
+      { algorithm: "U R U R' U2 R U R'" },
+    ],
+  }),
+  f2l({
+    number: 35, name: "棱在角出 35", aliases: ["F2L 35", "Edge In Corner Out 35"],
+    family: "棱在角出",
+    recognition: "棱块已在槽内但角块在外，先取出棱块再连接入槽。",
+    algorithms: [
+      { algorithm: "U' R U R' U y' R' U' R" },
+    ],
+  }),
+  f2l({
+    number: 36, name: "棱在角出 36", aliases: ["F2L 36", "Edge In Corner Out 36"],
+    family: "棱在角出",
+    recognition: "棱块已在槽内但角块在外，先取出棱块再连接入槽。",
+    algorithms: [
+      { algorithm: "U F' U' F U' R U R'" },
+    ],
+  }),
+  f2l({
+    number: 37, name: "均在槽内 37", aliases: ["F2L 37", "Both In Slot 37"],
+    family: "均在槽内",
+    recognition: "角棱都在槽内但位置或朝向错误，取出后重新连接。",
+    algorithms: [
+      { algorithm: "R U' R' d R' U2 R U2' R' U R" },
+    ],
+  }),
+  f2l({
+    number: 38, name: "均在槽内 38", aliases: ["F2L 38", "Both In Slot 38"],
+    family: "均在槽内",
+    recognition: "角棱都在槽内但位置或朝向错误，取出后重新连接。",
+    algorithms: [
+      { algorithm: "R U' R' U' R U R' U2 R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 39, name: "均在槽内 39", aliases: ["F2L 39", "Both In Slot 39"],
+    family: "均在槽内",
+    recognition: "角棱都在槽内但位置或朝向错误，取出后重新连接。",
+    algorithms: [
+      { algorithm: "R U' R' U R U2' R' U R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 40, name: "均在槽内 40", aliases: ["F2L 40", "Both In Slot 40"],
+    family: "均在槽内",
+    recognition: "角棱都在槽内但位置或朝向错误，取出后重新连接。",
+    algorithms: [
+      { algorithm: "F' U F U2 R U R' U R U' R'" },
+    ],
+  }),
+  f2l({
+    number: 41, name: "均在槽内 41", aliases: ["F2L 41", "Both In Slot 41"],
+    family: "均在槽内",
+    recognition: "角棱都在槽内但位置或朝向错误，取出后重新连接。",
+    algorithms: [
+      { algorithm: "R U R' U' R U' R' U2 y' R' U' R" },
+    ],
   }),
 ];
 

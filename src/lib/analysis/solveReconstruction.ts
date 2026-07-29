@@ -70,7 +70,11 @@ function preferredAlgorithm(item: CfopCase): string[] {
     ?? candidates[0];
 }
 
-const KNOWN_CASE_ALGORITHMS = CASE_LIBRARY.map((item) => ({
+// Solve reconstruction only recognizes last-layer phases; F2L cases are not
+// phase signatures.
+const KNOWN_CASE_ALGORITHMS = CASE_LIBRARY.filter(
+  (item): item is CfopCase & { kind: "oll" | "pll" } => item.kind !== "f2l",
+).map((item) => ({
   kind: item.kind,
   id: item.id,
   name: item.name,

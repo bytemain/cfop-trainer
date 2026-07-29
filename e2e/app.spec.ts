@@ -185,7 +185,7 @@ test("browses, filters and prepares an OLL or PLL case", async ({ page }, testIn
   const navigation = isMobile ? page.locator(".bottom-navigation") : page.locator(".navigation-rail");
   await navigation.getByRole("button", { name: "Case" }).click();
 
-  await expect(page.getByRole("heading", { name: "OLL / PLL 定向训练" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "CFOP Case 定向训练" })).toBeVisible();
   if (isMobile) await page.getByRole("button", { name: "查看 OLL 27 Sune" }).click();
   await expect(page.getByRole("heading", { name: "Sune" })).toBeVisible();
   await expect(page.getByLabel("Sune 标准图案，黄色顶面朝上，绿色面朝前")).toBeVisible();
@@ -218,7 +218,7 @@ test("uses the correct responsive navigation without horizontal overflow", async
 
   const navigation = isMobile ? page.locator(".bottom-navigation") : page.locator(".navigation-rail");
   await navigation.getByRole("button", { name: "Case" }).click();
-  await expect(page.getByRole("heading", { name: "OLL / PLL 定向训练" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "CFOP Case 定向训练" })).toBeVisible();
   await navigation.getByRole("button", { name: "设置" }).click();
   await expect(page.getByRole("heading", { name: "训练设置" })).toBeVisible();
 });

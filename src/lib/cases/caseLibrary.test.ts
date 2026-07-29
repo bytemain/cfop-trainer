@@ -12,6 +12,7 @@ import {
 
 const ollCases = CASE_LIBRARY.filter((item) => item.kind === "oll");
 const pllCases = CASE_LIBRARY.filter((item) => item.kind === "pll");
+const f2lCases = CASE_LIBRARY.filter((item) => item.kind === "f2l");
 
 function lastLayerColor(item: CfopCase): string {
   return item.cube.U[4];
@@ -44,19 +45,24 @@ function aufSignature(state: CubeState): string {
 }
 
 describe("case library", () => {
-  it("ships the complete 57 OLL and 21 PLL case sets", () => {
+  it("ships the complete 57 OLL, 21 PLL and 41 F2L case sets", () => {
     expect(ollCases.map((item) => item.number).sort((a, b) => a - b))
       .toEqual(Array.from({ length: 57 }, (_, index) => index + 1));
     expect(pllCases).toHaveLength(21);
     expect(new Set(pllCases.map((item) => item.name)).size).toBe(21);
-    expect(new Set(CASE_LIBRARY.map((item) => item.id)).size).toBe(78);
+    expect(f2lCases.map((item) => item.number).sort((a, b) => a - b))
+      .toEqual(Array.from({ length: 41 }, (_, index) => index + 1));
+    expect(new Set(f2lCases.map((item) => item.family)).size).toBe(8);
+    expect(new Set(CASE_LIBRARY.map((item) => item.id)).size).toBe(119);
   });
 
   it("ships structurally complete patterns and at least one algorithm per case", () => {
     for (const item of CASE_LIBRARY) {
-      expect(item.pattern.top, item.id).toHaveLength(9);
-      expect(item.pattern.ring, item.id).toHaveLength(12);
-      if (item.kind === "pll") expect(item.pattern.ringColors, item.id).toHaveLength(12);
+      if (item.kind !== "f2l") {
+        expect(item.pattern?.top, item.id).toHaveLength(9);
+        expect(item.pattern?.ring, item.id).toHaveLength(12);
+        if (item.kind === "pll") expect(item.pattern?.ringColors, item.id).toHaveLength(12);
+      }
       expect(item.algorithms.length, item.id).toBeGreaterThan(0);
       expect(item.algorithms.every((algorithm) => algorithmMoves(algorithm).length > 0), item.id).toBe(true);
     }
@@ -90,6 +96,26 @@ describe("case library", () => {
   it("keeps PLL cases distinct up to AUF", () => {
     const signatures = pllCases.map((item) => aufSignature(item.cube));
     expect(new Set(signatures).size).toBe(pllCases.length);
+  });
+
+  it("derives F2L cases whose every listed algorithm solves the cube", () => {
+    for (const item of f2lCases) {
+      for (const algorithm of item.algorithms) {
+        const solved = executeMoves(item.cube, algorithmMoves(algorithm));
+        expect(isSolved(solved), `${item.id} ${algorithm.id}`).toBe(true);
+      }
+    }
+  });
+
+  it("keeps F2L cases distinct up to U rotation", () => {
+    const signatures = f2lCases.map((item) => aufSignature(item.cube));
+    const unique = new Set(signatures);
+    if (unique.size !== f2lCases.length) {
+      const collisions = f2lCases.filter(
+        (item, index) => signatures.indexOf(signatures[index]) !== index,
+      );
+      throw new Error(`duplicate F2L cases: ${collisions.map((item) => item.id).join(", ")}`);
+    }
   });
 
   it("matches the OLL edge-orientation class of every case number", () => {
