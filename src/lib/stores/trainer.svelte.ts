@@ -237,6 +237,8 @@ class TrainerStore {
   crossColor = $state<StickerColor>("white");
   connectedDeviceName = $state<string | null>(null);
   battery = $state<number | null>(null);
+  /** Last 0xED snapshot broadcast seen; the cube emits these even while stationary. */
+  lastSnapshotAt = $state<number | null>(null);
   firmwareVersion = $state("unknown");
   hardwareVersion = $state("unknown");
   demoPlaying = $state(false);
@@ -1452,6 +1454,7 @@ class TrainerStore {
     this.session = null;
     this.connectedDeviceName = null;
     this.battery = null;
+    this.lastSnapshotAt = null;
     this.firmwareVersion = "unknown";
     this.hardwareVersion = "unknown";
     this.lastCubeSequence = undefined;
@@ -1606,6 +1609,9 @@ class TrainerStore {
       bytes: event.bytes.slice(),
     };
     this.signalFrameSerial += 1;
+    if (event.packetType === "snapshot") {
+      this.lastSnapshotAt = event.receivedAt;
+    }
     if (event.protocol === "v4") {
       this.protocolDiagnostics = this.protocolInspector.observe(event);
     }

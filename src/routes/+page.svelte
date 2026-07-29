@@ -71,6 +71,16 @@
       : Math.max(0, poseClockNow - trainer.poseHealth.lastAcceptedAt),
   );
   const poseStreamFresh = $derived(poseStreamAgeMs <= 1_500);
+  // The cube stops emitting pose frames when stationary but keeps broadcasting
+  // 0xED snapshots, so a stale pose with a fresh snapshot heartbeat means
+  // "still", not "interrupted"; the last pose stays valid while stationary.
+  const snapshotStreamFresh = $derived(
+    trainer.lastSnapshotAt !== null &&
+      Math.max(0, poseClockNow - trainer.lastSnapshotAt) <= 4_000,
+  );
+  const poseStreamState = $derived(
+    poseStreamFresh ? "live" : snapshotStreamFresh ? "still" : "stale",
+  );
   const quickCalibrationReady = $derived(
     Boolean(trainer.connectedDeviceName) &&
     Boolean(trainer.gyroQuaternion) &&
@@ -124,14 +134,32 @@
   const batteryLabel = $derived(
     trainer.battery === null ? "电量 —" : `电量 ${trainer.battery}%`,
   );
-  const poseStreamTone = $derived(poseStreamFresh ? "success" : "warning");
+  const poseStreamTone = $derived(
+    poseStreamFresh ? "success" : poseStreamState === "still" ? "neutral" : "warning",
+  );
   const poseStreamLatencyLabel = $derived(
     `${Math.min(999, Math.max(0, Math.round(poseStreamAgeMs)))}ms`,
   );
+  const formatPoseAge = (ms: number): string => {
+    const seconds = ms / 1_000;
+    if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
+    const minutes = seconds / 60;
+    if (minutes < 60) return `${minutes.toFixed(0)} 分钟`;
+    return `${(minutes / 60).toFixed(1)} 小时`;
+  };
   const poseStreamStaleLabel = $derived(
-    Number.isFinite(poseStreamAgeMs)
-      ? `姿态中断 · ${(poseStreamAgeMs / 1_000).toFixed(1)}s`
-      : "姿态等待",
+    !Number.isFinite(poseStreamAgeMs)
+      ? "姿态等待"
+      : poseStreamState === "still"
+        ? "姿态静止 · 保持最后姿态"
+        : `姿态中断 · ${formatPoseAge(poseStreamAgeMs)}`,
+  );
+  const poseStreamCompactLabel = $derived(
+    !Number.isFinite(poseStreamAgeMs)
+      ? "—"
+      : poseStreamState === "still"
+        ? "静止"
+        : formatPoseAge(poseStreamAgeMs),
   );
 
   const sessionLabel = $derived(
@@ -321,13 +349,19 @@
           </StatusPill>
           {#if trainer.gyroCalibration.enabled}
             <StatusPill tone={poseStreamTone}>
-              {#if poseStreamFresh}<Activity size={15} />{:else}<CircleAlert size={15} />{/if}
+              {#if poseStreamFresh}
+                <Activity size={15} />
+              {:else if poseStreamState === "still"}
+                <Pause size={15} />
+              {:else}
+                <CircleAlert size={15} />
+              {/if}
               {#if poseStreamFresh}
                 <span class="telemetry-full">姿态实时 · <span class="pose-latency">{poseStreamLatencyLabel}</span></span>
                 <span class="telemetry-compact pose-latency">{poseStreamLatencyLabel}</span>
               {:else}
                 <span class="telemetry-full">{poseStreamStaleLabel}</span>
-                <span class="telemetry-compact">{Number.isFinite(poseStreamAgeMs) ? `${(poseStreamAgeMs / 1_000).toFixed(1)}s` : "—"}</span>
+                <span class="telemetry-compact">{poseStreamCompactLabel}</span>
               {/if}
             </StatusPill>
           {/if}
