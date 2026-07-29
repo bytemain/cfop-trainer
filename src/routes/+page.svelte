@@ -25,7 +25,6 @@
     SkipForward,
     Smartphone,
     Sparkles,
-    TimerReset,
   } from "lucide-svelte";
   import Cube3D from "$lib/components/Cube3D.svelte";
   import CubeNet from "$lib/components/CubeNet.svelte";
@@ -492,7 +491,9 @@
                 {#if trainer.hadDesync}<ShieldAlert size={14} /> 数据降级{:else}<Check size={14} /> 状态可信{/if}
               </StatusPill>
               <span>{trainer.eventCount} moves</span>
-              <span>首步开始 · Solved 停止</span>
+              <span>F2L {trainer.facts.solvedF2lSlots}/4</span>
+              <span>OLL {trainer.facts.ollSolved ? "✓" : "—"}</span>
+              <span>最后 {trainer.lastMove ?? "—"}</span>
             </div>
           </div>
 
@@ -500,53 +501,8 @@
             <p class="quick-calibration-status">{quickCalibrationStatus}</p>
           {/if}
 
-          <div class="primary-actions">
-            <button class="primary-button" onclick={primaryAction} disabled={scrambleBlocked}>
-              <Sparkles size={19} />
-              {primaryLabel}
-            </button>
-          </div>
-        </section>
-
-        <aside class="insight-column">
-          <section class="workspace-card guide-card">
-            <div class="section-heading compact-heading">
-              <div>
-                <span class="eyebrow">动作引导</span>
-                <h2>打乱序列</h2>
-              </div>
-            </div>
-
-            {#if trainer.connectedDeviceName}
-              <div class="scramble-readiness" aria-label="打乱前置条件">
-                <span class:ok={trainer.facts.cubeSolved}>
-                  {#if trainer.facts.cubeSolved}
-                    <Check size={13} aria-hidden="true" /> 实体魔方已还原
-                  {:else}
-                    <CircleAlert size={13} aria-hidden="true" /> 请先还原实体魔方
-                  {/if}
-                </span>
-                {#if trainer.poseAligned}
-                  {#if scrambleOrientationOk}
-                    <span class="ok"><Check size={13} aria-hidden="true" /> 朝向白上绿前</span>
-                  {:else if livePoseRecognition}
-                    <span>
-                      <CircleAlert size={13} aria-hidden="true" />
-                      请白上绿前放置（当前{COLOR_LABELS[livePoseRecognition.topColor]}上{COLOR_LABELS[livePoseRecognition.frontColor]}前）
-                    </span>
-                  {/if}
-                {:else}
-                  <span class="muted">姿态未对齐，无法校验朝向（按 C 对齐）</span>
-                {/if}
-              </div>
-            {/if}
-
-            {#if trainer.scramble.length === 0}
-              <div class="empty-guide">
-                <TimerReset size={32} />
-                <p>生成一条打乱，然后按照序列转动实体魔方。</p>
-              </div>
-            {:else}
+          {#if trainer.scramble.length > 0}
+            <div class="scramble-zone" aria-label="打乱引导">
               <div class="algorithm-line" aria-label="打乱公式">
                 {#each trainer.scramble as move, index}
                   <span
@@ -605,49 +561,32 @@
                   </button>
                 </div>
               {/if}
-            {/if}
-          </section>
-
-          <section class="metrics-grid">
-            <article class="metric-card">
-              <span>当前阶段</span>
-              <strong>{PHASE_LABELS[trainer.phase]}</strong>
-              <small>{trainer.facts.crossSolved ? "Cross 已稳定" : "Cross 未完成"}</small>
-            </article>
-            <article class="metric-card">
-              <span>F2L Slots</span>
-              <strong>{trainer.facts.solvedF2lSlots}/4</strong>
-              <small>按 cubie 状态计算</small>
-            </article>
-            <article class="metric-card">
-              <span>OLL</span>
-              <strong>{trainer.facts.ollSolved ? "Done" : "—"}</strong>
-              <small>Case index 待接入</small>
-            </article>
-            <article class="metric-card">
-              <span>最后动作</span>
-              <strong class="algorithm-value">{trainer.lastMove ?? "—"}</strong>
-              <small>结构化 move event</small>
-            </article>
-          </section>
-
-          <section class="workspace-card architecture-card">
-            <div class="section-heading compact-heading">
-              <div>
-                <span class="eyebrow">技术闸门</span>
-                <h2>真实 GAN 协议</h2>
-              </div>
-              <Activity size={21} />
             </div>
-            <ul>
-              <li><Check size={16} /> BLE transport 已隔离</li>
-              <li><Check size={16} /> sequence gap / resync 状态已建模</li>
-              <li><Check size={16} /> SQLite migration 已注册</li>
-              <li><Check size={16} /> GAN16 ui V4 AES decoder 已接入</li>
-              <li><CircleAlert size={16} /> V1/V2/V3 留待对应真机验证</li>
-            </ul>
-          </section>
-        </aside>
+          {/if}
+
+          {#if scrambleBlocked}
+            <div class="scramble-readiness" aria-label="打乱前置条件">
+              {#if !trainer.facts.cubeSolved}
+                <span><CircleAlert size={13} aria-hidden="true" /> 请先还原实体魔方</span>
+              {/if}
+              {#if trainer.poseAligned && !scrambleOrientationOk && livePoseRecognition}
+                <span>
+                  <CircleAlert size={13} aria-hidden="true" />
+                  请白上绿前放置（当前{COLOR_LABELS[livePoseRecognition.topColor]}上{COLOR_LABELS[livePoseRecognition.frontColor]}前）
+                </span>
+              {:else if !trainer.poseAligned && trainer.connectedDeviceName}
+                <span class="muted">姿态未对齐，无法校验朝向（按 C 对齐）</span>
+              {/if}
+            </div>
+          {/if}
+
+          <div class="primary-actions">
+            <button class="primary-button" onclick={primaryAction} disabled={scrambleBlocked}>
+              <Sparkles size={19} />
+              {primaryLabel}
+            </button>
+          </div>
+        </section>
       </div>
     {:else if activeSection === "cases"}
       <CaseLibrary stickerPalette={trainer.stickerPalette} />
@@ -1297,8 +1236,10 @@
 
   .training-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1.45fr) minmax(310px, 0.75fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 18px;
+    width: min(100%, 860px);
+    margin-inline: auto;
     align-items: start;
   }
   .workspace-card,
@@ -1309,7 +1250,7 @@
     box-shadow: 0 20px 50px rgb(0 0 0 / 0.12);
   }
   .workspace-card { border-radius: 24px; }
-  .cube-workspace { min-height: 650px; padding: 22px; }
+  .cube-workspace { padding: 22px; }
   .cube-visual-stage { position: relative; }
   .pose-align-chip {
     position: absolute;
@@ -1372,10 +1313,8 @@
     gap: 16px;
   }
   .section-heading h1,
-  .section-heading h2,
   .placeholder-page h1 { margin: 4px 0 0; letter-spacing: -0.04em; }
   .section-heading h1 { font-size: 1.55rem; }
-  .section-heading h2 { font-size: 1rem; }
   .eyebrow {
     color: var(--color-primary);
     font-size: 0.68rem;
@@ -1393,18 +1332,21 @@
   .timer-meta { justify-content: center; flex-wrap: wrap; gap: 12px; color: var(--color-text-muted); font-size: 0.72rem; }
   .primary-actions { justify-content: center; gap: 9px; padding-top: 4px; }
 
-  .insight-column { display: grid; gap: 14px; }
-  .guide-card,
-  .architecture-card { padding: 18px; }
   .compact-heading { align-items: center; }
-  .empty-guide {
+  .scramble-zone {
     display: grid;
-    place-items: center;
-    min-height: 150px;
-    color: var(--color-text-muted);
-    text-align: center;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 18px;
+    background: var(--color-surface-high);
+    animation: scramble-zone-in 200ms ease-out;
   }
-  .empty-guide p { max-width: 220px; margin: 10px 0 0; font-size: 0.82rem; }
+  @keyframes scramble-zone-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+  }
   .algorithm-line {
     display: flex;
     flex-wrap: wrap;
@@ -1447,11 +1389,6 @@
     background: color-mix(in srgb, rgb(255 214 130 / 0.9) 14%, var(--color-surface-high));
     font-size: 0.68rem;
     font-weight: 700;
-  }
-  .scramble-readiness span.ok {
-    border-color: rgb(114 215 167 / 0.4);
-    color: var(--color-success);
-    background: color-mix(in srgb, var(--color-surface-high) 88%, transparent);
   }
   .scramble-readiness span.muted {
     border-color: var(--color-outline-soft);
@@ -1505,16 +1442,7 @@
   .player-toggle { color: var(--color-on-primary); border-color: var(--color-primary); background: var(--color-primary); }
   .player-reset { padding-inline: 12px; color: var(--color-text-muted); }
 
-  .metrics-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-  .metric-card { display: grid; gap: 4px; min-height: 112px; padding: 14px; border-radius: 18px; }
-  .metric-card span { color: var(--color-text-muted); font-size: 0.7rem; }
-  .metric-card strong { align-self: end; font-size: 1.45rem; letter-spacing: -0.05em; }
-  .metric-card small { color: var(--color-text-muted); font-size: 0.65rem; }
-  .metric-card .algorithm-value { font-family: "SFMono-Regular", Consolas, monospace; }
-  .architecture-card ul { display: grid; gap: 10px; margin: 16px 0 0; padding: 0; list-style: none; }
-  .architecture-card li { display: flex; align-items: center; gap: 8px; color: var(--color-text-muted); font-size: 0.76rem; }
-  .architecture-card li :global(svg) { flex: 0 0 auto; color: var(--color-primary); }
-  .architecture-card li:last-child :global(svg) { color: var(--color-warning); }
+
 
   .placeholder-page {
     display: grid;
@@ -1711,8 +1639,6 @@
 
   @media (max-width: 1100px) {
     .training-layout { grid-template-columns: 1fr; }
-    .insight-column { grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr); }
-    .metrics-grid { grid-row: span 2; }
   }
 
   @media (max-width: 839px) {
@@ -1720,7 +1646,6 @@
     .top-app-bar { padding: 0 14px; }
     .navigation-rail { top: 64px; height: calc(100vh - 64px); padding-inline: 7px; }
     .content { padding: 14px 14px 28px; }
-    .insight-column { grid-template-columns: 1fr; }
     .cube-workspace { min-height: auto; }
   }
 
@@ -1763,12 +1688,10 @@
     .primary-actions { display: grid; grid-template-columns: 1fr; padding-inline: 4px; }
     .primary-button,
     .secondary-button { min-height: 50px; }
-    .guide-card,
-    .architecture-card { padding: 15px; }
+
     .demo-player { grid-template-columns: 40px minmax(88px, 1fr) 40px; }
     .player-reset { grid-column: 1 / -1; }
-    .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .metric-card { min-height: 104px; }
+
     .bottom-navigation {
       position: fixed;
       inset: auto 0 0;
