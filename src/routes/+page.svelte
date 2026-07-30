@@ -420,50 +420,6 @@
             </div>
           </div>
 
-          <div class="cube-visual-stage">
-            {#if trainer.connectedDeviceName && trainer.gyroCalibration.enabled && trainer.gyroQuaternion}
-              <span
-                class="pose-align-chip aligned"
-                title="画面姿态与实体魔方实时一致。如需白上绿前标准视角，放好后按 C 校准。"
-              >
-                <Check size={13} aria-hidden="true" /> 姿态与实体一致
-              </span>
-            {/if}
-            <Cube3D
-              cube={trainer.cube}
-              orientation={trainer.gyroQuaternion}
-              gyroCalibration={trainer.gyroCalibration}
-              stickerPalette={trainer.stickerPalette}
-              interactive={!trainer.connectedDeviceName || !trainer.gyroCalibration.enabled}
-              moveSerial={trainer.eventCount}
-              lastMove={trainer.lastMove}
-              viewPreset={trainer.viewPresetId}
-            />
-            {#if show2dOverlay}
-              <aside class="cube-net-overlay" aria-label="3D 视图的 2D 辅助图">
-                <span>2D</span>
-                <CubeNet cube={trainer.cube} mini />
-              </aside>
-            {/if}
-          </div>
-
-          <div class="timer-panel">
-            <TimerDisplay value={trainer.formatTime()} state={sessionLabel} />
-            <div class="timer-meta">
-              <StatusPill tone={trainer.hadDesync ? "warning" : "success"}>
-                {#if trainer.hadDesync}<ShieldAlert size={14} /> 数据降级{:else}<Check size={14} /> 状态可信{/if}
-              </StatusPill>
-              <span>{trainer.eventCount} moves</span>
-              <span>F2L {trainer.facts.solvedF2lSlots}/4</span>
-              <span>OLL {trainer.facts.ollSolved ? "✓" : "—"}</span>
-              <span>最后 {trainer.lastMove ?? "—"}</span>
-            </div>
-          </div>
-
-          {#if quickCalibrationStatus}
-            <p class="quick-calibration-status">{quickCalibrationStatus}</p>
-          {/if}
-
           {#if trainer.scramble.length > 0}
             <div class="scramble-zone" aria-label="打乱引导">
               <div class="algorithm-line" aria-label="打乱公式">
@@ -491,12 +447,14 @@
                   做错了？直接做 <strong>{invertMove(trainer.scramble[trainer.scrambleIndex - 1])}</strong> 即可回退上一步
                 </p>
               {/if}
-              <div class="progress-track" aria-label="打乱进度">
-                <span style={`width:${trainer.scrambleProgress * 100}%`}></span>
-              </div>
-              <div class="guide-next">
-                <span>下一动作</span>
-                <strong>{trainer.currentScrambleMove ?? "完成"}</strong>
+              <div class="scramble-foot">
+                <div class="progress-track" aria-label="打乱进度">
+                  <span style={`width:${trainer.scrambleProgress * 100}%`}></span>
+                </div>
+                <div class="guide-next">
+                  <span>下一动作</span>
+                  <strong>{trainer.currentScrambleMove ?? "完成"}</strong>
+                </div>
               </div>
               {#if !trainer.connectedDeviceName}
                 <div class="demo-player" aria-label="打乱演示播放器">
@@ -533,11 +491,59 @@
             </div>
           {/if}
 
-          <div class="primary-actions">
-            <button class="primary-button" onclick={primaryAction} disabled={scrambleBlocked}>
-              <Sparkles size={19} />
-              {primaryLabel}
-            </button>
+          {#if quickCalibrationStatus}
+            <p class="quick-calibration-status">{quickCalibrationStatus}</p>
+          {/if}
+
+          <div class="training-stage">
+            <div class="cube-visual-stage">
+              {#if trainer.connectedDeviceName && trainer.gyroCalibration.enabled && trainer.gyroQuaternion}
+                <span
+                  class="pose-align-chip aligned"
+                  title="画面姿态与实体魔方实时一致。如需白上绿前标准视角，放好后按 C 校准。"
+                >
+                  <Check size={13} aria-hidden="true" /> 姿态与实体一致
+                </span>
+              {/if}
+              <Cube3D
+                cube={trainer.cube}
+                orientation={trainer.gyroQuaternion}
+                gyroCalibration={trainer.gyroCalibration}
+                stickerPalette={trainer.stickerPalette}
+                interactive={!trainer.connectedDeviceName || !trainer.gyroCalibration.enabled}
+                moveSerial={trainer.eventCount}
+                lastMove={trainer.lastMove}
+                viewPreset={trainer.viewPresetId}
+                fill
+              />
+              {#if show2dOverlay}
+                <aside class="cube-net-overlay" aria-label="3D 视图的 2D 辅助图">
+                  <span>2D</span>
+                  <CubeNet cube={trainer.cube} mini />
+                </aside>
+              {/if}
+            </div>
+
+            <div class="training-rail">
+              <div class="timer-panel">
+                <TimerDisplay value={trainer.formatTime()} state={sessionLabel} />
+                <div class="timer-meta">
+                  <StatusPill tone={trainer.hadDesync ? "warning" : "success"}>
+                    {#if trainer.hadDesync}<ShieldAlert size={14} /> 数据降级{:else}<Check size={14} /> 状态可信{/if}
+                  </StatusPill>
+                  <span>{trainer.eventCount} moves</span>
+                  <span>F2L {trainer.facts.solvedF2lSlots}/4</span>
+                  <span>OLL {trainer.facts.ollSolved ? "✓" : "—"}</span>
+                  <span>最后 {trainer.lastMove ?? "—"}</span>
+                </div>
+              </div>
+              <div class="primary-actions">
+                <button class="primary-button" onclick={primaryAction} disabled={scrambleBlocked}>
+                  <Sparkles size={19} />
+                  {primaryLabel}
+                </button>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -1191,9 +1197,11 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 18px;
-    width: min(100%, 860px);
+    width: min(100%, 1000px);
     margin-inline: auto;
-    align-items: start;
+    align-items: stretch;
+    height: calc(100vh - 122px);
+    min-height: 540px;
   }
   .workspace-card,
   .metric-card,
@@ -1203,8 +1211,29 @@
     box-shadow: 0 20px 50px rgb(0 0 0 / 0.12);
   }
   .workspace-card { border-radius: 24px; }
-  .cube-workspace { padding: 22px; }
-  .cube-visual-stage { position: relative; }
+  .cube-workspace {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    height: 100%;
+    min-height: 0;
+    padding: 20px;
+  }
+  .training-stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 18px;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .cube-visual-stage { position: relative; display: flex; min-height: 0; }
+  .training-rail {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 14px;
+    min-height: 0;
+  }
   .pose-align-chip {
     position: absolute;
     z-index: 4;
@@ -1279,20 +1308,23 @@
   .timer-panel {
     display: grid;
     gap: 13px;
-    padding: 18px 12px;
-    border-top: 1px solid var(--color-outline-soft);
+    padding: 18px 14px;
+    border: 1px solid var(--color-outline-soft);
+    border-radius: 18px;
+    background: var(--color-surface-high);
   }
-  .timer-meta { justify-content: center; flex-wrap: wrap; gap: 12px; color: var(--color-text-muted); font-size: 0.72rem; }
-  .primary-actions { justify-content: center; gap: 9px; padding-top: 4px; }
+  .training-rail :global(.timer) { font-size: clamp(2.1rem, 3.4vw, 3.3rem); }
+  .timer-meta { justify-content: center; flex-wrap: wrap; gap: 10px; color: var(--color-text-muted); font-size: 0.72rem; }
+  .primary-actions { justify-content: stretch; gap: 9px; }
+  .primary-actions .primary-button { width: 100%; }
 
   .compact-heading { align-items: center; }
   .scramble-zone {
     display: grid;
-    gap: 12px;
-    margin-top: 16px;
-    padding: 16px;
+    gap: 10px;
+    padding: 12px 16px;
     border: 1px solid var(--color-outline-soft);
-    border-radius: 18px;
+    border-radius: 16px;
     background: var(--color-surface-high);
     animation: scramble-zone-in 200ms ease-out;
   }
@@ -1303,21 +1335,21 @@
   .algorithm-line {
     display: flex;
     flex-wrap: wrap;
-    gap: 7px;
-    min-height: 94px;
+    gap: 6px;
     align-content: center;
-    padding: 15px 0;
+    padding: 2px 0;
     font-family: "SFMono-Regular", Consolas, monospace;
   }
   .algorithm-line span {
     display: grid;
-    min-width: 38px;
-    height: 38px;
+    min-width: 34px;
+    height: 34px;
     place-items: center;
     border: 1px solid var(--color-outline-soft);
-    border-radius: 10px;
+    border-radius: 9px;
     color: var(--color-text-muted);
     background: var(--color-surface-high);
+    font-size: 0.85rem;
   }
   .algorithm-line span.completed { color: var(--color-success); opacity: 0.62; }
   .algorithm-line span.current {
@@ -1326,9 +1358,11 @@
     background: var(--color-primary);
     box-shadow: 0 0 0 5px rgb(135 232 188 / 0.09);
   }
+  .scramble-foot { display: flex; align-items: center; gap: 16px; }
+  .scramble-foot .progress-track { flex: 1 1 auto; }
   .progress-track { height: 5px; overflow: hidden; border-radius: 99px; background: var(--color-surface-highest); }
   .progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--color-primary); transition: width 160ms ease-out; }
-  .guide-next { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; }
+  .guide-next { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
   .scramble-readiness { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .scramble-readiness span {
     display: inline-flex;
@@ -1623,16 +1657,19 @@
     .protocol-validation-heading { align-items: flex-start; flex-direction: column; }
     .protocol-live-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .protocol-validation-actions { align-items: stretch; flex-direction: column; }
-    .training-layout { gap: 10px; }
+    .training-layout { gap: 10px; height: auto; min-height: 0; }
     .workspace-card { border-radius: 20px; }
-    .cube-workspace { padding: 14px 10px; }
+    .cube-workspace { padding: 14px 10px; height: auto; }
+    .training-stage { grid-template-columns: 1fr; }
+    .cube-visual-stage { height: 300px; }
+    .training-rail { justify-content: stretch; }
     .cube-net-overlay { right: 2px; bottom: 6px; transform: scale(0.82); transform-origin: right bottom; }
     .section-heading { padding-inline: 5px; }
     .section-heading { align-items: start; }
     .section-actions { justify-content: stretch; }
     .section-actions .secondary-button { flex: 1 1 auto; }
     .section-heading h1 { font-size: 1.25rem; }
-    .timer-panel { padding: 13px 4px; }
+    .timer-panel { padding: 13px 10px; }
     .primary-actions { display: grid; grid-template-columns: 1fr; padding-inline: 4px; }
     .primary-button,
     .secondary-button { min-height: 50px; }

@@ -52,6 +52,7 @@
     moveSerial = 0,
     lastMove = null,
     viewPreset = "standard",
+    fill = false,
   }: {
     cube: CubeState;
     orientation?: CubeQuaternion | null;
@@ -61,6 +62,8 @@
     moveSerial?: number;
     lastMove?: string | null;
     viewPreset?: ViewPresetId;
+    /** Stretch to fill the parent's height instead of a fixed stage height. */
+    fill?: boolean;
   } = $props();
 
   let canvas: HTMLCanvasElement;
@@ -633,7 +636,7 @@
   });
 </script>
 
-<div class="cube-3d-wrap">
+<div class="cube-3d-wrap" class:fill>
   <div
     bind:this={stage}
     class:dragging
@@ -671,6 +674,15 @@
     gap: 8px;
     padding: 10px 18px 18px;
   }
+
+  .cube-3d-wrap.fill {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    padding: 0;
+  }
+  .cube-3d-wrap.fill .cube-stage { flex: 1 1 auto; width: 100%; height: auto; min-height: 0; }
 
   .cube-stage {
     position: relative;
