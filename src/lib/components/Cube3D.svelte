@@ -662,7 +662,7 @@
       </button>
     {/if}
   </div>
-  <p>{interactive ? "GPU WebGL 全向视图 · 拖动观察 · 双击 / Home 复位" : "GPU WebGL 实时姿态 · 拖动改变观察角度 · 回正恢复默认视角"}</p>
+  <p>{interactive ? "拖动观察 · 双击 / Home 复位" : "姿态与实体魔方实时同步 · 拖动改变观察角度 · 回正恢复默认视角"}</p>
 </div>
 
 <style>
