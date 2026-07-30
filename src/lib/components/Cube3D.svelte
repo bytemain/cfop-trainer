@@ -3,15 +3,18 @@
   import { RotateCcw } from "lucide-svelte";
   import {
     ACESFilmicToneMapping,
+    AdditiveBlending,
     AmbientLight,
     CanvasTexture,
     Color,
     DirectionalLight,
+    DoubleSide,
     Euler,
     Group,
     LinearFilter,
     Matrix4,
     Mesh,
+    MeshBasicMaterial,
     MeshStandardMaterial,
     PerspectiveCamera,
     PlaneGeometry,
@@ -53,6 +56,7 @@
     lastMove = null,
     viewPreset = "standard",
     fill = false,
+    highlightFace = null,
   }: {
     cube: CubeState;
     orientation?: CubeQuaternion | null;
@@ -64,6 +68,8 @@
     viewPreset?: ViewPresetId;
     /** Stretch to fill the parent's height instead of a fixed stage height. */
     fill?: boolean;
+    /** Face to highlight as the next turn target ("U"/"R"/"F"/"D"/"L"/"B"), or null. */
+    highlightFace?: string | null;
   } = $props();
 
   let canvas: HTMLCanvasElement;
@@ -76,6 +82,8 @@
   let resizeObserver: ResizeObserver | null = null;
   let animationFrame: number | null = null;
   let poseAnimationFrame: number | null = null;
+  let highlightAnimationFrame: number | null = null;
+  let highlightMesh: Mesh | null = null;
   let lastPoseFrameAt = 0;
   let hasDisplayedPose = false;
   let dragging = $state(false);
@@ -178,6 +186,104 @@
     const texture = new CanvasTexture(shadowCanvas);
     texture.minFilter = LinearFilter;
     return texture;
+  }
+
+  // Outward normal (model space) for each turnable face. The highlight panel is
+  // placed just outside the face and oriented by this normal, so it always marks
+  // the same physical face regardless of how the cube is held or dragged.
+  const FACE_NORMALS: Record<string, [number, number, number]> = {
+    U: [0, 1, 0],
+    D: [0, -1, 0],
+    R: [1, 0, 0],
+    L: [-1, 0, 0],
+    F: [0, 0, 1],
+    B: [0, 0, -1],
+  };
+
+  function quaternionForFaceNormal(normal: readonly [number, number, number]): Quaternion {
+    const [x, y, z] = normal;
+    if (y === 1) return new Quaternion().setFromEuler(new Euler(-Math.PI / 2, 0, 0, "XYZ"));
+    if (y === -1) return new Quaternion().setFromEuler(new Euler(Math.PI / 2, 0, 0, "XYZ"));
+    if (x === 1) return new Quaternion().setFromEuler(new Euler(0, Math.PI / 2, 0, "XYZ"));
+    if (x === -1) return new Quaternion().setFromEuler(new Euler(0, -Math.PI / 2, 0, "XYZ"));
+    if (z === -1) return new Quaternion().setFromEuler(new Euler(0, Math.PI, 0, "XYZ"));
+    return new Quaternion();
+  }
+
+  function makeHighlightTexture(): CanvasTexture {
+    const size = 256;
+    const highlightCanvas = document.createElement("canvas");
+    highlightCanvas.width = size;
+    highlightCanvas.height = size;
+    const context = highlightCanvas.getContext("2d")!;
+    context.clearRect(0, 0, size, size);
+    const radius = 34;
+    const inset = 16;
+    const roundRect = () => {
+      const x = inset;
+      const y = inset;
+      const w = size - inset * 2;
+      const h = size - inset * 2;
+      context.beginPath();
+      context.moveTo(x + radius, y);
+      context.arcTo(x + w, y, x + w, y + h, radius);
+      context.arcTo(x + w, y + h, x, y + h, radius);
+      context.arcTo(x, y + h, x, y, radius);
+      context.arcTo(x, y, x + w, y, radius);
+      context.closePath();
+    };
+    context.fillStyle = "rgba(135, 232, 188, 0.32)";
+    roundRect();
+    context.fill();
+    context.strokeStyle = "rgba(180, 255, 214, 1)";
+    context.lineWidth = 16;
+    context.lineJoin = "round";
+    roundRect();
+    context.stroke();
+    context.strokeStyle = "rgba(72, 187, 120, 0.9)";
+    context.lineWidth = 6;
+    roundRect();
+    context.stroke();
+    const texture = new CanvasTexture(highlightCanvas);
+    texture.minFilter = LinearFilter;
+    return texture;
+  }
+
+  function updateHighlight(): void {
+    if (!highlightMesh) return;
+    const normal = highlightFace ? FACE_NORMALS[highlightFace] : null;
+    if (!normal) {
+      highlightMesh.visible = false;
+      stopHighlightPulse();
+      requestRender();
+      return;
+    }
+    const offset = 1.62;
+    highlightMesh.position.set(normal[0] * offset, normal[1] * offset, normal[2] * offset);
+    highlightMesh.quaternion.copy(quaternionForFaceNormal(normal));
+    highlightMesh.visible = true;
+    startHighlightPulse();
+  }
+
+  function startHighlightPulse(): void {
+    if (highlightAnimationFrame !== null) return;
+    const tick = () => {
+      highlightAnimationFrame = null;
+      if (!highlightMesh || !highlightMesh.visible) return;
+      const phase = 0.5 + 0.5 * Math.sin(performance.now() / 380);
+      const material = highlightMesh.material as MeshBasicMaterial;
+      material.opacity = 0.72 + 0.28 * phase;
+      renderer?.render(rendererScene, camera!);
+      highlightAnimationFrame = requestAnimationFrame(tick);
+    };
+    highlightAnimationFrame = requestAnimationFrame(tick);
+  }
+
+  function stopHighlightPulse(): void {
+    if (highlightAnimationFrame !== null) {
+      cancelAnimationFrame(highlightAnimationFrame);
+      highlightAnimationFrame = null;
+    }
   }
 
   function buildCubies(): void {
@@ -562,6 +668,11 @@
     resetView();
   });
 
+  $effect(() => {
+    highlightFace;
+    updateHighlight();
+  });
+
   onMount(() => {
     renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });
     renderer.outputColorSpace = SRGBColorSpace;
@@ -588,6 +699,22 @@
     rendererScene.add(viewGroup);
     buildCubies();
     hardSync(cube);
+
+    highlightMesh = new Mesh(
+      new PlaneGeometry(3.24, 3.24),
+      new MeshBasicMaterial({
+        map: makeHighlightTexture(),
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        side: DoubleSide,
+      }),
+    );
+    highlightMesh.renderOrder = 2;
+    highlightMesh.visible = false;
+    cubieRoot.add(highlightMesh);
+    updateHighlight();
 
     const shadow = new Mesh(
       new PlaneGeometry(5.4, 2.2),
@@ -616,6 +743,8 @@
       activePivot = null;
       cubies.length = 0;
       resizeObserver?.disconnect();
+      stopHighlightPulse();
+      highlightMesh = null;
       if (animationFrame !== null) cancelAnimationFrame(animationFrame);
       if (poseAnimationFrame !== null) cancelAnimationFrame(poseAnimationFrame);
       rendererScene.traverse((object) => {

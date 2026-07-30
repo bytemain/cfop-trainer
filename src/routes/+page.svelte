@@ -178,6 +178,14 @@
   const scrambleBlocked = $derived(
     Boolean(trainer.connectedDeviceName) && !trainer.facts.cubeSolved,
   );
+  // While scrambling, glow the face of the next move on the 3D cube so the
+  // user turns the correct physical face regardless of how they hold the cube
+  // (scramble notation is face-relative: U is always the white-centered face).
+  const scrambleHighlightFace = $derived(
+    trainer.sessionState === "scrambling" && trainer.currentScrambleMove
+      ? trainer.currentScrambleMove[0]
+      : null,
+  );
   const cubePaletteStyle = $derived(
     "--cube-white:" + trainer.stickerPalette.white + ";" +
       "--cube-yellow:" + trainer.stickerPalette.yellow + ";" +
@@ -422,6 +430,13 @@
 
           {#if trainer.scramble.length > 0}
             <div class="scramble-zone" aria-label="打乱引导">
+              <div class="grip-hint" aria-label="推荐持握方向">
+                <span class="grip-label">持握</span>
+                <span class="grip-item"><i class="grip-dot grip-dot-white"></i>白上</span>
+                <span class="grip-item"><i class="grip-dot" style={`background:${trainer.stickerPalette.green}`}></i>绿前</span>
+                <span class="grip-item"><i class="grip-dot" style={`background:${trainer.stickerPalette.red}`}></i>红右</span>
+                <span class="grip-note">公式按这个朝向标注；3D 上高亮的面就是要转的面</span>
+              </div>
               <div class="algorithm-line" aria-label="打乱公式">
                 {#each trainer.scramble as move, index}
                   <span
@@ -514,6 +529,7 @@
                 moveSerial={trainer.eventCount}
                 lastMove={trainer.lastMove}
                 viewPreset={trainer.viewPresetId}
+                highlightFace={scrambleHighlightFace}
                 fill
               />
               {#if show2dOverlay}
@@ -1328,6 +1344,25 @@
     background: var(--color-surface-high);
     animation: scramble-zone-in 200ms ease-out;
   }
+  .grip-hint {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    padding-bottom: 9px;
+    border-bottom: 1px solid var(--color-outline-soft);
+    font-size: 0.74rem;
+  }
+  .grip-label { color: var(--color-text-muted); font-weight: 800; letter-spacing: 0.04em; }
+  .grip-item { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: var(--color-text); }
+  .grip-dot {
+    width: 13px;
+    height: 13px;
+    border: 1px solid var(--color-outline);
+    border-radius: 4px;
+  }
+  .grip-dot-white { background: var(--cube-white); }
+  .grip-note { flex-basis: 100%; color: var(--color-text-muted); font-size: 0.68rem; }
   @keyframes scramble-zone-in {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: none; }
